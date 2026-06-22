@@ -1,0 +1,39 @@
+# Render deployment config (Blueprint). When you connect this repo on Render,
+# it reads this file and provisions the service automatically.
+#
+# Region "singapore" is the closest Render region to Sri Lanka, so requests to
+# kapruka.com and partner sites are fast.
+services:
+  - type: web
+    name: kapruka-price-tools
+    runtime: node
+    plan: free
+    region: singapore
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      # Render must run Node 22.6+ (the app uses the built-in node:sqlite).
+      - key: NODE_VERSION
+        value: 22.16.0
+      # The comparison tool doesn't need a browser; skip Playwright's ~150MB
+      # browser download so builds stay fast.
+      - key: PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD
+        value: "1"
+      # Optional: the Price Checker uses these. The Partner Comparison does not.
+      # Set them in the Render dashboard (don't commit secrets).
+      # - key: OPENAI_API_KEY
+      #   sync: false
+      # - key: SERP_API_KEY
+      #   sync: false
+
+    # ---- DATABASE PERSISTENCE (IMPORTANT) ----
+    # On the FREE plan the filesystem is ephemeral: the SQLite database is wiped
+    # on every redeploy and when the service sleeps. To keep run history, switch
+    # `plan` above to `starter` (paid) and UNCOMMENT the lines below — they mount
+    # a persistent disk and point the database at it.
+    #
+    # envVars (add): { key: DATA_DIR, value: /var/data }
+    # disk:
+    #   name: price-tools-data
+    #   mountPath: /var/data
+    #   sizeGB: 1

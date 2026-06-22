@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#402970" />
+  <link rel="icon" href="https://www.kapruka.com/static/icons/favicon.ico" />
+  <title>Kapruka · Price Tools</title>
+  <link rel="stylesheet" href="theme.css" />
+  <style>
+    .menu { display:grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-top: 8px; }
+    .tool { display:flex; flex-direction:column; text-decoration:none; color:inherit;
+            border:1px solid var(--line); border-radius:16px; background:#fff; padding:26px;
+            box-shadow:0 1px 3px rgba(64,41,112,.06); transition:transform .12s, box-shadow .12s, border-color .12s; }
+    .tool:hover { transform: translateY(-3px); box-shadow:0 8px 24px rgba(64,41,112,.14);
+                  border-color: var(--purple-lt); text-decoration:none; }
+    .tool .ico { width:52px; height:52px; border-radius:13px; display:flex; align-items:center;
+                 justify-content:center; font-size:26px; background:var(--tint); margin-bottom:16px; }
+    .tool h2 { margin:0 0 6px; font-size:18px; color:var(--purple-dk); }
+    .tool p { margin:0; color:var(--mut); font-size:14px; line-height:1.55; }
+    .tool .go { margin-top:18px; font-weight:700; color:var(--purple); font-size:14px; }
+    @media (max-width:640px){ .menu{ grid-template-columns:1fr; } }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="bar">
+      <img class="logo-mark" src="https://www.kapruka.com/static/icons/apple-touch-icon-180x180.png?v2"
+           alt="Kapruka" onerror="this.style.display='none'" />
+      <span class="logo">kapruka<span class="dot">.</span></span>
+      <span class="pill">Price Tools</span>
+      <span class="tag">Pricing intelligence for the Kapruka marketplace</span>
+    </div>
+  </header>
+
+  <div class="wrap">
+    <h1>Choose a tool</h1>
+    <p class="sub">Two pricing tools for the Kapruka marketplace. Pick one to get started.</p>
+
+    <div class="menu">
+      <a class="tool" href="checker.html">
+        <div class="ico">🔎</div>
+        <h2>Price Checker</h2>
+        <p>Enter any product and match its live price across curated Sri Lankan
+           stores and the top web shops, each with a confidence rate. Find the
+           cheapest place to buy.</p>
+        <div class="go">Open Price Checker →</div>
+      </a>
+
+      <a class="tool" href="compare.html">
+        <div class="ico">⚖️</div>
+        <h2>Partner Price Comparison</h2>
+        <p>Reconcile a partner's catalogue on Kapruka against their own website:
+           which products match, where we're overpriced, and what's listed on one
+           site but not the other. Currently: Stop N Shop.</p>
+        <div class="go">Open Comparison →</div>
+      </a>
+    </div>
+  </div>
+</body>
+</html>

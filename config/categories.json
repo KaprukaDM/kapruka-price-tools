@@ -1,0 +1,37 @@
+{
+  "Electronics": [
+    { "name": "Abans", "domain": "buyabans.com" },
+    { "name": "Softlogic", "domain": "mysoftlogic.lk" },
+    { "name": "Thinex", "domain": "thinex.lk" },
+    { "name": "SimplyTek", "domain": "simplytek.lk" },
+    { "name": "Browns Deals", "domain": "brownsdeals.com" }
+  ],
+  "Mobile Phones": [
+    { "name": "SimplyTek", "domain": "simplytek.lk" },
+    { "name": "Smart Mobile", "domain": "smartmobile.lk" },
+    { "name": "Genius Mobile", "domain": "geniusmobile.lk" },
+    { "name": "Life Mobile", "domain": "lifemobile.lk" }
+  ],
+  "Cakes": [
+    { "name": "Divine", "domain": "divine.lk" },
+    { "name": "Gerard Mendis", "domain": "gerardmendis.com" },
+    { "name": "BreadTalk", "domain": "breadtalk.lk" },
+    { "name": "Cinnamon CG Flavours", "domain": "cgflavours.cinnamonhotels.com" },
+    { "name": "Kingsbury Indulgence", "domain": "indulgence.thekingsburyhotel.com" }
+  ],
+  "Grocery": [
+    { "name": "Keells", "domain": "keellssuper.com" },
+    { "name": "Cargills", "domain": "cargillsceylon.com" },
+    { "name": "OnlineKade", "domain": "onlinekade.lk" },
+    { "name": "Glomark", "domain": "glomark.lk" }
+  ],
+  "Cosmetics": [
+    { "name": "Cosmetics.lk", "domain": "cosmetics.lk" },
+    { "name": "Essentials", "domain": "essentials.lk" },
+    { "name": "Viana", "domain": "viana.lk" },
+    { "name": "BlushMe", "domain": "blushme.lk" },
+    { "name": "Watsans", "domain": "watsans.lk" },
+    { "name": "British Cosmetics", "domain": "britishcosmetics.com" },
+    { "name": "London Store", "domain": "londonstore.lk" }
+  ]
+}

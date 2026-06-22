@@ -1,0 +1,161 @@
+import 'dotenv/config';
+import express from 'express';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+
+import { loadCategories, runMatch } from './pipeline.js';
+import { runComparison } from './compare/run.js';
+import { listPartners, addPartner, siteLabel } from './compare/partners.js';
+import { probeKaprukaSource, detectPartnerPlatform, parseKaprukaSource } from './compare/sources.js';
+import {
+  savePriceCheck,
+  saveComparisonRun,
+  recentPriceChecks,
+  recentComparisonRuns,
+  getComparisonRun,
+} from './db.js';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const app = express();
+
+app.use(express.json());
+app.use(express.static(join(__dirname, '..', 'public')));
+
+// Categories + their sites (drives the dropdown).
+app.get('/api/categories', async (_req, res) => {
+  try {
+    const categories = await loadCategories();
+    res.json(categories);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Run a price-checker match. Every query is persisted to the database.
+app.post('/api/match', async (req, res) => {
+  const { category, name, description } = req.body || {};
+  if (!category || !name) {
+    return res.status(400).json({ error: 'category and name are required' });
+  }
+  try {
+    const query = { name, description: description || '' };
+    const out = await runMatch(category, query);
+    try {
+      out.recordId = savePriceCheck({ category, query, result: out });
+    } catch (e) {
+      console.warn('! failed to persist price check:', e.message);
+    }
+    res.json(out);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Configured partners (drives the comparison dropdown).
+app.get('/api/partners', async (_req, res) => {
+  try {
+    res.json(await listPartners());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Add a new partner: validate the two links, auto-detect the store platform,
+// then persist to config/partners.json. Body: { name, kaprukaUrl, partnerSite }.
+app.post('/api/partners', async (req, res) => {
+  const { name, kaprukaUrl, partnerSite } = req.body || {};
+  if (!name || !kaprukaUrl || !partnerSite) {
+    return res.status(400).json({ error: 'name, kaprukaUrl and partnerSite are all required.' });
+  }
+  const src = parseKaprukaSource(kaprukaUrl);
+  if (!src) {
+    return res.status(400).json({
+      error: 'Could not read the Kapruka link. Paste a partner storefront ' +
+        '(kapruka.com/partner/...) or a brand/category page (kapruka.com/online/...).',
+    });
+  }
+  try {
+    // 1) Kapruka side must list products for this link.
+    const kCount = await probeKaprukaSource(kaprukaUrl);
+    if (!kCount) {
+      return res.status(400).json({
+        error: `No products found on the Kapruka page "${src.label}". Double-check the link.`,
+      });
+    }
+    // 2) Partner site must expose a readable catalogue (WooCommerce or Shopify).
+    const platform = await detectPartnerPlatform(partnerSite);
+    if (!platform) {
+      return res.status(400).json({
+        error: `Could not read a product catalogue from ${siteLabel(partnerSite)}. ` +
+          'Supported store platforms are WooCommerce and Shopify.',
+      });
+    }
+    const site = partnerSite.startsWith('http') ? partnerSite : `https://${partnerSite}`;
+    const entry = await addPartner({
+      name,
+      kaprukaUrl: src.link,
+      partnerSite: site,
+      partnerLabel: siteLabel(site),
+      platform,
+    });
+    res.json({ ...entry, platform, kaprukaPreviewCount: kCount });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Partner price reconciliation. Result is cached in memory per partner for 30
+// min; ?refresh=1 forces a live refetch (~10s). Any run that actually recomputes
+// (a refresh or a cache miss) is persisted as a new timestamped row; cached
+// responses are not re-stored.
+app.get('/api/compare', async (req, res) => {
+  try {
+    const force = req.query.refresh === '1' || req.query.refresh === 'true';
+    const partnerId = req.query.partner || undefined;
+    const data = await runComparison({ partnerId, force });
+    if (!data.cached) {
+      try {
+        data.recordId = saveComparisonRun(data);
+      } catch (e) {
+        console.warn('! failed to persist comparison run:', e.message);
+      }
+    }
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---- History (stored runs, for downstream use) ----
+app.get('/api/history/price-checks', (req, res) => {
+  try {
+    res.json(recentPriceChecks(Number(req.query.limit) || 50));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/history/comparison-runs', (req, res) => {
+  try {
+    res.json(recentComparisonRuns(Number(req.query.limit) || 50, req.query.partner || null));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/history/comparison-runs/:id', (req, res) => {
+  try {
+    const run = getComparisonRun(Number(req.params.id));
+    if (!run) return res.status(404).json({ error: 'run not found' });
+    res.json(run);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`Price tools running at http://localhost:${PORT}`);
+  if (!process.env.OPENAI_API_KEY) console.warn('! OPENAI_API_KEY is not set');
+  if (!process.env.SERP_API_KEY) console.warn('! SERP_API_KEY is not set');
+});

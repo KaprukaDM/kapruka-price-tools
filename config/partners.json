@@ -1,0 +1,36 @@
+{
+  "stop-n-shop": {
+    "name": "Stop N Shop",
+    "kaprukaSlug": "stop-n-shop-lifestyle-pvt-ltd",
+    "partnerSite": "https://stopnshop.lk",
+    "partnerLabel": "stopnshop.lk"
+  },
+  "dimo": {
+    "name": "Dimo",
+    "kaprukaSlug": "dimo-retail",
+    "partnerSite": "https://dimoretail.lk/",
+    "partnerLabel": "dimoretail.lk",
+    "platform": "woocommerce"
+  },
+  "kingsbury-cakes": {
+    "name": "Kingsbury Cakes",
+    "kaprukaUrl": "https://www.kapruka.com/online/cakes/price/kingsbury",
+    "partnerSite": "https://indulgence.thekingsburyhotel.com",
+    "partnerLabel": "indulgence.thekingsburyhotel.com",
+    "platform": "woocommerce"
+  },
+  "kingsburry": {
+    "name": "Kingsburry",
+    "kaprukaUrl": "https://www.kapruka.com/online/cakes/price/kingsbury",
+    "partnerSite": "https://indulgence.thekingsburyhotel.com/product-category/cakes-desserts/",
+    "partnerLabel": "indulgence.thekingsburyhotel.com",
+    "platform": "woocommerce"
+  },
+  "thinex": {
+    "name": "thinex",
+    "kaprukaUrl": "https://www.kapruka.com/partner/Thinex",
+    "partnerSite": "https://thinex.lk/",
+    "partnerLabel": "thinex.lk",
+    "platform": "woocommerce"
+  }
+}

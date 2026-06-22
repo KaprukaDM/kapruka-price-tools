@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#402970" />
+  <link rel="icon" href="https://www.kapruka.com/static/icons/favicon.ico" />
+  <title>Kapruka · Price Checker</title>
+  <link rel="stylesheet" href="theme.css" />
+</head>
+<body>
+  <header>
+    <div class="bar">
+      <img class="logo-mark" src="https://www.kapruka.com/static/icons/apple-touch-icon-180x180.png?v2"
+           alt="Kapruka" onerror="this.style.display='none'" />
+      <span class="logo">kapruka<span class="dot">.</span></span>
+      <span class="pill">Price Checker</span>
+      <span class="tag"><a href="index.html">← Menu</a></span>
+    </div>
+  </header>
+
+  <div class="wrap">
+    <h1>Find the best price</h1>
+    <p class="sub">Pick a category, describe the product, and we'll match live prices across curated stores and the top Sri Lankan shops — each with a confidence rate.</p>
+
+    <div class="card">
+      <div class="grid">
+        <div>
+          <label for="category">Category</label>
+          <select id="category"></select>
+        </div>
+        <div>
+          <label for="name">Product name</label>
+          <input id="name" placeholder="e.g. iPhone 15 256GB" />
+        </div>
+        <div class="full">
+          <label for="description">Description (optional, improves accuracy)</label>
+          <textarea id="description" placeholder="e.g. Apple iPhone 15, Black, with Apple Care"></textarea>
+        </div>
+      </div>
+      <button id="go">Match prices</button>
+      <span id="hint" class="hint"></span>
+    </div>
+
+    <div id="out"></div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

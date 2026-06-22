@@ -1,0 +1,22 @@
+{
+  "name": "price-checker",
+  "version": "1.0.0",
+  "description": "AI-assisted price checker: pick a category, enter a product, match prices across curated Sri Lankan sites with a confidence/match rate.",
+  "type": "module",
+  "main": "src/server.js",
+  "engines": {
+    "node": ">=22.6.0"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "compare": "node src/compare/index.js"
+  },
+  "dependencies": {
+    "cheerio": "^1.0.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.2",
+    "openai": "^4.77.0",
+    "playwright": "^1.49.1"
+  }
+}
