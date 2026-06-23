@@ -31,11 +31,26 @@ function fixMojibake(s) {
 
 const UA = { 'User-Agent': 'Mozilla/5.0 (price-reconcile bot)', 'Accept-Language': 'en-LK,en' };
 
+// Kapruka geolocates prices by the real connecting IP (headers don't override it),
+// so a server hosted abroad sees USD instead of LKR. Set SCRAPE_PROXY to a Sri
+// Lankan-exit HTTP(S) proxy to force LKR pricing. Left blank, requests go direct
+// (correct when the host itself is in Sri Lanka).
+const SCRAPE_PROXY = process.env.SCRAPE_PROXY || '';
+let proxyDispatcher; // lazily-created undici ProxyAgent, reused across requests
+
 async function fetchText(url) {
   const c = new AbortController();
   const t = setTimeout(() => c.abort(), 30000);
+  const opts = { headers: UA, redirect: 'follow', signal: c.signal };
+  if (SCRAPE_PROXY) {
+    if (!proxyDispatcher) {
+      const { ProxyAgent } = await import('undici');
+      proxyDispatcher = new ProxyAgent(SCRAPE_PROXY);
+    }
+    opts.dispatcher = proxyDispatcher;
+  }
   try {
-    const r = await fetch(url, { headers: UA, redirect: 'follow', signal: c.signal });
+    const r = await fetch(url, opts);
     if (!r.ok) throw new Error(`HTTP ${r.status} for ${url}`);
     return await r.text();
   } finally {
