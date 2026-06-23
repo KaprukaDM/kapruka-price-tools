@@ -178,12 +178,34 @@ export function kaprukaBaseUrl(src) {
   return u;
 }
 
-// Parse the catalogue cards directly from the HTML. Each product is an anchor to
-// /buyonline/... wrapping a .catalogueV2heading (name) and a .catalogueV2converted
-// price ("RS.12,490"). We read the DOM rather than the per-card JSON-LD because
-// some product names contain characters that make the JSON-LD invalid JSON.
+// The visible ".catalogueV2converted" price is GEO-CONVERTED: international
+// visitors (e.g. a server hosted abroad) get it in USD, not LKR — so a Rs.219,000
+// TV renders as "$811" and naively parsing the number stores 811 as if it were
+// rupees. The per-product JSON-LD offer, however, carries the canonical LKR price
+// regardless of geo. So we build an LKR price map from the JSON-LD (keyed by the
+// product code in /kid/<code>) and use the visible span only as an LKR-only
+// fallback. Regex over each <script> block rather than JSON.parse, because some
+// product names contain characters that make the JSON-LD invalid JSON.
+function kaprukaLkrPriceMap(html) {
+  const map = new Map();
+  const blocks = html.match(/<script[^>]*type="application\/ld\+json"[^>]*>([\s\S]*?)<\/script>/gi) || [];
+  for (const block of blocks) {
+    if (!/"@type"\s*:\s*"Product"/i.test(block)) continue;
+    const url = (block.match(/"url"\s*:\s*"([^"]+)"/) || [])[1] || '';
+    const kid = (url.match(/\/kid\/([^/"?#]+)/i) || [])[1];
+    if (!kid) continue;
+    const cur = (block.match(/"priceCurrency"\s*:\s*"?(\w+)/i) || [])[1];
+    const priceStr = (block.match(/"price"\s*:\s*"?([\d.]+)/i) || [])[1];
+    if (!priceStr || !/^LKR$/i.test(cur || '')) continue; // only trust LKR offers
+    const price = Math.round(parseFloat(priceStr));
+    if (Number.isFinite(price) && price > 0) map.set(kid.toLowerCase(), price);
+  }
+  return map;
+}
+
 function parseKaprukaPage(html) {
   const $ = cheerio.load(html);
+  const lkrByKid = kaprukaLkrPriceMap(html);
   const out = [];
   $('a[href*="/buyonline/"]').each((_, el) => {
     const $a = $(el);
@@ -191,14 +213,25 @@ function parseKaprukaPage(html) {
     if (heading.length === 0) return; // not a product card (e.g. a plain link)
     const name = fixMojibake(decodeEntities(heading.text()).replace(/\s+/g, ' ').trim());
     if (!name) return;
-    // Discounted cards show the struck-through original price next to the selling
-    // price inside the same element. Drop the line-through original so the two
-    // numbers aren't concatenated, then take the first (selling) price.
-    const priceEl = $a.find('.catalogueV2converted, .CatalogueV2price').first().clone();
-    priceEl.find('[style*="line-through"]').remove();
-    const m = priceEl.text().match(/(\d[\d,]*)/);
-    const price = m ? parseInt(m[1].replace(/,/g, ''), 10) : null;
-    out.push({ name, price, url: $a.attr('href'), inStock: true });
+    const href = $a.attr('href') || '';
+    const kid = (href.match(/\/kid\/([^/"?#]+)/i) || [])[1];
+
+    // 1) Canonical LKR price from JSON-LD (geo-independent).
+    let price = kid ? lkrByKid.get(kid.toLowerCase()) ?? null : null;
+
+    // 2) Fallback: the visible price, but ONLY when it's rendered in LKR. If the
+    //    page geo-converted to USD/another currency, leave price null rather than
+    //    storing a foreign number as rupees.
+    if (price == null) {
+      const priceEl = $a.find('.catalogueV2converted, .CatalogueV2price').first().clone();
+      priceEl.find('[style*="line-through"]').remove();
+      const txt = priceEl.text();
+      if (/rs\.?|lkr|₨/i.test(txt)) {
+        const m = txt.match(/(\d[\d,]*)/);
+        price = m ? parseInt(m[1].replace(/,/g, ''), 10) : null;
+      }
+    }
+    out.push({ name, price, url: href, inStock: true });
   });
   return out;
 }
