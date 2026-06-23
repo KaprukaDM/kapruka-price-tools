@@ -18,6 +18,7 @@ import {
   recentPriceChecks,
   recentComparisonRuns,
   getComparisonRun,
+  storageKind,
 } from './db.js';
 import {
   exportPriceChecksCsv,
@@ -52,7 +53,7 @@ app.post('/api/match', async (req, res) => {
     const query = { name, description: description || '' };
     const out = await runMatch(category, query);
     try {
-      out.recordId = savePriceCheck({ category, query, result: out });
+      out.recordId = await savePriceCheck({ category, query, result: out });
     } catch (e) {
       console.warn('! failed to persist price check:', e.message);
     }
@@ -80,7 +81,7 @@ app.get('/api/match/stream', async (req, res) => {
     const query = { name, description: description || '' };
     const out = await runMatch(category, query, (ev) => send('progress', ev));
     try {
-      out.recordId = savePriceCheck({ category, query, result: out });
+      out.recordId = await savePriceCheck({ category, query, result: out });
     } catch (e) {
       console.warn('! failed to persist price check:', e.message);
     }
@@ -196,7 +197,7 @@ app.get('/api/compare', async (req, res) => {
     const data = await runComparison({ partnerId, force });
     if (!data.cached) {
       try {
-        data.recordId = saveComparisonRun(data);
+        data.recordId = await saveComparisonRun(data);
       } catch (e) {
         console.warn('! failed to persist comparison run:', e.message);
       }
@@ -208,25 +209,25 @@ app.get('/api/compare', async (req, res) => {
 });
 
 // ---- History (stored runs, for downstream use) ----
-app.get('/api/history/price-checks', (req, res) => {
+app.get('/api/history/price-checks', async (req, res) => {
   try {
-    res.json(recentPriceChecks(Number(req.query.limit) || 50));
+    res.json(await recentPriceChecks(Number(req.query.limit) || 50));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-app.get('/api/history/comparison-runs', (req, res) => {
+app.get('/api/history/comparison-runs', async (req, res) => {
   try {
-    res.json(recentComparisonRuns(Number(req.query.limit) || 50, req.query.partner || null));
+    res.json(await recentComparisonRuns(Number(req.query.limit) || 50, req.query.partner || null));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-app.get('/api/history/comparison-runs/:id', (req, res) => {
+app.get('/api/history/comparison-runs/:id', async (req, res) => {
   try {
-    const run = getComparisonRun(Number(req.params.id));
+    const run = await getComparisonRun(Number(req.params.id));
     if (!run) return res.status(404).json({ error: 'run not found' });
     res.json(run);
   } catch (err) {
@@ -241,9 +242,9 @@ function sendCsv(res, filename, csv) {
   res.send(csv);
 }
 
-app.get('/api/export/price-checks.csv', (_req, res) => {
+app.get('/api/export/price-checks.csv', async (_req, res) => {
   try {
-    sendCsv(res, 'price-checks.csv', exportPriceChecksCsv());
+    sendCsv(res, 'price-checks.csv', await exportPriceChecksCsv());
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -251,28 +252,28 @@ app.get('/api/export/price-checks.csv', (_req, res) => {
 
 // Unified product sheet across both tools — one row per unique product.
 // CSV for spreadsheets; JSON (same data) for feeding the product-approval API.
-app.get('/api/export/products.csv', (_req, res) => {
+app.get('/api/export/products.csv', async (_req, res) => {
   try {
-    sendCsv(res, 'products.csv', exportProductsCsv());
+    sendCsv(res, 'products.csv', await exportProductsCsv());
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-app.get('/api/export/products.json', (_req, res) => {
+app.get('/api/export/products.json', async (_req, res) => {
   try {
-    const products = productRows();
+    const products = await productRows();
     res.json({ count: products.length, products });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-app.get('/api/export/comparison.csv', (req, res) => {
+app.get('/api/export/comparison.csv', async (req, res) => {
   try {
     const partnerId = req.query.partner || null;
     const name = partnerId ? `comparison-${partnerId}.csv` : 'comparison.csv';
-    sendCsv(res, name, exportComparisonCsv(partnerId));
+    sendCsv(res, name, await exportComparisonCsv(partnerId));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -281,6 +282,7 @@ app.get('/api/export/comparison.csv', (req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Price tools running at http://localhost:${PORT}`);
+  console.log(`Storage backend: ${storageKind}${storageKind === 'sqlite' ? ' (local file; set DATABASE_URL for Supabase)' : ' (Supabase/Postgres)'}`);
   if (!process.env.OPENAI_API_KEY) console.warn('! OPENAI_API_KEY is not set');
   if (!process.env.SERP_API_KEY) console.warn('! SERP_API_KEY is not set');
 });

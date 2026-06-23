@@ -41,9 +41,9 @@ const PRICE_CHECK_COLUMNS = [
   { key: 'url', label: 'URL' },
 ];
 
-export function exportPriceChecksCsv() {
+export async function exportPriceChecksCsv() {
   const rows = [];
-  for (const row of allPriceCheckRows()) {
+  for (const row of await allPriceCheckRows()) {
     let payload;
     try {
       payload = JSON.parse(row.payload_json);
@@ -101,7 +101,7 @@ const PRODUCT_COLUMNS = [
 ];
 
 // Returns an array of plain product objects (also used by the JSON API).
-export function productRows() {
+export async function productRows() {
   const map = new Map();
 
   const upsert = (row) => {
@@ -123,7 +123,7 @@ export function productRows() {
   };
 
   // 1) Price Checker results (Category comes from the query; no Brand captured).
-  for (const r of allPriceCheckRows()) {
+  for (const r of await allPriceCheckRows()) {
     let payload;
     try {
       payload = JSON.parse(r.payload_json);
@@ -149,7 +149,7 @@ export function productRows() {
   }
 
   // 2) Comparison runs — both the Kapruka listing and the partner listing.
-  for (const r of allComparisonRows()) {
+  for (const r of await allComparisonRows()) {
     let payload;
     try {
       payload = JSON.parse(r.payload_json);
@@ -195,8 +195,8 @@ export function productRows() {
   );
 }
 
-export function exportProductsCsv() {
-  return buildCsv(PRODUCT_COLUMNS, productRows());
+export async function exportProductsCsv() {
+  return buildCsv(PRODUCT_COLUMNS, await productRows());
 }
 
 // ---- Price Comparison: one row per matched Kapruka<->partner product pair ----
@@ -222,9 +222,9 @@ const COMPARISON_COLUMNS = [
   { key: 'partner_url', label: 'Partner URL' },
 ];
 
-export function exportComparisonCsv(partnerId = null) {
+export async function exportComparisonCsv(partnerId = null) {
   const rows = [];
-  for (const row of allComparisonRows(partnerId)) {
+  for (const row of await allComparisonRows(partnerId)) {
     let payload;
     try {
       payload = JSON.parse(row.payload_json);

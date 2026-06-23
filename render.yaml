@@ -31,6 +31,12 @@ services:
         sync: false
       - key: MATCH_MODEL
         value: gpt-4o-mini
+      # Supabase Postgres connection string (Project Settings → Database →
+      # Connection string → URI, the pooled one on port 6543). When set, all data
+      # is stored in Supabase and survives deploys/restarts. If omitted, the app
+      # falls back to an ephemeral local SQLite file.
+      - key: DATABASE_URL
+        sync: false
 
     # ---- DATABASE PERSISTENCE (IMPORTANT) ----
     # On the FREE plan the filesystem is ephemeral: the SQLite database is wiped
