@@ -16,6 +16,10 @@ import * as cheerio from 'cheerio';
 
 const SCRAPE_PROXY = process.env.SCRAPE_PROXY || '';
 const PAGE_TIMEOUT_MS = 20000;
+// On constrained hosts (e.g. Render free tier) we run without a headless browser.
+// Set DISABLE_BROWSER=1 to skip the Playwright rendered-HTML fallback entirely;
+// the static extractors still run, so most pages still yield a price.
+const BROWSER_DISABLED = /^(1|true)$/i.test(process.env.DISABLE_BROWSER || '');
 
 const UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
@@ -202,9 +206,28 @@ function walkForPrices(obj, prices, onCurrency, depth = 0) {
   }
 }
 
+// Containers that hold OTHER products' prices (related/upsell/cross-sell
+// carousels, "you may also like", OpenCart's .product-thumb cards) or chrome
+// (nav/header/footer promos). Scanning these makes the visible-text fallback
+// pick up an unrelated product's price — e.g. a Rs.17,490 phone reported as
+// Rs.131,490 because a pricier handset sat in the related-items strip.
+const NOISE_SELECTOR = [
+  '.product-thumb',
+  '.related', '.upsells', '.up-sells', '.cross-sells',
+  '[class*="related"]', '[id*="related"]',
+  '[class*="upsell"]', '[class*="cross-sell"]',
+  '[class*="recommend"]', '[id*="recommend"]',
+  '[class*="similar"]', '[class*="also-bought"]', '[class*="also-like"]',
+  '[class*="carousel"]', '[class*="slider"]',
+  'header', 'footer', 'nav',
+].join(', ');
+
 function extractFromVisibleText($, prices) {
-  // Last resort: scan elements whose class/id hints at price.
-  const text = $('body').text();
+  // Last resort: scan visible text for price-shaped tokens. Drop related-product
+  // and chrome sections first so we don't capture a neighbouring product's price.
+  const body = $('body').clone();
+  body.find(NOISE_SELECTOR).remove();
+  const text = body.text();
   const currency = detectCurrencyFromText(text);
   const priceRe = /(?:rs\.?|lkr|₨|\$)\s*([\d.,]{3,})/gi;
   let m;

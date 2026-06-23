@@ -139,4 +139,19 @@ export function getComparisonRun(id) {
   return row ? JSON.parse(row.payload_json) : null;
 }
 
+// ---- Full-payload reads (used by the CSV exporters) ----
+
+export function allPriceCheckRows() {
+  return db
+    .prepare('SELECT id, created_at, payload_json FROM price_checks ORDER BY id')
+    .all();
+}
+
+export function allComparisonRows(partnerId = null) {
+  const sql = `SELECT id, created_at, payload_json FROM comparison_runs
+               ${partnerId ? 'WHERE partner_id = ?' : ''} ORDER BY id`;
+  const stmt = db.prepare(sql);
+  return partnerId ? stmt.all(partnerId) : stmt.all();
+}
+
 export default db;

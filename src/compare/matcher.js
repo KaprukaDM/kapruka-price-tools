@@ -14,8 +14,10 @@ const SAME_PRICE_TOLERANCE = 0.01;
 // Pure-name matches (no shared model code) need at least this token overlap.
 const NAME_ONLY_JACCARD = 0.55;
 // A model-code match still needs a little descriptive overlap to guard against
-// the rare case of two unrelated products sharing a code-like token.
-const CODE_MATCH_MIN_JACCARD = 0.08;
+// the rare case of two unrelated products sharing the same product-line code
+// (e.g. a Meetion "C510" keyboard vs a Sony "C510" earbud). Real matches almost
+// always share more than this; pure code-collisions score below it.
+const CODE_MATCH_MIN_JACCARD = 0.12;
 
 function jaccard(a, b) {
   if (a.size === 0 || b.size === 0) return 0;
@@ -110,6 +112,8 @@ export function matchCatalogs(kapruka, partner) {
         partnerName: best.p.name,
         partnerUrl: best.p.url,
         partnerSku: best.p.sku,
+        partnerBrand: best.p.brand || '',
+        partnerCategory: best.p.category || '',
         partnerPrice: best.p.price,
         partnerRegularPrice: best.p.regularPrice,
         confidence: best.sc.codes >= 1 ? 'high' : 'medium',
@@ -126,7 +130,7 @@ export function matchCatalogs(kapruka, partner) {
     .map((k) => ({ name: k.name, price: k.price, url: k.url }));
   const onlyPartner = pIndexed
     .filter((p) => !usedPartner.has(p.id))
-    .map((p) => ({ name: p.name, sku: p.sku, price: p.price, url: p.url }));
+    .map((p) => ({ name: p.name, sku: p.sku, price: p.price, url: p.url, brand: p.brand || '', category: p.category || '' }));
 
   return { matched, onlyKapruka, onlyPartner };
 }

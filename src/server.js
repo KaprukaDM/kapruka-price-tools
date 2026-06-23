@@ -6,7 +6,12 @@ import { dirname, join } from 'node:path';
 import { loadCategories, runMatch } from './pipeline.js';
 import { runComparison } from './compare/run.js';
 import { listPartners, addPartner, siteLabel } from './compare/partners.js';
-import { probeKaprukaSource, detectPartnerPlatform, parseKaprukaSource } from './compare/sources.js';
+import {
+  probeKaprukaSource,
+  detectPartnerPlatform,
+  parseKaprukaSource,
+  fetchKaprukaProduct,
+} from './compare/sources.js';
 import {
   savePriceCheck,
   saveComparisonRun,
@@ -14,6 +19,12 @@ import {
   recentComparisonRuns,
   getComparisonRun,
 } from './db.js';
+import {
+  exportPriceChecksCsv,
+  exportComparisonCsv,
+  exportProductsCsv,
+  productRows,
+} from './export.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -48,6 +59,76 @@ app.post('/api/match', async (req, res) => {
     res.json(out);
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// Streaming price-checker match (Server-Sent Events) so the browser can show
+// live progress as each site finishes. Params come via the query string because
+// EventSource only does GET.
+app.get('/api/match/stream', async (req, res) => {
+  const { category, name, description } = req.query;
+  if (!category || !name) {
+    return res.status(400).json({ error: 'category and name are required' });
+  }
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  if (res.flushHeaders) res.flushHeaders();
+  const send = (event, data) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+
+  try {
+    const query = { name, description: description || '' };
+    const out = await runMatch(category, query, (ev) => send('progress', ev));
+    try {
+      out.recordId = savePriceCheck({ category, query, result: out });
+    } catch (e) {
+      console.warn('! failed to persist price check:', e.message);
+    }
+    send('done', out);
+  } catch (err) {
+    send('failed', { error: err.message });
+  } finally {
+    res.end();
+  }
+});
+
+// Map Kapruka's own category string (e.g. "ELECTRONICS", "MOBILE PHONES") onto
+// one of our price-checker category keys, so a pasted product link can pre-select
+// the right category. Returns null if nothing fits (the UI then keeps the
+// user's current selection).
+function matchCategory(kaprukaCat, keys) {
+  if (!kaprukaCat) return null;
+  const c = String(kaprukaCat).toLowerCase();
+  for (const k of keys) if (k.toLowerCase() === c) return k;
+  for (const k of keys) if (c.includes(k.toLowerCase()) || k.toLowerCase().includes(c)) return k;
+  if (/phone|mobile|smartphone/.test(c)) return keys.find((k) => /mobile/i.test(k)) || null;
+  if (/electronic|tv|audio|speaker|laptop|computer|camera/.test(c)) {
+    return keys.find((k) => /electronic/i.test(k)) || null;
+  }
+  if (/grocery|food|beverage/.test(c)) return keys.find((k) => /grocery/i.test(k)) || null;
+  if (/cosmetic|beauty|skin|fragrance|perfume/.test(c)) return keys.find((k) => /cosmetic/i.test(k)) || null;
+  if (/cake|bakery/.test(c)) return keys.find((k) => /cake/i.test(k)) || null;
+  return null;
+}
+
+// Resolve a pasted Kapruka product URL into a query source: scrape the product's
+// name, description and Kapruka price, and suggest a matching category. The
+// browser then runs the normal match with these values.
+app.post('/api/kapruka/resolve', async (req, res) => {
+  const { url } = req.body || {};
+  if (!url) return res.status(400).json({ error: 'A Kapruka product URL is required.' });
+  try {
+    const product = await fetchKaprukaProduct(url);
+    if (!product || !product.name) {
+      return res.status(400).json({
+        error: 'Could not read a product from that link. Paste a Kapruka product page (kapruka.com/buyonline/...).',
+      });
+    }
+    const categories = await loadCategories();
+    product.suggestedCategory = matchCategory(product.category, Object.keys(categories));
+    res.json(product);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
   }
 });
 
@@ -148,6 +229,50 @@ app.get('/api/history/comparison-runs/:id', (req, res) => {
     const run = getComparisonRun(Number(req.params.id));
     if (!run) return res.status(404).json({ error: 'run not found' });
     res.json(run);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---- CSV export (open in Excel / Google Sheets) ----
+function sendCsv(res, filename, csv) {
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  res.send(csv);
+}
+
+app.get('/api/export/price-checks.csv', (_req, res) => {
+  try {
+    sendCsv(res, 'price-checks.csv', exportPriceChecksCsv());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Unified product sheet across both tools — one row per unique product.
+// CSV for spreadsheets; JSON (same data) for feeding the product-approval API.
+app.get('/api/export/products.csv', (_req, res) => {
+  try {
+    sendCsv(res, 'products.csv', exportProductsCsv());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/export/products.json', (_req, res) => {
+  try {
+    const products = productRows();
+    res.json({ count: products.length, products });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/export/comparison.csv', (req, res) => {
+  try {
+    const partnerId = req.query.partner || null;
+    const name = partnerId ? `comparison-${partnerId}.csv` : 'comparison.csv';
+    sendCsv(res, name, exportComparisonCsv(partnerId));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

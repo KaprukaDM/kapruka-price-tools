@@ -51,18 +51,26 @@ export function tokenize(s) {
 }
 
 // Pure spec tokens (a number immediately followed by a unit) — wattage, volume,
-// weight, screen size etc. These look code-like but are NOT identity: two
-// unrelated products often share "1000w" or "20l". Excluded from model codes.
-const SPEC_TOKEN = /^\d+(?:\.\d+)?(w|kw|kg|g|l|ml|mah|wh|v|hz|cm|mm|k|in|inch)$/;
+// weight, screen size, storage/RAM, frequency, generation, UPS rating etc. These
+// look code-like but are NOT identity: two unrelated products often share
+// "1000w", "20l", "256gb" (a MacBook and an iPhone both have 256gb), "13th" gen,
+// or a "650va" UPS rating. Excluded from model codes.
+const SPEC_TOKEN =
+  /^\d+(?:\.\d+)?(w|kw|kwh|wh|mah|kg|g|mg|l|ml|v|va|hz|ghz|mhz|gb|tb|mb|kb|mp|cm|mm|k|p|th|in|inch)$/;
+
+// CPU/processor model tokens: a run of digits followed by a known mobile-CPU
+// suffix (Intel/AMD), e.g. 1335u, 150u, 13420h, 5800h, 1135g7. Different laptops
+// share the same CPU, so these are NOT product identity.
+const CPU_TOKEN = /^\d{3,5}(u|h|hx|hs|hk|p|k|y|e|t|g[1-9])$/;
 
 // Strong model codes: alphanumeric tokens with >=1 letter AND >=2 digits and
 // length >=4 (bhd340, mg3710, eg200, dcm25n, br1948r, vkg32ee685, ogs709), minus
-// spec tokens. Keeps real model numbers, drops wattage/size like 2100w / 350w /
-// 6l that would otherwise cause false matches between different products.
+// spec and CPU tokens. Keeps real model numbers, drops specs like 2100w / 256gb /
+// 13th / 1335u that would otherwise cause false matches between different products.
 export function extractModelCodes(s) {
   const out = new Set();
   for (const t of normalizeName(s).split(' ')) {
-    if (t.length < 4 || SPEC_TOKEN.test(t)) continue;
+    if (t.length < 4 || SPEC_TOKEN.test(t) || CPU_TOKEN.test(t)) continue;
     const letters = (t.match(/[a-z]/g) || []).length;
     const digits = (t.match(/[0-9]/g) || []).length;
     if (letters >= 1 && digits >= 2) out.add(t);

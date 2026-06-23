@@ -85,6 +85,89 @@ export function parseKaprukaSource(input) {
   return null;
 }
 
+// Read a single Kapruka product page (kapruka.com/buyonline/...) into a source
+// descriptor we can drive the price-checker with: the product name, description
+// and Kapruka's own price become the query + reference. Kapruka renders a clean
+// Product JSON-LD (name/description/brand/category/offers); we fall back to
+// og:/meta tags if that's ever missing.
+export async function fetchKaprukaProduct(url) {
+  if (!/kapruka\.com/i.test(String(url || ''))) {
+    throw new Error('Paste a Kapruka product link (kapruka.com/buyonline/...).');
+  }
+  const html = await fetchText(url);
+  const $ = cheerio.load(html);
+
+  let product = null;
+  $('script[type="application/ld+json"]').each((_, el) => {
+    if (product) return;
+    let json;
+    try {
+      json = JSON.parse($(el).contents().text());
+    } catch {
+      return;
+    }
+    const nodes = Array.isArray(json) ? json : json['@graph'] || [json];
+    for (const n of nodes) {
+      const ty = n && n['@type'];
+      if (ty === 'Product' || (Array.isArray(ty) && ty.includes('Product'))) {
+        product = n;
+        break;
+      }
+    }
+  });
+
+  const offers = product
+    ? Array.isArray(product.offers)
+      ? product.offers
+      : product.offers
+        ? [product.offers]
+        : []
+    : [];
+  const offer = offers.find((o) => o && (o.price ?? o.lowPrice) != null) || offers[0] || null;
+
+  const clean = (s) => fixMojibake(decodeEntities(String(s || ''))).replace(/\s+/g, ' ').trim();
+
+  const name =
+    clean(product?.name) ||
+    clean($('h1').first().text()) ||
+    clean($('meta[property="og:title"]').attr('content')).split('|')[0].trim();
+
+  const description =
+    clean(product?.description) || clean($('meta[property="og:description"]').attr('content'));
+
+  const rawPrice =
+    offer?.price ??
+    offer?.lowPrice ??
+    $('meta[property="product:price:amount"]').attr('content') ??
+    null;
+  const priceNum = rawPrice != null ? parseInt(String(rawPrice).replace(/[^0-9]/g, ''), 10) : NaN;
+  const price = Number.isFinite(priceNum) && priceNum > 0 ? priceNum : null;
+
+  const currency =
+    offer?.priceCurrency ||
+    $('meta[property="product:price:currency"]').attr('content') ||
+    'LKR';
+
+  const image =
+    (Array.isArray(product?.image) ? product.image[0] : product?.image) ||
+    $('meta[property="og:image"]').attr('content') ||
+    null;
+
+  const inStock = offer?.availability ? !/OutOfStock/i.test(offer.availability) : null;
+
+  return {
+    name,
+    description,
+    price,
+    currency,
+    image,
+    inStock,
+    category: clean(product?.category) || null,
+    brand: clean(typeof product?.brand === 'object' ? product?.brand?.name : product?.brand) || null,
+    url,
+  };
+}
+
 // The catalogue endpoint base for a source (callers append &p=N&onlyCatalogueSection=true).
 export function kaprukaBaseUrl(src) {
   if (src.type === 'partner') {
@@ -191,6 +274,10 @@ async function fetchWooCatalog(origin, log) {
         id: `woo-${p.id}`,
         name: decodeEntities(p.name || '').trim(),
         sku: p.sku || '',
+        // Brand + most-specific category come straight from the Store API response
+        // (no extra request). Both are optional taxonomies, so guard for absence.
+        brand: decodeEntities(p.brands?.[0]?.name || '').trim(),
+        category: decodeEntities(p.categories?.[0]?.name || '').trim(),
         price: minorUnitDivide(pr.price, pr.currency_minor_unit),
         regularPrice: minorUnitDivide(pr.regular_price, pr.currency_minor_unit),
         url: p.permalink,
@@ -225,6 +312,10 @@ async function fetchShopifyCatalog(origin, log) {
         id: `shopify-${p.id}`,
         name: decodeEntities(p.title || '').trim(),
         sku: pick.sku || '',
+        // product_type ~ category; vendor ~ brand (note: vendor is often the store
+        // name on Shopify, so treat it as a best-effort brand signal).
+        brand: (p.vendor || '').trim(),
+        category: (p.product_type || '').trim(),
         price: pick.price,
         regularPrice: regulars.length ? Math.max(...regulars) : null,
         url: `${origin}/products/${p.handle}`,

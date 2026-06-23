@@ -61,6 +61,34 @@ button.ghost { background:#fff; color:var(--purple); border:1px solid var(--line
 button.ghost:hover { background: var(--tint); }
 .hint { font-size:12px; color: var(--bad); margin-left:10px; }
 
+/* Anchor styled as a ghost button (CSV download link) */
+.btn-link { display:inline-block; padding:9px 16px; border-radius:9px; font-size:13px;
+            font-weight:700; background:#fff; color:var(--purple); border:1px solid var(--line);
+            cursor:pointer; text-decoration:none; }
+.btn-link:hover { background: var(--tint); text-decoration:none; }
+
+/* Source-mode toggle (Describe product / From Kapruka URL) */
+.modes { display:flex; gap:8px; margin-bottom:18px; flex-wrap:wrap; }
+.mode-btn { margin-top:0; padding:9px 16px; background:#fff; color:var(--purple);
+            border:1px solid var(--line); border-radius:9px; font-size:13px; font-weight:600; }
+.mode-btn:hover { background: var(--tint); }
+.mode-btn.active { background: var(--purple); color:#fff; border-color: var(--purple); }
+.mode-btn.active:hover { background: var(--purple-dk); }
+
+/* Kapruka source (reference price) card shown above results */
+.source-card { display:flex; gap:14px; align-items:center; background: var(--tint);
+               border:1px solid var(--line); border-radius:12px; padding:14px 16px; margin:18px 0 6px; }
+.source-card img { width:54px; height:54px; object-fit:contain; border-radius:8px; background:#fff;
+                   border:1px solid var(--line); flex:none; }
+.source-card .s-meta { flex:1; min-width:0; }
+.source-card .s-label { font-size:11px; text-transform:uppercase; letter-spacing:.05em;
+                        color: var(--purple); font-weight:700; }
+.source-card .s-name { font-weight:600; color: var(--txt); }
+.source-card .s-price { font-weight:800; color: var(--purple-dk); font-size:18px; white-space:nowrap; }
+.delta-lo { color: var(--ok); font-weight:700; }
+.delta-hi { color: var(--bad); font-weight:700; }
+.delta-eq { color: var(--mut); font-weight:600; }
+
 h3 { color: var(--purple-dk); font-size:15px; margin: 28px 0 8px;
      display:flex; align-items:center; gap:8px; }
 h3::before { content:""; width:4px; height:16px; background:var(--purple); border-radius:2px; }
@@ -91,4 +119,10 @@ a:hover { text-decoration: underline; }
         border-top-color: var(--purple); border-radius:50%; animation: r .7s linear infinite;
         vertical-align:-2px; margin-right:8px; }
 @keyframes r { to { transform: rotate(360deg); } }
+.pbar { height:10px; background:var(--line); border-radius:999px; overflow:hidden; margin:10px 0 6px; }
+.pbar > span { display:block; height:100%; width:0; background:var(--purple); transition:width .3s ease; }
+.plist { margin-top:10px; }
+.plist .row { display:flex; gap:10px; align-items:baseline; padding:5px 0; border-top:1px solid var(--line); font-size:13px; }
+.plist .row:first-child { border-top:none; }
+.plist .row .nm { font-weight:600; min-width:130px; }
 @media (max-width:640px){ .grid{ grid-template-columns:1fr; } }

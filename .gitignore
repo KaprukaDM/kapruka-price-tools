@@ -4,3 +4,7 @@ node_modules/
 .DS_Store
 out/
 data/
+
+# Unrelated local files (not part of this project)
+Robotics_Study_Guide.html
+Robotics_full_extracted_text.txt

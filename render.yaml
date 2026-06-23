@@ -19,12 +19,18 @@ services:
       # browser download so builds stay fast.
       - key: PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD
         value: "1"
-      # Optional: the Price Checker uses these. The Partner Comparison does not.
-      # Set them in the Render dashboard (don't commit secrets).
-      # - key: OPENAI_API_KEY
-      #   sync: false
-      # - key: SERP_API_KEY
-      #   sync: false
+      # ...and at runtime, skip the headless-browser fallback entirely (no browser
+      # is installed on the free tier). Static extraction still runs.
+      - key: DISABLE_BROWSER
+        value: "1"
+      # The Price Checker uses these; the Partner Comparison does not. `sync: false`
+      # means Render prompts for the value on deploy and never stores it in git.
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: SERP_API_KEY
+        sync: false
+      - key: MATCH_MODEL
+        value: gpt-4o-mini
 
     # ---- DATABASE PERSISTENCE (IMPORTANT) ----
     # On the FREE plan the filesystem is ephemeral: the SQLite database is wiped

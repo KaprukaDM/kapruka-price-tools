@@ -139,6 +139,8 @@ async function load(force) {
     $('subtitle').innerHTML =
       `Our listing <a href="${escapeHtml(kLink)}" target="_blank" rel="noopener">${escapeHtml(kLink.replace(/^https?:\/\//, ''))}</a> ` +
       `reconciled against <a href="${escapeHtml(data.partner.partnerSite)}" target="_blank" rel="noopener">${escapeHtml(PARTNER_LABEL)}</a>.`;
+    // Scope the CSV export to the partner currently in view.
+    $('exportCsv').href = '/api/export/comparison.csv?partner=' + encodeURIComponent(partnerId);
     statCards(data.summary, data.catalogCounts, data.partner.name);
     buildTabs(data.summary, data.partner.name);
     render();

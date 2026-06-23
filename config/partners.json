@@ -32,5 +32,26 @@
     "partnerSite": "https://thinex.lk/",
     "partnerLabel": "thinex.lk",
     "platform": "woocommerce"
+  },
+  "joey-clothing": {
+    "name": "Joey Clothing",
+    "kaprukaUrl": "https://www.kapruka.com/partner/joey-clothing",
+    "partnerSite": "https://joeyclothing.com/",
+    "partnerLabel": "joeyclothing.com",
+    "platform": "shopify"
+  },
+  "shirohana": {
+    "name": "Shirohana",
+    "kaprukaUrl": "https://www.kapruka.com/partner/shirohana",
+    "partnerSite": "https://shirohanaflowers.com/",
+    "partnerLabel": "shirohanaflowers.com",
+    "platform": "shopify"
+  },
+  "gmc": {
+    "name": "GMC",
+    "kaprukaUrl": "https://www.kapruka.com/online/cakes/price/gerard_mendis_chocolatier",
+    "partnerSite": "https://gerardmendis.com/",
+    "partnerLabel": "gerardmendis.com",
+    "platform": "shopify"
   }
 }

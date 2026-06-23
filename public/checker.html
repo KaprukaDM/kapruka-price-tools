@@ -24,21 +24,36 @@
     <p class="sub">Pick a category, describe the product, and we'll match live prices across curated stores and the top Sri Lankan shops — each with a confidence rate.</p>
 
     <div class="card">
+      <div class="modes">
+        <button type="button" class="mode-btn active" data-mode="manual">Describe product</button>
+        <button type="button" class="mode-btn" data-mode="kapruka">From Kapruka product URL</button>
+      </div>
+
+      <!-- Mode: paste a Kapruka product link; we read its name, description and price as the source. -->
+      <div id="kaprukaFields" class="grid" hidden>
+        <div class="full">
+          <label for="kurl">Kapruka product URL</label>
+          <input id="kurl" placeholder="e.g. https://www.kapruka.com/buyonline/…/kid/…" />
+          <div class="ctx">We'll pull the product name, description and Kapruka's price, then match across other stores.</div>
+        </div>
+      </div>
+
       <div class="grid">
         <div>
           <label for="category">Category</label>
           <select id="category"></select>
         </div>
-        <div>
+        <div id="nameField">
           <label for="name">Product name</label>
           <input id="name" placeholder="e.g. iPhone 15 256GB" />
         </div>
-        <div class="full">
+        <div class="full" id="descField">
           <label for="description">Description (optional, improves accuracy)</label>
           <textarea id="description" placeholder="e.g. Apple iPhone 15, Black, with Apple Care"></textarea>
         </div>
       </div>
       <button id="go">Match prices</button>
+      <a class="btn-link" href="/api/export/price-checks.csv" style="margin-left:10px">⬇ Export all checks (CSV)</a>
       <span id="hint" class="hint"></span>
     </div>
 

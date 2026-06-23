@@ -180,7 +180,13 @@ function deriveStatus(c) {
  * @param {{name: string, description: string}} query
  * @returns {Promise<{category, query, results: object[]}>}
  */
-export async function runMatch(category, query) {
+/**
+ * @param {string} category
+ * @param {{name,description}} query
+ * @param {(ev: object) => void} [onProgress] called as each site resolves, so a
+ *   caller (e.g. an SSE endpoint) can stream live progress to the browser.
+ */
+export async function runMatch(category, query, onProgress = () => {}) {
   const categories = await loadCategories();
   const sites = categories[category];
   if (!sites) {
@@ -193,9 +199,20 @@ export async function runMatch(category, query) {
     : query;
   const requestedStorage = parseStorage(`${matchQuery.name} ${matchQuery.description || ''}`);
 
+  onProgress({ type: 'start', curatedTotal: sites.length });
+  let curatedDone = 0;
+  let discoveredDone = 0;
+
   // 1) Curated category sites (custom scrapers where available).
   const curatedPromise = Promise.all(
-    sites.map((site) => processSite(matchQuery, site).then((r) => ({ ...r, source: 'curated' }))),
+    sites.map((site) =>
+      processSite(matchQuery, site)
+        .then((r) => ({ ...r, source: 'curated' }))
+        .then((r) => {
+          onProgress({ type: 'site', phase: 'curated', label: site.name, done: ++curatedDone, total: sites.length, result: r });
+          return r;
+        }),
+    ),
   );
 
   // 2) Discovery: top Sri Lankan shops from a general web search (excluding the
@@ -203,9 +220,17 @@ export async function runMatch(category, query) {
   const discoveredPromise = getShoppingCandidates(
     matchQuery.name,
     sites.map((s) => s.domain),
-  ).then(({ sites: shops }) =>
-    Promise.all(shops.map((s) => processDiscovered(matchQuery, requestedStorage, s))),
-  );
+  ).then(({ sites: shops }) => {
+    onProgress({ type: 'discoveredTotal', count: shops.length });
+    return Promise.all(
+      shops.map((s) =>
+        processDiscovered(matchQuery, requestedStorage, s).then((r) => {
+          onProgress({ type: 'site', phase: 'discovered', label: r.site || r.domain, done: ++discoveredDone, total: shops.length, result: r });
+          return r;
+        }),
+      ),
+    );
+  });
 
   const [results, discovered] = await Promise.all([curatedPromise, discoveredPromise]);
 
