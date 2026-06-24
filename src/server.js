@@ -24,6 +24,8 @@ import {
   exportPriceChecksCsv,
   exportComparisonCsv,
   exportProductsCsv,
+  exportOverpricedCsv,
+  overpricedReport,
   productRows,
 } from './export.js';
 
@@ -279,10 +281,102 @@ app.get('/api/export/comparison.csv', async (req, res) => {
   }
 });
 
+// ---- Overpriced dashboard (every overpriced product across all partners) ----
+// Reads the latest stored comparison run per partner; refreshed daily by the
+// scheduler below (or on demand via POST /api/overpriced/refresh).
+app.get('/api/overpriced', async (_req, res) => {
+  try {
+    res.json({ ...(await overpricedReport()), refreshing: REFRESH_STATE.running });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/overpriced/refresh', async (_req, res) => {
+  try {
+    await refreshAllPartners('manual');
+    res.json({ ...(await overpricedReport()), refreshing: false });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/export/overpriced.csv', async (_req, res) => {
+  try {
+    sendCsv(res, 'overpriced.csv', await exportOverpricedCsv());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---- Daily auto-refresh of every partner comparison -----------------------
+// The Overpriced dashboard reads stored runs, so something must keep them
+// fresh. Once a day (and on startup if the newest run is stale) we re-run every
+// partner's reconciliation and persist it. Set DISABLE_AUTO_REFRESH=1 to turn
+// this off (e.g. in dev, or when a separate scheduled job owns the refresh).
+//
+// NOTE: this fetches Kapruka live, so it only yields correct LKR prices when the
+// host is in Sri Lanka (or behind a SL proxy). From abroad Kapruka returns USD,
+// which the catalogue parser drops — those products show as "price missing", not
+// overpriced. See SCRAPE_PROXY in compare/sources.js.
+const DAILY_MS = 24 * 60 * 60 * 1000;
+const REFRESH_STATE = { running: false, lastRunAt: null };
+
+async function refreshAllPartners(reason) {
+  if (REFRESH_STATE.running) {
+    console.log('↻ refresh already in progress, skipping');
+    return;
+  }
+  REFRESH_STATE.running = true;
+  const startedAt = Date.now();
+  try {
+    const partners = await listPartners();
+    console.log(`↻ Refreshing ${partners.length} partner comparisons (${reason})…`);
+    for (const p of partners) {
+      try {
+        const data = await runComparison({ partnerId: p.id, force: true });
+        if (!data.cached) await saveComparisonRun(data);
+        console.log(`  ✓ ${p.name}: ${data.summary.kaprukaHigher} overpriced of ${data.summary.matched} matched`);
+      } catch (err) {
+        console.warn(`  ! ${p.name}: ${err.message}`);
+      }
+    }
+    REFRESH_STATE.lastRunAt = new Date().toISOString();
+    console.log(`↻ Refresh done in ${Math.round((Date.now() - startedAt) / 1000)}s`);
+  } finally {
+    REFRESH_STATE.running = false;
+  }
+}
+
+// Kick a refresh on startup only if the newest stored run is older than a day,
+// so frequent dev restarts don't hammer the live sites. Runs in the background
+// (non-blocking) so the server starts serving immediately.
+async function refreshIfStale() {
+  try {
+    const [newest] = await recentComparisonRuns(1);
+    const ageMs = newest ? Date.now() - new Date(newest.created_at).getTime() : Infinity;
+    if (ageMs >= DAILY_MS) {
+      refreshAllPartners(newest ? 'startup: data is stale' : 'startup: no data yet');
+    } else {
+      const hrs = Math.round(ageMs / 3600000);
+      console.log(`↻ Skipping startup refresh — newest run is ${hrs}h old (< 24h).`);
+    }
+  } catch (err) {
+    console.warn('! startup refresh check failed:', err.message);
+  }
+}
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Price tools running at http://localhost:${PORT}`);
   console.log(`Storage backend: ${storageKind}${storageKind === 'sqlite' ? ' (local file; set DATABASE_URL for Supabase)' : ' (Supabase/Postgres)'}`);
   if (!process.env.OPENAI_API_KEY) console.warn('! OPENAI_API_KEY is not set');
   if (!process.env.SERP_API_KEY) console.warn('! SERP_API_KEY is not set');
+
+  if (process.env.DISABLE_AUTO_REFRESH === '1') {
+    console.log('↻ Daily auto-refresh disabled (DISABLE_AUTO_REFRESH=1).');
+  } else {
+    refreshIfStale();
+    setInterval(() => refreshAllPartners('daily schedule'), DAILY_MS);
+  }
 });

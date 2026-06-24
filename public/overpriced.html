@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#402970" />
+  <link rel="icon" href="https://www.kapruka.com/static/icons/favicon.ico" />
+  <title>Kapruka · Overpriced Dashboard</title>
+  <link rel="stylesheet" href="theme.css" />
+  <style>
+    .cards { display:flex; flex-wrap:wrap; gap:12px; margin: 6px 0 22px; }
+    .stat { background:#fff; border:1px solid var(--line); border-radius:12px; padding:14px 18px;
+            min-width:150px; box-shadow:0 1px 3px rgba(64,41,112,.06); }
+    .stat .n { font-size:26px; font-weight:800; color:var(--purple-dk); line-height:1.1; }
+    .stat .l { font-size:11px; color:var(--mut); text-transform:uppercase; letter-spacing:.04em; margin-top:3px; }
+    .stat.bad .n { color:var(--bad); }
+    .toolbar { display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin-bottom:14px; }
+    .toolbar input[type=search]{ max-width:260px; }
+    .toolbar select { max-width:220px; }
+    .toolbar .right { margin-left:auto; display:flex; gap:10px; align-items:center; }
+    button { margin-top:0; }
+    tr.over td { background:#fdeceb; } tr.over td:first-child { box-shadow: inset 3px 0 var(--bad); }
+    .meta { font-size:12px; color:var(--mut); margin: 10px 0 0; }
+    .store-pill { display:inline-block; background:var(--tint); border:1px solid var(--line);
+                  color:var(--purple-dk); border-radius:999px; padding:2px 10px; font-size:12px; font-weight:600; }
+    .over-amt { color:var(--bad); font-weight:700; }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="bar">
+      <img class="logo-mark" src="https://www.kapruka.com/static/icons/apple-touch-icon-180x180.png?v2"
+           alt="Kapruka" onerror="this.style.display='none'" />
+      <span class="logo">kapruka<span class="dot">.</span></span>
+      <span class="pill">Overpriced Dashboard</span>
+      <span class="tag"><a href="index.html">← Menu</a></span>
+    </div>
+  </header>
+
+  <div class="wrap">
+    <h1>Overpriced products — all stores</h1>
+    <p class="sub">Every product where <strong>our Kapruka price is higher than the partner's own website</strong>,
+       across all partner stores, in one list. Refreshed automatically once a day.</p>
+
+    <div id="status" class="card"><span class="spin"></span>Loading the latest overpriced products…</div>
+
+    <div id="app" style="display:none">
+      <div class="cards" id="cards"></div>
+
+      <div class="toolbar">
+        <select id="store"><option value="">All stores</option></select>
+        <div class="right">
+          <input type="search" id="search" placeholder="Filter by product name…" />
+          <a class="ghost btn-link" id="exportCsv" href="/api/export/overpriced.csv">⬇ Export CSV</a>
+          <button class="ghost" id="refresh">↻ Refresh now</button>
+        </div>
+      </div>
+
+      <div id="table"></div>
+      <p class="meta" id="footmeta"></p>
+    </div>
+  </div>
+
+  <script src="overpriced.js"></script>
+</body>
+</html>

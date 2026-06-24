@@ -199,6 +199,105 @@ export async function exportProductsCsv() {
   return buildCsv(PRODUCT_COLUMNS, await productRows());
 }
 
+// ---- Overpriced dashboard: every overpriced product across ALL partners -----
+// One consolidated view answering "where are we overcharging vs the partner's
+// own site?" — pulls the LATEST stored comparison run for each partner, keeps
+// only the `kapruka_higher` matches, and merges them into a single list sorted
+// by the biggest rupee overcharge first. Used by /api/overpriced and the
+// Overpriced dashboard page.
+
+// Latest stored comparison run per partner (newest by row id wins).
+async function latestRunPerPartner() {
+  const latest = new Map(); // partnerId -> { created_at, payload }
+  for (const row of await allComparisonRows()) {
+    let payload;
+    try {
+      payload = JSON.parse(row.payload_json);
+    } catch {
+      continue;
+    }
+    const pid = payload.partner?.id || `row-${row.id}`;
+    // Rows arrive ordered by id ascending, so a later row overwrites an earlier
+    // one for the same partner — leaving the most recent run.
+    latest.set(pid, { created_at: row.created_at, payload });
+  }
+  return latest;
+}
+
+export async function overpricedReport() {
+  const items = [];
+  const partners = [];
+  let lastUpdated = null;
+
+  for (const { created_at, payload } of (await latestRunPerPartner()).values()) {
+    const p = payload.partner || {};
+    const at = payload.generatedAt || created_at;
+    if (!lastUpdated || at > lastUpdated) lastUpdated = at;
+
+    const over = (payload.matched || []).filter((m) => m.verdict === 'kapruka_higher');
+    partners.push({
+      id: p.id ?? '',
+      name: p.name ?? '',
+      partnerLabel: p.partnerLabel || p.partnerSite || '',
+      overpriced: over.length,
+      matched: (payload.matched || []).length,
+      generatedAt: at,
+    });
+
+    for (const m of over) {
+      items.push({
+        partnerId: p.id ?? '',
+        partner: p.name ?? '',
+        partnerLabel: p.partnerLabel || p.partnerSite || '',
+        name: m.name ?? '',
+        kaprukaPrice: m.kaprukaPrice ?? null,
+        partnerPrice: m.partnerPrice ?? null,
+        diff: m.diff ?? null,
+        pct: m.pct ?? null,
+        confidence: m.confidence ?? '',
+        nameSimilarity: m.nameSimilarity ?? null,
+        kaprukaUrl: m.kaprukaUrl ?? '',
+        partnerUrl: m.partnerUrl ?? '',
+        generatedAt: at,
+      });
+    }
+  }
+
+  // Biggest rupee overcharge first.
+  items.sort((a, b) => (b.diff ?? 0) - (a.diff ?? 0));
+  partners.sort((a, b) => b.overpriced - a.overpriced);
+
+  return {
+    lastUpdated,
+    count: items.length,
+    totalOvercharge: items.reduce((sum, i) => sum + (i.diff ?? 0), 0),
+    partners,
+    items,
+  };
+}
+
+const OVERPRICED_COLUMNS = [
+  { key: 'partner', label: 'Store' },
+  { key: 'name', label: 'Product' },
+  { key: 'kaprukaPrice', label: 'Kapruka price' },
+  { key: 'partnerPrice', label: 'Partner price' },
+  { key: 'diff', label: 'Overcharge (Rs.)' },
+  { key: 'pct_out', label: 'Overcharge %' },
+  { key: 'confidence', label: 'Match confidence' },
+  { key: 'kaprukaUrl', label: 'Kapruka URL' },
+  { key: 'partnerUrl', label: 'Partner URL' },
+  { key: 'generatedAt', label: 'Updated at' },
+];
+
+export async function exportOverpricedCsv() {
+  const { items } = await overpricedReport();
+  const rows = items.map((i) => ({
+    ...i,
+    pct_out: i.pct != null ? Math.round(i.pct * 10) / 10 : '',
+  }));
+  return buildCsv(OVERPRICED_COLUMNS, rows);
+}
+
 // ---- Price Comparison: one row per matched Kapruka<->partner product pair ----
 
 const COMPARISON_COLUMNS = [
