@@ -10,6 +10,7 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
+    "hot": "node src/hot-server.js",
     "compare": "node src/compare/index.js"
   },
   "dependencies": {

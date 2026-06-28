@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Kapruka Digital Marketing Portal</title>
+  <link rel="stylesheet" href="css/styles.css">
+  <link rel="icon" type="image/png" href="https://play-lh.googleusercontent.com/XPaIW4RsTkd8au1rBlcwAtdyynz9pZyPVn3QPK4gXbboroWxFI3hpVhn18IrIBrUtztj=w240-h480-rw">
+  <style>
+    .experiments-btn {
+      position: fixed; bottom: 30px; right: 30px;
+      background: linear-gradient(135deg, rgba(255,215,0,0.9), rgba(255,165,0,0.9));
+      color: #1a0b2e; padding: 16px 28px; border-radius: 50px;
+      text-decoration: none; font-weight: 700; font-size: 15px;
+      box-shadow: 0 8px 25px rgba(255,215,0,0.4); transition: all 0.3s;
+      border: 3px solid rgba(255,255,255,0.3); z-index: 1000;
+      display: flex; align-items: center; gap: 10px; backdrop-filter: blur(10px);
+    }
+    .experiments-btn:hover { transform: translateY(-5px) scale(1.05); box-shadow: 0 12px 35px rgba(255,215,0,0.6); background: linear-gradient(135deg, #FFD700, #FFA500); }
+    .experiments-btn .icon { font-size: 20px; animation: pulse 2s infinite; }
+    @keyframes pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.1); } }
+    .experiments-btn .label { font-size: 14px; text-transform: uppercase; letter-spacing: 0.5px; }
+
+    .messenger-btn {
+      position: fixed; bottom: 100px; right: 30px;
+      background: linear-gradient(135deg, rgba(0,132,255,0.9), rgba(102,126,234,0.9));
+      color: white; padding: 16px 28px; border-radius: 50px;
+      text-decoration: none; font-weight: 700; font-size: 15px;
+      box-shadow: 0 8px 25px rgba(0,132,255,0.4); transition: all 0.3s;
+      border: 3px solid rgba(255,255,255,0.3); z-index: 1000;
+      display: flex; align-items: center; gap: 10px; backdrop-filter: blur(10px);
+    }
+    .messenger-btn:hover { transform: translateY(-5px) scale(1.05); box-shadow: 0 12px 35px rgba(0,132,255,0.6); }
+    .messenger-btn .icon { font-size: 20px; animation: bounce 2s infinite; }
+    @keyframes bounce { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-5px); } }
+    .messenger-btn .label { font-size: 14px; text-transform: uppercase; letter-spacing: 0.5px; }
+    .messenger-btn .badge { background: #ff3e3e; color: white; padding: 4px 8px; border-radius: 12px; font-size: 11px; font-weight: 700; margin-left: 5px; animation: pulse 2s infinite; }
+
+    .ads-manager-btn {
+      position: fixed; bottom: 170px; right: 30px;
+      background: linear-gradient(135deg, rgba(220,38,127,0.9), rgba(156,39,176,0.9));
+      color: white; padding: 16px 28px; border-radius: 50px;
+      text-decoration: none; font-weight: 700; font-size: 15px;
+      box-shadow: 0 8px 25px rgba(220,38,127,0.4); transition: all 0.3s;
+      border: 3px solid rgba(255,255,255,0.3); z-index: 1000;
+      display: flex; align-items: center; gap: 10px; backdrop-filter: blur(10px); cursor: pointer;
+    }
+    .ads-manager-btn:hover { transform: translateY(-5px) scale(1.05); box-shadow: 0 12px 35px rgba(220,38,127,0.6); }
+    .ads-manager-btn .icon { font-size: 20px; animation: rotate 3s linear infinite; }
+    @keyframes rotate { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    .ads-manager-btn .label { font-size: 14px; text-transform: uppercase; letter-spacing: 0.5px; }
+
+    /* ── Goals Manager Button ── */
+    .goals-manager-btn {
+      position: fixed; bottom: 240px; right: 30px;
+      background: linear-gradient(135deg, rgba(90,10,138,0.92), rgba(255,193,7,0.85));
+      color: white; padding: 16px 28px; border-radius: 50px;
+      font-weight: 700; font-size: 15px;
+      box-shadow: 0 8px 25px rgba(90,10,138,0.5); transition: all 0.3s;
+      border: 3px solid rgba(255,255,255,0.3); z-index: 1000;
+      display: flex; align-items: center; gap: 10px; backdrop-filter: blur(10px); cursor: pointer;
+    }
+    .goals-manager-btn:hover { transform: translateY(-5px) scale(1.05); box-shadow: 0 12px 35px rgba(90,10,138,0.7); }
+    .goals-manager-btn .icon { font-size: 20px; animation: goalPulse 2s ease-in-out infinite; }
+    @keyframes goalPulse { 0%, 100% { transform: scale(1) rotate(0deg); } 50% { transform: scale(1.15) rotate(5deg); } }
+    .goals-manager-btn .label { font-size: 14px; text-transform: uppercase; letter-spacing: 0.5px; }
+
+    /* ── Avurudhu / Season Checklist Button ── */
+    .avurudhu-btn {
+      position: fixed; bottom: 310px; right: 30px;
+      background: linear-gradient(135deg, rgba(255,105,135,0.9), rgba(255,165,0,0.9));
+      color: white; padding: 16px 28px; border-radius: 50px;
+      font-weight: 700; font-size: 15px;
+      box-shadow: 0 8px 25px rgba(255,105,135,0.4); transition: all 0.3s;
+      border: 3px solid rgba(255,255,255,0.3); z-index: 1000;
+      display: flex; align-items: center; gap: 10px; backdrop-filter: blur(10px); cursor: pointer;
+    }
+    .avurudhu-btn:hover { transform: translateY(-5px) scale(1.05); box-shadow: 0 12px 35px rgba(255,105,135,0.6); }
+    .avurudhu-btn .icon { font-size: 20px; animation: pulse 2s infinite; }
+    .avurudhu-btn .label { font-size: 14px; text-transform: uppercase; letter-spacing: 0.5px; }
+
+    .cod-confirmation-btn {
+      position: fixed; bottom: 380px; right: 30px;
+      background: linear-gradient(135deg, rgba(16,185,129,0.9), rgba(5,150,105,0.9));
+      color: white; padding: 16px 28px; border-radius: 50px;
+      text-decoration: none; font-weight: 700; font-size: 15px;
+      box-shadow: 0 8px 25px rgba(16,185,129,0.4); transition: all 0.3s;
+      border: 3px solid rgba(255,255,255,0.3); z-index: 1000;
+      display: flex; align-items: center; gap: 10px; backdrop-filter: blur(10px); cursor: pointer;
+    }
+    .cod-confirmation-btn:hover { transform: translateY(-5px) scale(1.05); box-shadow: 0 12px 35px rgba(16,185,129,0.6); }
+    .cod-confirmation-btn .icon { font-size: 20px; animation: wiggle 2.5s ease-in-out infinite; }
+    @keyframes wiggle { 0%, 100% { transform: rotate(0deg); } 25% { transform: rotate(-10deg); } 75% { transform: rotate(10deg); } }
+    .cod-confirmation-btn .label { font-size: 14px; text-transform: uppercase; letter-spacing: 0.5px; }
+
+    /* ── Password Modal (shared) ── */
+    .password-modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); backdrop-filter: blur(10px); z-index: 10000; justify-content: center; align-items: center; }
+    .password-modal.active { display: flex; }
+    .password-box { background: linear-gradient(135deg, #1a0b2e 0%, #2d1b4e 100%); padding: 40px; border-radius: 20px; box-shadow: 0 20px 60px rgba(220,38,127,0.4); border: 2px solid rgba(220,38,127,0.3); text-align: center; max-width: 400px; width: 90%; }
+    .password-box h2 { color: #dc267f; margin-bottom: 10px; font-size: 24px; }
+    .password-box p { color: #ccc; margin-bottom: 25px; font-size: 14px; }
+    .password-input { width: 100%; padding: 15px; border: 2px solid rgba(220,38,127,0.3); border-radius: 10px; background: rgba(255,255,255,0.05); color: white; font-size: 16px; margin-bottom: 20px; outline: none; transition: all 0.3s; }
+    .password-input:focus { border-color: #dc267f; box-shadow: 0 0 20px rgba(220,38,127,0.3); }
+    .password-buttons { display: flex; gap: 10px; }
+    .password-submit, .password-cancel { flex: 1; padding: 12px 24px; border: none; border-radius: 10px; font-weight: 700; font-size: 14px; cursor: pointer; transition: all 0.3s; }
+    .password-submit { background: linear-gradient(135deg, #dc267f, #9c27b0); color: white; }
+    .password-submit:hover { transform: translateY(-2px); box-shadow: 0 5px 20px rgba(220,38,127,0.5); }
+    .password-cancel { background: rgba(255,255,255,0.1); color: white; }
+    .password-cancel:hover { background: rgba(255,255,255,0.2); }
+    .password-error { color: #ff3e3e; font-size: 13px; margin-top: 10px; display: none; }
+    .password-error.active { display: block; animation: shake 0.5s; }
+    @keyframes shake { 0%, 100% { transform: translateX(0); } 25% { transform: translateX(-10px); } 75% { transform: translateX(10px); } }
+
+    /* ── Daraz card lock badge ── */
+    .lock-badge {
+      display: inline-flex; align-items: center; gap: 5px;
+      background: rgba(248,86,6,0.12); color: #f85606;
+      border: 1px solid rgba(248,86,6,0.3);
+      padding: 3px 10px; border-radius: 20px;
+      font-size: 11px; font-weight: 600;
+      margin-bottom: 12px;
+    }
+
+    @media (max-width: 768px) {
+      .experiments-btn, .messenger-btn, .ads-manager-btn, .goals-manager-btn, .avurudhu-btn, .cod-confirmation-btn { bottom: 20px; right: 20px; padding: 12px 20px; font-size: 13px; }
+      .messenger-btn { bottom: 80px; }
+      .ads-manager-btn { bottom: 140px; }
+      .goals-manager-btn { bottom: 200px; }
+      .avurudhu-btn { bottom: 260px; }
+      .cod-confirmation-btn { bottom: 320px; }
+      .experiments-btn .icon, .messenger-btn .icon, .ads-manager-btn .icon, .goals-manager-btn .icon, .avurudhu-btn .icon, .cod-confirmation-btn .icon { font-size: 18px; }
+      .password-box { padding: 30px 20px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <div class="kapruka-logo">
+        <img src="https://play-lh.googleusercontent.com/XPaIW4RsTkd8au1rBlcwAtdyynz9pZyPVn3QPK4gXbboroWxFI3hpVhn18IrIBrUtztj=w240-h480-rw" alt="Kapruka Logo">
+      </div>
+      <h1>Digital Marketing Portal</h1>
+      <p class="subtitle">Kapruka Holdings PLC</p>
+    </div>
+
+    <div class="options-grid">
+
+      <a href="campaign-booking.html" class="option-card">
+        <div class="option-title">📋 Book Campaign Slot</div>
+        <div class="option-desc">This is exclusively for departmental heads. (Special Request)</div>
+        <div class="option-features">
+          <div class="feature-item"><div class="feature-icon">✓</div><span>View available slots by department</span></div>
+          <div class="feature-item"><div class="feature-icon">✓</div><span>Real-time booking confirmation</span></div>
+          <div class="feature-item"><div class="feature-icon">✓</div><span>Track campaign status</span></div>
+        </div>
+      </a>
+
+      <a href="product-suggestion.html" class="option-card">
+        <div class="option-title">💡 Social Media Direct Order (Factory Pages)</div>
+        <div class="option-desc">Submit product suggestions for Facebook lead form campaigns with weekly submission tracking.</div>
+        <div class="option-features">
+          <div class="feature-item"><div class="feature-icon">✓</div><span>Submit product recommendations</span></div>
+          <div class="feature-item"><div class="feature-icon">✓</div><span>Track approval status</span></div>
+          <div class="feature-item"><div class="feature-icon">✓</div><span>View weekly targets and progress</span></div>
+        </div>
+      </a>
+
+      <a href="content-calendar.html" class="option-card">
+        <div class="option-title">📅 Content Calendar (Kapruka Official Page)</div>
+        <div class="option-desc">Plan and schedule social media content across platforms with collaborative team management.</div>
+        <div class="option-features">
+          <div class="feature-item"><div class="feature-icon">✓</div><span>Schedule posts for multiple platforms</span></div>
+          <div class="feature-item"><div class="feature-icon">✓</div><span>Track post status and approvals</span></div>
+          <div class="feature-item"><div class="feature-icon">✓</div><span>Weekly and monthly content overview</span></div>
+        </div>
+      </a>
+
+      <a href="hot-products.html" class="option-card">
+        <div class="option-title">🔥 Hot Products</div>
+        <div class="option-desc">Browse and manage hot product suggestions by category with real-time listing status tracking.</div>
+        <div class="option-features">
+          <div class="feature-item"><div class="feature-icon">✓</div><span>Browse products by 20 categories</span></div>
+          <div class="feature-item"><div class="feature-icon">✓</div><span>Mark products as listed on Kapruka</span></div>
+          <div class="feature-item"><div class="feature-icon">✓</div><span>Track listing status and links</span></div>
+        </div>
+      </a>
+
+      <a href="http://localhost:4555/checker.html" target="_blank" rel="noopener" class="option-card">
+        <div class="option-title">🔎 Price Checker</div>
+        <div class="option-desc">Enter any product and match its live price across curated Sri Lankan stores and the top web shops, each with a confidence rate.</div>
+        <div class="option-features">
+          <div class="feature-item"><div class="feature-icon">✓</div><span>Compare prices across multiple SL sites</span></div>
+          <div class="feature-item"><div class="feature-icon">✓</div><span>Confidence rate on every match</span></div>
+          <div class="feature-item"><div class="feature-icon">✓</div><span>Find the cheapest place to buy</span></div>
+        </div>
+      </a>
+
+      <a href="product-performance.html" class="option-card">
+        <div class="option-title">📊 Product Performance</div>
+        <div class="option-desc">Search and analyze Meta Ads campaign performance by product, campaign, or keyword with detailed metrics.</div>
+        <div class="option-features">
+          <div class="feature-item"><div class="feature-icon">✓</div><span>Search by product code or keyword</span></div>
+          <div class="feature-item"><div class="feature-icon">✓</div><span>View aggregated performance metrics</span></div>
+          <div class="feature-item"><div class="feature-icon">✓</div><span>Track ROI and ad effectiveness</span></div>
+        </div>
+      </a>
+
+      <a href="performance-forecast.html" class="option-card">
+        <div class="option-title">🚀 Performance Forecast</div>
+        <div class="option-desc">Estimate campaign performance based on objective and budget with AI-powered predictive analytics.</div>
+        <div class="option-features">
+          <div class="feature-item"><div class="feature-icon">✓</div><span>Select campaign objective</span></div>
+          <div class="feature-item"><div class="feature-icon">✓</div><span>Define your advertising budget</span></div>
+          <div class="feature-item"><div class="feature-icon">✓</div><span>Get detailed performance estimates</span></div>
+        </div>
+      </a>
+
+      <a href="homepage-booking-portal.html" class="option-card">
+        <div class="option-title">🏠 Homepage Slot Manager</div>
+        <div class="option-desc">Manage PC vs Ecommerce product mix on the homepage. Book and track slots with a 60/40 ratio target.</div>
+        <div class="option-features">
+          <div class="feature-item"><div class="feature-icon">✓</div><span>Book PC slots across 3 homepage sections</span></div>
+          <div class="feature-item"><div class="feature-icon">✓</div><span>Live EC/PC ratio dashboard</span></div>
+          <div class="feature-item"><div class="feature-icon">✓</div><span>Auto-locks at 60/40 target ratio</span></div>
+        </div>
+      </a>
+
+      <a href="product-video-search/product-search.html" class="option-card">
+        <div class="option-title">🎬 Product Video Search</div>
+        <div class="option-desc">Upload a product image to instantly find matching videos across TikTok, Pinterest, Amazon, Alibaba and Temu.</div>
+        <div class="option-features">
+          <div class="feature-item"><div class="feature-icon">✓</div><span>AI-powered image recognition</span></div>
+          <div class="feature-item"><div class="feature-icon">✓</div><span>Search across 5 major platforms</span></div>
+          <div class="feature-item"><div class="feature-icon">✓</div><span>Ranked results by relevance</span></div>
+        </div>
+      </a>
+
+      <div class="option-card" onclick="openDarazModal()" style="cursor:pointer;">
+        <div class="lock-badge">🔒 Restricted Access</div>
+        <div class="option-title">🛒 Daraz Market Agent</div>
+        <div class="option-desc">AI-powered product & supplier intelligence for Daraz.lk. Scrapes trending products and top local suppliers daily.</div>
+        <div class="option-features">
+          <div class="feature-item"><div class="feature-icon">✓</div><span>Top trending products with AI analysis</span></div>
+          <div class="feature-item"><div class="feature-icon">✓</div><span>Find suppliers with contact numbers</span></div>
+          <div class="feature-item"><div class="feature-icon">✓</div><span>Local sellers · Rs. 3,000+ · 4★+ rating</span></div>
+        </div>
+      </div>
+
+    </div>
+
+    <div class="footer">
+      Created by Fari Akthar - 207 | Kapruka Holdings PLC
+    </div>
+  </div>
+
+  <!-- Floating Buttons -->
+  <a href="experiments-dashboard.html" class="experiments-btn">
+    <span class="icon">🧪</span>
+    <span class="label">Experiments</span>
+  </a>
+
+  <a href="messenger-hub.html" class="messenger-btn">
+    <span class="icon">💬</span>
+    <span class="label">Messenger Hub</span>
+    <span class="badge">NEW</span>
+  </a>
+
+  <div class="ads-manager-btn" onclick="openPasswordModal('ads')">
+    <span class="icon">🎯</span>
+    <span class="label">Ads Manager</span>
+  </div>
+
+  <!-- Goals Manager — between Ads Manager and Avurudhu -->
+  <div class="goals-manager-btn" onclick="openPasswordModal('goals')">
+    <span class="icon">🎯</span>
+    <span class="label">Goals Manager</span>
+  </div>
+
+  <!-- Avurudhu / Season Checklist -->
+  <div class="avurudhu-btn" onclick="openPasswordModal('avurudhu')">
+    <span class="icon">🌸</span>
+    <span class="label">Season Checklist</span>
+  </div>
+
+  <div class="cod-confirmation-btn" onclick="openPasswordModal('cod')">
+    <span class="icon">✅</span>
+    <span class="label">COD Confirmation</span>
+  </div>
+
+  <!-- Shared Password Modal -->
+  <div class="password-modal" id="passwordModal">
+    <div class="password-box">
+      <h2 id="modalTitle">🔒 Access Required</h2>
+      <p id="modalSubtitle">Enter password to continue</p>
+      <input type="password" class="password-input" id="passwordInput" placeholder="Enter password..." onkeypress="handleEnterKey(event)">
+      <div class="password-buttons">
+        <button class="password-cancel" onclick="closePasswordModal()">Cancel</button>
+        <button class="password-submit" onclick="checkPassword()">Access</button>
+      </div>
+      <div class="password-error" id="passwordError">❌ Incorrect password. Please try again.</div>
+    </div>
+  </div>
+
+  <script>
+    const PASSWORDS = {
+      ads:      'Fari',
+      cod:      'Chamudhi',
+      daraz:    '8055',
+      avurudhu: '207',
+      goals:    '207'
+    };
+
+    const URLS = {
+      ads:      'https://docs.google.com/forms/d/e/1FAIpQLSfGSObGAIJz46oQd0xN3oISjS46SEkFtL0_ZGkIfh6ansvqPQ/viewform',
+      cod:      'https://script.google.com/macros/s/AKfycbwA7rio-Gs2woBvLWKmq9KR_z1SLLV1O5d9apeShpfD4r8JdpaEI9g2pjBmyl1vK4DRDQ/exec',
+      daraz:    'https://daraz-agent.onrender.com',
+      avurudhu: 'https://kaprukadm.github.io/kapruka-campaign-portal/season_checklist.html',
+      goals:    'kapruka_v4.html'
+    };
+
+    let currentSection = '';
+
+    function openPasswordModal(section) {
+      currentSection = section;
+      const titles = {
+        ads:      '🎯 Ads Manager Access',
+        cod:      '✅ COD Confirmation Access',
+        daraz:    '🛒 Daraz Market Agent',
+        avurudhu: '🌸 Season Checklist',
+        goals:    '🎯 Goals Manager Access'
+      };
+      document.getElementById('modalTitle').textContent = titles[section] || '🔒 Access Required';
+      document.getElementById('modalSubtitle').textContent = 'Enter password to continue';
+      document.getElementById('passwordModal').classList.add('active');
+      document.getElementById('passwordInput').focus();
+      document.getElementById('passwordError').classList.remove('active');
+      document.getElementById('passwordInput').value = '';
+    }
+
+    function openDarazModal() { openPasswordModal('daraz'); }
+
+    function closePasswordModal() {
+      document.getElementById('passwordModal').classList.remove('active');
+      document.getElementById('passwordInput').value = '';
+      document.getElementById('passwordError').classList.remove('active');
+      currentSection = '';
+    }
+
+    function checkPassword() {
+      const input = document.getElementById('passwordInput').value;
+      if (input === PASSWORDS[currentSection]) {
+        window.open(URLS[currentSection], '_blank');
+        closePasswordModal();
+      } else {
+        document.getElementById('passwordError').classList.add('active');
+        document.getElementById('passwordInput').value = '';
+        document.getElementById('passwordInput').focus();
+      }
+    }
+
+    function handleEnterKey(event) {
+      if (event.key === 'Enter') checkPassword();
+    }
+
+    document.getElementById('passwordModal').addEventListener('click', function(event) {
+      if (event.target === this) closePasswordModal();
+    });
+  </script>
+</body>
+</html>

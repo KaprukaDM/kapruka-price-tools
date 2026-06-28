@@ -1,0 +1,30 @@
+# Render blueprint for the SEPARATE Hot Products price service (src/hot-server.js).
+# This is independent of render.yaml (the Price Checker / Comparison server) so
+# the two deploy as two distinct Render services and never affect each other.
+#
+# To deploy: create a new Blueprint on Render pointing at this file, or add a new
+# Web Service with start command `npm run hot`.
+services:
+  - type: web
+    name: kapruka-hot-products
+    runtime: node
+    plan: free
+    region: singapore           # closest Render region to Sri Lanka
+    buildCommand: npm install
+    startCommand: npm run hot
+    envVars:
+      - key: NODE_VERSION
+        value: 22.16.0
+      # No headless browser on the free tier — static extraction still runs.
+      - key: PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD
+        value: "1"
+      - key: DISABLE_BROWSER
+        value: "1"
+      # Match rate needs OpenAI. `sync: false` => Render prompts on deploy.
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: MATCH_MODEL
+        value: gpt-4o-mini
+      # USD→LKR rate for the "270 rule" (foreign USD pages → rupees).
+      - key: HOT_USD_LKR
+        value: "270"

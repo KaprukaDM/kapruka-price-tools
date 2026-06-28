@@ -1,0 +1,696 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Hot Products — Kapruka</title>
+  <link rel="icon" type="image/png" href="https://play-lh.googleusercontent.com/XPaIW4RsTkd8au1rBlcwAtdyynz9pZyPVn3QPK4gXbboroWxFI3hpVhn18IrIBrUtztj=w240-h480-rw">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;1,9..40,300&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    /* ── TOKENS ─────────────────────────────────────────────── */
+    :root {
+      --bg:            #f5f4f0;
+      --surface:       #fffffe;
+      --surface2:      #f0ede8;
+      --border:        rgba(0,0,0,0.07);
+      --border-strong: rgba(0,0,0,0.16);
+      --text:          #111;
+      --text-muted:    #888;
+      --text-faint:    #bbb;
+      --purple:        #5e3a8e;
+      --purple-light:  #f3eeff;
+      --purple-mid:    rgba(94,58,142,0.08);
+      --gold-bg:       #fef9ec;
+      --gold-border:   rgba(201,162,39,0.35);
+      --green:         #16a34a;
+      --green-bg:      #dcfce7;
+      --amber:         #b45309;
+      --amber-bg:      #fef3c7;
+      --red:           #dc2626;
+      --red-bg:        #fee2e2;
+    }
+
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      padding: 40px 20px;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    .container { max-width: 1080px; margin: 0 auto; }
+
+    /* ── PAGE HEADER ─────────────────────────────────────────── */
+    .page-header {
+      background: var(--surface);
+      padding: 20px 28px;
+      border-radius: 16px;
+      margin-bottom: 20px;
+      border: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16px;
+    }
+    .header-left { display: flex; align-items: center; gap: 16px; }
+    .header-logo {
+      width: 40px; height: 40px;
+      border-radius: 10px; overflow: hidden;
+      border: 1px solid var(--border); flex-shrink: 0;
+    }
+    .header-logo img { width: 100%; height: 100%; object-fit: cover; }
+    .page-header h1 { font-size: 20px; font-weight: 600; letter-spacing: -0.02em; }
+    .page-header .subtitle {
+      font-size: 11px; font-weight: 700;
+      letter-spacing: 0.10em; text-transform: uppercase;
+      color: var(--text-muted); margin-top: 3px;
+    }
+    .back-btn {
+      padding: 8px 20px;
+      background: var(--purple); color: white;
+      border: none; border-radius: 10px; cursor: pointer;
+      font-weight: 500; font-size: 13px;
+      font-family: 'DM Sans', sans-serif;
+      text-decoration: none; display: inline-block;
+      transition: opacity 0.15s; white-space: nowrap;
+    }
+    .back-btn:hover { opacity: 0.85; }
+
+    /* ── STATS BAR ───────────────────────────────────────────── */
+    .stats-bar {
+      display: flex; gap: 0;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 14px; margin-bottom: 20px;
+      flex-wrap: wrap; align-items: stretch; overflow: hidden;
+    }
+    .stat {
+      flex: 1; min-width: 150px;
+      padding: 18px 24px;
+      border-right: 1px solid var(--border);
+    }
+    .stat:last-of-type { border-right: none; }
+    .stat-label {
+      font-size: 9px; font-weight: 700;
+      text-transform: uppercase; letter-spacing: 0.10em;
+      color: var(--text-muted); margin-bottom: 6px;
+    }
+    .stat-value {
+      font-size: 28px; font-weight: 300;
+      font-family: 'DM Mono', monospace;
+      color: var(--purple); letter-spacing: -0.02em;
+    }
+    .stat-value small { font-size: 15px; color: var(--text-faint); }
+    .stat-sub { font-size: 11px; color: var(--text-muted); margin-top: 4px; }
+
+    /* ── CARD ───────────────────────────────────────────────── */
+    .card {
+      background: var(--surface);
+      padding: 22px 24px; border-radius: 20px;
+      border: 1px solid var(--border); margin-bottom: 20px;
+    }
+    .card h2 { font-size: 16px; font-weight: 600; letter-spacing: -0.02em; margin-bottom: 16px; }
+
+    /* ── ADD FORM ───────────────────────────────────────────── */
+    .add-row { display: flex; gap: 10px; align-items: center; }
+    .add-row input {
+      flex: 1; padding: 11px 14px;
+      border: 1px solid var(--border-strong);
+      border-radius: 9px; font-size: 13px;
+      font-family: 'DM Sans', sans-serif;
+      background: var(--surface); color: var(--text);
+      transition: border-color 0.15s, box-shadow 0.15s;
+    }
+    .add-row input:focus { outline: none; border-color: var(--purple); box-shadow: 0 0 0 3px var(--purple-mid); }
+    .add-row input::placeholder { color: var(--text-faint); }
+    .add-btn {
+      padding: 11px 26px;
+      background: var(--purple); color: white;
+      border: none; border-radius: 9px; cursor: pointer;
+      font-weight: 600; font-size: 13px; white-space: nowrap;
+      font-family: 'DM Sans', sans-serif; transition: opacity 0.15s;
+    }
+    .add-btn:hover { opacity: 0.85; }
+    .add-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    .week-note { font-size: 12px; color: var(--text-muted); margin-top: 12px; }
+    .week-note b { color: var(--text); }
+
+    /* ── WEEK SECTION ───────────────────────────────────────── */
+    .week-block { margin-bottom: 16px; }
+    .week-head {
+      display: flex; align-items: center; gap: 14px;
+      padding: 14px 20px; cursor: pointer;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 14px; transition: background 0.15s; flex-wrap: wrap;
+    }
+    .week-head:hover { background: var(--surface2); }
+    .week-block.open .week-head { border-radius: 14px 14px 0 0; border-bottom: none; }
+    .week-block.current .week-head { border-color: var(--purple); background: var(--purple-light); }
+    .week-caret { color: var(--text-muted); font-size: 12px; transition: transform 0.2s; }
+    .week-block.open .week-caret { transform: rotate(90deg); }
+    .week-title { font-weight: 600; font-size: 15px; letter-spacing: -0.01em; }
+    .week-current-tag {
+      font-size: 9px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 0.08em; color: var(--purple);
+      background: var(--surface); border: 1px solid var(--purple);
+      padding: 2px 8px; border-radius: 6px;
+    }
+    .week-badges { display: flex; gap: 8px; margin-left: auto; align-items: center; flex-wrap: wrap; }
+    .week-progress { width: 110px; height: 6px; background: var(--surface2); border-radius: 999px; overflow: hidden; }
+    .week-progress > div { height: 6px; border-radius: 999px; background: var(--green); transition: width 0.4s; }
+
+    /* ── BADGES ───────────────────────────────────────────────── */
+    .badge {
+      display: inline-flex; align-items: center; gap: 4px;
+      padding: 3px 10px; border-radius: 6px;
+      font-weight: 700; font-size: 12px;
+    }
+    .badge-suggested { background: var(--purple-light); color: var(--purple); }
+    .badge-fulfilled { background: var(--green-bg);    color: var(--green); }
+    .badge-pending   { background: var(--amber-bg);    color: var(--amber); }
+    .badge-zero      { background: var(--surface2);    color: var(--text-faint); }
+    .badge-mismatch  { background: var(--red-bg);      color: var(--red); }
+
+    /* price sub-line under a suggested product name */
+    .price-line { font-size: 11px; color: var(--text-muted); margin-top: 3px; font-family: 'DM Mono', monospace; }
+    .price-line.muted { color: var(--text-faint); }
+
+    /* ── PRODUCTS TABLE ───────────────────────────────────────── */
+    .week-body {
+      display: none;
+      background: var(--surface);
+      border: 1px solid var(--border); border-top: none;
+      border-radius: 0 0 14px 14px;
+      padding: 4px 8px 8px; overflow-x: auto;
+    }
+    .week-block.open .week-body { display: block; }
+
+    .products-table { width: 100%; border-collapse: collapse; }
+    .products-table th {
+      font-size: 9px; font-weight: 700;
+      text-transform: uppercase; letter-spacing: 0.10em;
+      color: var(--text-muted);
+      padding: 10px 12px; text-align: left;
+      border-bottom: 1px solid var(--border);
+    }
+    .products-table td {
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--border);
+      font-size: 13px; color: var(--text); vertical-align: middle;
+    }
+    .products-table tr:last-child td { border-bottom: none; }
+    .products-table tr.done td { background: rgba(22,163,74,0.04); }
+
+    .product-name { font-weight: 500; }
+    .product-link { color: var(--purple); text-decoration: none; font-weight: 500; font-size: 12px; }
+    .product-link:hover { text-decoration: underline; }
+
+    input[type="checkbox"] { width: 17px; height: 17px; accent-color: var(--green); cursor: pointer; }
+
+    .cell-input {
+      width: 100%; padding: 8px 11px;
+      border: 1px solid var(--border-strong);
+      border-radius: 7px; font-size: 12px;
+      font-family: 'DM Sans', sans-serif;
+      background: var(--surface); color: var(--text);
+      transition: border-color 0.15s, box-shadow 0.15s;
+    }
+    .cell-input:focus { outline: none; border-color: var(--purple); box-shadow: 0 0 0 3px var(--purple-mid); }
+    .cell-input::placeholder { color: var(--text-faint); }
+
+    .row-del {
+      border: none; background: none; cursor: pointer;
+      color: var(--text-faint); font-size: 15px; padding: 4px 6px;
+      border-radius: 6px; transition: all 0.15s;
+    }
+    .row-del:hover { color: var(--red); background: var(--red-bg); }
+
+    .empty-week { text-align: center; padding: 28px; color: var(--text-faint); font-size: 13px; }
+
+    /* ── LOADING / TOAST ─────────────────────────────────────── */
+    .loading {
+      position: fixed; inset: 0;
+      background: rgba(245,244,240,0.85);
+      backdrop-filter: blur(4px);
+      display: none; align-items: center; justify-content: center; z-index: 9999;
+    }
+    .spinner {
+      width: 36px; height: 36px;
+      border: 3px solid var(--border-strong);
+      border-top-color: var(--purple);
+      border-radius: 50%; animation: spin 0.75s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .save-status {
+      display: none; position: fixed;
+      bottom: 28px; right: 28px;
+      background: var(--green); color: white;
+      padding: 12px 22px; border-radius: 10px;
+      font-weight: 600; font-size: 13px;
+      animation: slideUp 0.25s ease-out; z-index: 9998;
+    }
+    @keyframes slideUp {
+      from { transform: translateY(50px); opacity: 0; }
+      to   { transform: translateY(0);    opacity: 1; }
+    }
+
+    .config-warn {
+      display: none;
+      background: var(--gold-bg); border: 1px solid var(--gold-border);
+      color: var(--amber); padding: 14px 20px; border-radius: 12px;
+      font-size: 13px; margin-bottom: 20px; line-height: 1.5;
+    }
+    .config-warn code { font-family: 'DM Mono', monospace; background: rgba(0,0,0,0.05); padding: 1px 5px; border-radius: 4px; }
+
+    /* ── RESPONSIVE ─────────────────────────────────────────── */
+    @media (max-width: 768px) {
+      body { padding: 20px 16px; }
+      .page-header { flex-direction: column; align-items: flex-start; }
+      .stats-bar { flex-direction: column; }
+      .stat { border-right: none; border-bottom: 1px solid var(--border); }
+      .add-row { flex-direction: column; align-items: stretch; }
+      .products-table th, .products-table td { padding: 8px; font-size: 11px; }
+    }
+  </style>
+</head>
+<body>
+
+<div class="loading" id="loading"><div class="spinner"></div></div>
+<div class="save-status" id="saveStatus">✓ Saved</div>
+
+<div class="container">
+
+  <!-- Page Header -->
+  <div class="page-header">
+    <div class="header-left">
+      <div class="header-logo">
+        <img src="https://play-lh.googleusercontent.com/XPaIW4RsTkd8au1rBlcwAtdyynz9pZyPVn3QPK4gXbboroWxFI3hpVhn18IrIBrUtztj=w240-h480-rw" alt="Kapruka">
+      </div>
+      <div>
+        <h1>Hot Products</h1>
+        <div class="subtitle">Weekly Suggestion Board</div>
+      </div>
+    </div>
+    <a href="index.html" class="back-btn">← Back</a>
+  </div>
+
+  <!-- Config warning (shown until Supabase keys are filled in) -->
+  <div class="config-warn" id="configWarn">
+    ⚙️ <b>Setup needed.</b> Open <code>js/supabase-api.js</code> and set
+    <code>SUPABASE_URL</code> + <code>SUPABASE_ANON_KEY</code>, and run
+    <code>sql/hot_products.sql</code> in Supabase. The board can't load until then.
+  </div>
+
+  <!-- Stats -->
+  <div class="stats-bar">
+    <div class="stat">
+      <div class="stat-label">This Week</div>
+      <div class="stat-value"><span id="weekSuggested">0</span><small> / <span id="weekTarget">5</span></small></div>
+      <div class="stat-sub">suggested</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">Listed This Week</div>
+      <div class="stat-value" id="weekListed">0</div>
+      <div class="stat-sub" id="weekPendingSub">0 pending</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">All-Time Suggested</div>
+      <div class="stat-value" id="totalSuggested">0</div>
+      <div class="stat-sub" id="totalWeeksSub">across 0 weeks</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">All-Time Listed</div>
+      <div class="stat-value" id="totalListed">0</div>
+      <div class="stat-sub" id="totalRateSub">0% listed</div>
+    </div>
+  </div>
+
+  <!-- Add suggestion -->
+  <div class="card">
+    <h2>➕ Suggest a product</h2>
+    <div class="add-row">
+      <input type="text" id="fLink" placeholder="Paste a product link…"
+             onkeydown="if(event.key==='Enter') submitSuggestion()">
+      <button class="add-btn" id="addBtn" onclick="submitSuggestion()">Add</button>
+    </div>
+    <div class="week-note" id="weekNote"></div>
+  </div>
+
+  <!-- Weekly board -->
+  <div id="board"></div>
+
+</div><!-- /container -->
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="js/supabase-api.js"></script>
+<script>
+  let ALL = [];                 // every row, newest week first
+  const openWeeks = new Set();  // which week sections are expanded
+  const pricing = new Set();    // ids whose suggested price is being scraped
+  const comparing = new Set();  // ids whose suggested↔kapruka compare is running
+
+  const $ = (id) => document.getElementById(id);
+  const showLoading = () => $('loading').style.display = 'flex';
+  const hideLoading = () => $('loading').style.display = 'none';
+
+  function showSaveStatus(msg = '✓ Saved') {
+    const el = $('saveStatus');
+    el.textContent = msg;
+    el.style.display = 'block';
+    setTimeout(() => el.style.display = 'none', 1800);
+  }
+
+  function esc(s) {
+    return String(s ?? '').replace(/[&<>"']/g, c =>
+      ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
+  }
+
+  // ── Price / match formatting ───────────────────────────────────────────────
+  // All stored prices are LKR (the service converts foreign USD at the 270 rule).
+  function fmtLkr(v) {
+    if (v == null) return null;
+    return `Rs.${Number(v).toLocaleString('en-LK')}`;
+  }
+
+  // Suggested price shown under the product name.
+  function suggestedPriceLine(p) {
+    if (pricing.has(p.id)) return `<div class="price-line muted">pricing…</div>`;
+    const m = fmtLkr(p.suggested_price);
+    if (!m) return `<div class="price-line muted">price n/a</div>`;
+    const orig = p.suggested_currency && p.suggested_currency.toUpperCase() !== 'LKR'
+      ? ` (from ${esc(p.suggested_currency)})` : '';
+    return `<div class="price-line" title="suggested price${esc(orig)}">${m}${orig}</div>`;
+  }
+
+  // Match-rate badge (how confident the Kapruka listing is the same product).
+  function matchBadge(p) {
+    if (comparing.has(p.id)) return `<span class="badge badge-suggested">comparing…</span>`;
+    const r = p.match_rate;
+    if (r == null) return `<span class="badge badge-zero">—</span>`;
+    const cls = r >= 75 ? 'badge-fulfilled' : r >= 50 ? 'badge-pending' : 'badge-mismatch';
+    return `<span class="badge ${cls}">${r}% match</span>`;
+  }
+
+  // Price-difference badge: kapruka − suggested. Negative = Kapruka cheaper (good).
+  function priceDiffBadge(p) {
+    if (comparing.has(p.id)) return '';
+    const d = p.price_diff;
+    if (d == null) return `<span class="badge badge-zero">—</span>`;
+    if (Number(d) === 0) return `<span class="badge badge-zero">same price</span>`;
+    const abs = Math.abs(Number(d));
+    const pct = p.suggested_price ? Math.round((abs / Number(p.suggested_price)) * 100) : null;
+    const tag = pct != null ? ` · ${pct}%` : '';
+    const money = `Rs.${abs.toLocaleString('en-LK')}`;
+    return d < 0
+      ? `<span class="badge badge-fulfilled" title="Kapruka is cheaper than the suggested source">↓ ${money} cheaper${tag}</span>`
+      : `<span class="badge badge-mismatch" title="Kapruka is more expensive than the suggested source">↑ ${money} higher${tag}</span>`;
+  }
+
+  function isConfigured() {
+    try {
+      return typeof getAllHotProducts === 'function'
+        && !String(SUPABASE_URL).includes('YOUR-PROJECT');
+    } catch { return false; }
+  }
+
+  // ── Stats ────────────────────────────────────────────────────────────────
+  function renderStats() {
+    const thisWeek = currentWeekStart();
+    const wk = ALL.filter(p => p.week_start === thisWeek);
+    const wkDone = wk.filter(p => p.listed).length;
+    const weeks = new Set(ALL.map(p => p.week_start));
+    const totalDone = ALL.filter(p => p.listed).length;
+
+    $('weekSuggested').textContent = wk.length;
+    $('weekTarget').textContent = WEEKLY_TARGET;
+    $('weekListed').textContent = wkDone;
+    $('weekPendingSub').textContent = `${wk.length - wkDone} pending`;
+    $('totalSuggested').textContent = ALL.length;
+    $('totalWeeksSub').textContent = `across ${weeks.size} week${weeks.size === 1 ? '' : 's'}`;
+    $('totalListed').textContent = totalDone;
+    $('totalRateSub').textContent =
+      `${ALL.length ? Math.round((totalDone / ALL.length) * 100) : 0}% listed`;
+
+    const note = $('weekNote');
+    if (wk.length === 0) {
+      note.innerHTML = `New suggestions go into <b>this week</b> (${weekLabel(thisWeek)}). Target is <b>${WEEKLY_TARGET}</b>.`;
+    } else if (wk.length < WEEKLY_TARGET) {
+      note.innerHTML = `This week: <b>${wk.length} of ${WEEKLY_TARGET}</b> suggested — ${WEEKLY_TARGET - wk.length} to go.`;
+    } else {
+      note.innerHTML = `This week already has <b>${wk.length}</b> suggestion${wk.length === 1 ? '' : 's'} (target ${WEEKLY_TARGET}). You can still add more.`;
+    }
+  }
+
+  // ── Board ────────────────────────────────────────────────────────────────
+  function groupByWeek(rows) {
+    const map = new Map();
+    for (const r of rows) {
+      if (!map.has(r.week_start)) map.set(r.week_start, []);
+      map.get(r.week_start).push(r);
+    }
+    return [...map.entries()]; // already ordered newest-first by the query
+  }
+
+  function renderBoard() {
+    const board = $('board');
+    const thisWeek = currentWeekStart();
+
+    if (ALL.length === 0) {
+      board.innerHTML = `<div class="card"><div class="empty-week">
+        No suggestions yet. Paste the first product link above. 🔥</div></div>`;
+      return;
+    }
+
+    board.innerHTML = groupByWeek(ALL).map(([week, items]) => {
+      const done = items.filter(p => p.listed).length;
+      const pending = items.length - done;
+      const pct = items.length ? Math.round((done / items.length) * 100) : 0;
+      const isCurrent = week === thisWeek;
+      const open = openWeeks.has(week) || isCurrent;
+      if (isCurrent) openWeeks.add(week);
+
+      const rows = items.map(p => `
+        <tr data-id="${p.id}" class="${p.listed ? 'done' : ''}">
+          <td class="product-name">
+            <a class="product-link" href="${esc(p.product_link)}" target="_blank" rel="noopener"
+               title="${esc(p.product_link)}">${esc(productNameFromLink(p.product_link))} ↗</a>
+            ${suggestedPriceLine(p)}
+          </td>
+          <td style="text-align:center;width:70px;">
+            <input type="checkbox" ${p.listed ? 'checked' : ''}
+                   onchange="toggleListed(${p.id}, this.checked)">
+          </td>
+          <td>
+            <input class="cell-input" type="text" placeholder="Paste Kapruka link…"
+                   value="${esc(p.kapruka_link || '')}"
+                   onblur="saveKaprukaLink(${p.id}, this.value)">
+          </td>
+          <td style="text-align:center;white-space:nowrap;">${matchBadge(p)}</td>
+          <td style="text-align:center;white-space:nowrap;">${priceDiffBadge(p)}</td>
+          <td style="width:36px;text-align:center;">
+            <button class="row-del" title="Delete" onclick="removeRow(${p.id})">✕</button>
+          </td>
+        </tr>`).join('');
+
+      return `
+        <div class="week-block ${open ? 'open' : ''} ${isCurrent ? 'current' : ''}" data-week="${week}">
+          <div class="week-head" onclick="toggleWeek('${week}')">
+            <span class="week-caret">▶</span>
+            <span class="week-title">Week of ${weekLabel(week)}</span>
+            ${isCurrent ? '<span class="week-current-tag">This week</span>' : ''}
+            <div class="week-badges">
+              <span class="badge badge-suggested">📦 ${items.length} suggested</span>
+              <span class="badge ${done ? 'badge-fulfilled' : 'badge-zero'}">✅ ${done} listed</span>
+              <span class="badge ${pending ? 'badge-pending' : 'badge-zero'}">⏳ ${pending} pending</span>
+              <div class="week-progress" title="${pct}% listed"><div style="width:${pct}%"></div></div>
+            </div>
+          </div>
+          <div class="week-body">
+            <table class="products-table">
+              <thead><tr>
+                <th>Suggested product</th>
+                <th style="text-align:center;width:70px;">Listed</th>
+                <th style="width:34%;">Kapruka link</th>
+                <th style="text-align:center;">Match</th>
+                <th style="text-align:center;">Price Δ</th>
+                <th></th>
+              </tr></thead>
+              <tbody>${rows}</tbody>
+            </table>
+          </div>
+        </div>`;
+    }).join('');
+  }
+
+  function toggleWeek(week) {
+    if (openWeeks.has(week)) openWeeks.delete(week);
+    else openWeeks.add(week);
+    const block = document.querySelector(`.week-block[data-week="${week}"]`);
+    if (block) block.classList.toggle('open');
+  }
+
+  // ── Actions ──────────────────────────────────────────────────────────────
+  async function submitSuggestion() {
+    const link = $('fLink').value.trim();
+    if (!link) { $('fLink').focus(); return; }
+
+    $('addBtn').disabled = true;
+    let added;
+    try {
+      added = await addHotProduct({ product_link: link });
+      $('fLink').value = '';
+      await reload();
+      showSaveStatus('✓ Added');
+      $('fLink').focus();
+    } catch (err) {
+      alert('Could not add: ' + (err.message || err));
+      return;
+    } finally {
+      $('addBtn').disabled = false;
+    }
+    // Pull the suggested product's price right away (non-blocking).
+    if (added && added.id) pullSuggestedPrice(added.id, link);
+  }
+
+  // Scrape the suggested URL's price and store it on the row.
+  async function pullSuggestedPrice(id, url) {
+    pricing.add(id);
+    renderBoard();
+    try {
+      const p = await scrapeHotPrice(url);
+      const patch = {
+        suggested_title: p.title || null,
+        suggested_price: p.price ?? null,
+        suggested_currency: p.currency || null,
+      };
+      await updateHotProduct(id, patch);
+      const row = ALL.find(r => r.id === id);
+      if (row) Object.assign(row, patch);
+    } catch (err) {
+      console.warn('suggested price failed:', err.message);
+    } finally {
+      pricing.delete(id);
+      renderBoard();
+    }
+  }
+
+  // Tick / untick "Listed". Unticking also clears the Kapruka link.
+  async function toggleListed(id, listed) {
+    try {
+      // Unticking clears the Kapruka link and any comparison result with it.
+      const patch = listed
+        ? { listed: true }
+        : { listed: false, kapruka_link: null, kapruka_title: null, kapruka_price: null,
+            kapruka_currency: null, match_rate: null, price_diff: null };
+      await updateHotProduct(id, patch);
+      const row = ALL.find(p => p.id === id);
+      if (row) Object.assign(row, patch);
+      renderStats();
+      renderBoard();
+      showSaveStatus();
+    } catch (err) {
+      alert('Could not save: ' + (err.message || err));
+      renderBoard();
+    }
+  }
+
+  // Pasting a Kapruka link auto-marks the product as listed.
+  async function saveKaprukaLink(id, value) {
+    const row = ALL.find(p => p.id === id);
+    const clean = value.trim();
+    if (row && (row.kapruka_link || '') === clean) return; // no change
+    try {
+      // Clearing the link also wipes the comparison result.
+      const patch = clean
+        ? { kapruka_link: clean, listed: true }
+        : { kapruka_link: null, listed: false, kapruka_title: null, kapruka_price: null,
+            kapruka_currency: null, match_rate: null, price_diff: null };
+      await updateHotProduct(id, patch);
+      if (row) Object.assign(row, patch);
+      renderStats();
+      renderBoard();
+      showSaveStatus();
+    } catch (err) {
+      alert('Could not save: ' + (err.message || err));
+      return;
+    }
+    // With both links present, compute match rate + price difference.
+    if (clean && row) runComparison(id, row.product_link, clean);
+  }
+
+  // Compare the suggested product to its Kapruka listing and store the result.
+  async function runComparison(id, suggestedUrl, kaprukaUrl) {
+    comparing.add(id);
+    renderBoard();
+    try {
+      const r = await compareHotProduct(suggestedUrl, kaprukaUrl);
+      const patch = {
+        suggested_title: r.suggested?.title ?? null,
+        suggested_price: r.suggested?.price ?? null,
+        suggested_currency: r.suggested?.currency ?? null,
+        kapruka_title: r.kapruka?.title ?? null,
+        kapruka_price: r.kapruka?.price ?? null,
+        kapruka_currency: r.kapruka?.currency ?? null,
+        match_rate: r.matchRate ?? null,
+        price_diff: r.priceDiff ?? null,
+        compared_at: new Date().toISOString(),
+      };
+      await updateHotProduct(id, patch);
+      const row = ALL.find(p => p.id === id);
+      if (row) Object.assign(row, patch);
+      showSaveStatus('✓ Compared');
+    } catch (err) {
+      console.warn('compare failed:', err.message);
+      alert('Could not compare prices: ' + (err.message || err));
+    } finally {
+      comparing.delete(id);
+      renderBoard();
+    }
+  }
+
+  async function removeRow(id) {
+    const row = ALL.find(p => p.id === id);
+    const label = row ? productNameFromLink(row.product_link) : 'this suggestion';
+    if (!confirm(`Delete "${label}"?`)) return;
+    try {
+      await deleteHotProduct(id);
+      ALL = ALL.filter(p => p.id !== id);
+      renderStats();
+      renderBoard();
+      showSaveStatus('✓ Deleted');
+    } catch (err) {
+      alert('Could not delete: ' + (err.message || err));
+    }
+  }
+
+  // ── Load ─────────────────────────────────────────────────────────────────
+  async function reload() {
+    ALL = await getAllHotProducts();
+    renderStats();
+    renderBoard();
+  }
+
+  window.onload = async () => {
+    if (!isConfigured()) {
+      $('configWarn').style.display = 'block';
+      return;
+    }
+    $('weekTarget').textContent = WEEKLY_TARGET;
+    showLoading();
+    try {
+      await reload();
+    } catch (err) {
+      $('configWarn').style.display = 'block';
+      $('configWarn').innerHTML = '⚠️ Could not reach Supabase: ' + esc(err.message || err);
+    } finally {
+      hideLoading();
+    }
+  };
+</script>
+</body>
+</html>
