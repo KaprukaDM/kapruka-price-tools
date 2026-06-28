@@ -22,7 +22,6 @@ import express from 'express';
 
 import { scrapeProduct } from './scrape.js';
 import { scoreMatch } from './matcher.js';
-import { fetchKaprukaProduct } from './compare/sources.js';
 
 const app = express();
 app.use(express.json());
@@ -64,20 +63,10 @@ async function pickFullPrice(scraped) {
 }
 
 // Read one product URL into normalised hot-product fields (price always in LKR).
+// Uses the generic scraper for ALL sites (incl. Kapruka): it parses prices with
+// decimals intact, so a geo-converted "$37.03" stays 37.03 — not 3703.
 // Returns a `candidate` (scrape-shaped) so the caller can run the matcher on it.
 async function readHotProduct(url) {
-  if (/kapruka\.com/i.test(url)) {
-    // Kapruka product page: JSON-LD carries the canonical LKR price (geo-independent).
-    const kp = await fetchKaprukaProduct(url);
-    const conv = toLkr(kp.price, kp.currency);
-    const candidate = {
-      title: kp.name,
-      url,
-      currency: kp.currency || 'LKR',
-      prices: kp.price != null ? [{ value: kp.price, currency: kp.currency || 'LKR' }] : [],
-    };
-    return { title: kp.name, price: conv.lkr, currency: kp.currency || 'LKR', priceNote: conv.note, flags: [], candidate };
-  }
   const scraped = await scrapeProduct(url);
   const { value, currency } = await pickFullPrice(scraped);
   const conv = toLkr(value, currency);

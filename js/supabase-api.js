@@ -1106,7 +1106,7 @@ async function updateHotProduct(productId, updateData) {
 // ── Hot Products price service (standalone src/hot-server.js, deployed on Render) ──
 // Separate from the Price Checker server. Override before this script loads by
 // setting window.PRICE_API_BASE (e.g. http://localhost:3100 in local dev).
-window.PRICE_API_BASE = window.PRICE_API_BASE || 'https://kapruka-hot-products.onrender.com';
+window.PRICE_API_BASE = window.PRICE_API_BASE || 'https://kapruka-price-tools-1.onrender.com';
 
 async function priceServiceCall(path, body) {
   const res = await fetch(`${window.PRICE_API_BASE}${path}`, {
