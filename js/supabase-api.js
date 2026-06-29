@@ -1084,11 +1084,9 @@ async function addHotProduct(productData) {
 
 // Patch a row. Accepts snake_case (listed, kapruka_link) or camelCase
 // (kaprukaLink). Passing a kapruka_link auto-marks the product as listed.
-// Also passes through the price/match columns (filled by the price service).
+// Also passes through the match columns (filled by the match service).
 const HOT_PRICE_FIELDS = [
-  'suggested_title', 'suggested_price', 'suggested_currency',
-  'kapruka_title', 'kapruka_price', 'kapruka_currency',
-  'match_rate', 'price_diff', 'compared_at',
+  'suggested_title', 'kapruka_title', 'match_rate', 'compared_at',
 ];
 
 async function updateHotProduct(productId, updateData) {
@@ -1103,7 +1101,7 @@ async function updateHotProduct(productId, updateData) {
   return { success: true };
 }
 
-// ── Hot Products price service (standalone src/hot-server.js, deployed on Render) ──
+// ── Hot Products match service (standalone src/hot-server.js, deployed on Render) ──
 // Separate from the Price Checker server. Override before this script loads by
 // setting window.PRICE_API_BASE (e.g. http://localhost:3100 in local dev).
 window.PRICE_API_BASE = window.PRICE_API_BASE || 'https://kapruka-price-tools-1.onrender.com';
@@ -1115,19 +1113,14 @@ async function priceServiceCall(path, body) {
     body: JSON.stringify(body),
   });
   if (!res.ok) {
-    let msg = `Price service error (${res.status})`;
+    let msg = `Match service error (${res.status})`;
     try { const j = await res.json(); if (j.error) msg = j.error; } catch {}
     throw new Error(msg);
   }
   return res.json();
 }
 
-// Scrape one URL → { title, price (LKR), currency, priceNote, flags }.
-async function scrapeHotPrice(url) {
-  return priceServiceCall('/api/hot-products/scrape', { url });
-}
-
-// Compare suggested vs Kapruka → { suggested, kapruka, matchRate, isSameProduct, priceDiff }.
+// Compare suggested vs Kapruka → { suggestedTitle, kaprukaTitle, matchRate, isSameProduct }.
 async function compareHotProduct(suggestedUrl, kaprukaUrl) {
   return priceServiceCall('/api/hot-products/compare', { suggestedUrl, kaprukaUrl });
 }

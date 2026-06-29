@@ -351,8 +351,7 @@
 <script>
   let ALL = [];                 // every row, newest week first
   const openWeeks = new Set();  // which week sections are expanded
-  const pricing = new Set();    // ids whose suggested price is being scraped
-  const comparing = new Set();  // ids whose suggested↔kapruka compare is running
+  const comparing = new Set();  // ids whose suggested↔kapruka match check is running
 
   const $ = (id) => document.getElementById(id);
   const showLoading = () => $('loading').style.display = 'flex';
@@ -370,45 +369,16 @@
       ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
   }
 
-  // ── Price / match formatting ───────────────────────────────────────────────
-  // All stored prices are LKR (the service converts foreign USD at the 270 rule).
-  function fmtLkr(v) {
-    if (v == null) return null;
-    return `Rs.${Number(v).toLocaleString('en-LK')}`;
-  }
-
-  // Suggested price shown under the product name.
-  function suggestedPriceLine(p) {
-    if (pricing.has(p.id)) return `<div class="price-line muted">pricing…</div>`;
-    const m = fmtLkr(p.suggested_price);
-    if (!m) return `<div class="price-line muted">price n/a</div>`;
-    const orig = p.suggested_currency && p.suggested_currency.toUpperCase() !== 'LKR'
-      ? ` (from ${esc(p.suggested_currency)})` : '';
-    return `<div class="price-line" title="suggested price${esc(orig)}">${m}${orig}</div>`;
-  }
-
-  // Match-rate badge (how confident the Kapruka listing is the same product).
+  // ── Match formatting ───────────────────────────────────────────────────────
+  // Match-rate badge: how confident the Kapruka listing is the SAME product as
+  // the suggested one. Filled in once a Kapruka link is saved.
   function matchBadge(p) {
-    if (comparing.has(p.id)) return `<span class="badge badge-suggested">comparing…</span>`;
+    if (comparing.has(p.id)) return `<span class="badge badge-suggested">checking…</span>`;
     const r = p.match_rate;
     if (r == null) return `<span class="badge badge-zero">—</span>`;
+    const title = p.kapruka_title ? ` title="Kapruka: ${esc(p.kapruka_title)}"` : '';
     const cls = r >= 75 ? 'badge-fulfilled' : r >= 50 ? 'badge-pending' : 'badge-mismatch';
-    return `<span class="badge ${cls}">${r}% match</span>`;
-  }
-
-  // Price-difference badge: kapruka − suggested. Negative = Kapruka cheaper (good).
-  function priceDiffBadge(p) {
-    if (comparing.has(p.id)) return '';
-    const d = p.price_diff;
-    if (d == null) return `<span class="badge badge-zero">—</span>`;
-    if (Number(d) === 0) return `<span class="badge badge-zero">same price</span>`;
-    const abs = Math.abs(Number(d));
-    const pct = p.suggested_price ? Math.round((abs / Number(p.suggested_price)) * 100) : null;
-    const tag = pct != null ? ` · ${pct}%` : '';
-    const money = `Rs.${abs.toLocaleString('en-LK')}`;
-    return d < 0
-      ? `<span class="badge badge-fulfilled" title="Kapruka is cheaper than the suggested source">↓ ${money} cheaper${tag}</span>`
-      : `<span class="badge badge-mismatch" title="Kapruka is more expensive than the suggested source">↑ ${money} higher${tag}</span>`;
+    return `<span class="badge ${cls}"${title}>${r}% match</span>`;
   }
 
   function isConfigured() {
@@ -479,7 +449,6 @@
           <td class="product-name">
             <a class="product-link" href="${esc(p.product_link)}" target="_blank" rel="noopener"
                title="${esc(p.product_link)}">${esc(productNameFromLink(p.product_link))} ↗</a>
-            ${suggestedPriceLine(p)}
           </td>
           <td style="text-align:center;width:70px;">
             <input type="checkbox" ${p.listed ? 'checked' : ''}
@@ -491,7 +460,6 @@
                    onblur="saveKaprukaLink(${p.id}, this.value)">
           </td>
           <td style="text-align:center;white-space:nowrap;">${matchBadge(p)}</td>
-          <td style="text-align:center;white-space:nowrap;">${priceDiffBadge(p)}</td>
           <td style="width:36px;text-align:center;">
             <button class="row-del" title="Delete" onclick="removeRow(${p.id})">✕</button>
           </td>
@@ -515,9 +483,8 @@
               <thead><tr>
                 <th>Suggested product</th>
                 <th style="text-align:center;width:70px;">Listed</th>
-                <th style="width:34%;">Kapruka link</th>
+                <th style="width:40%;">Kapruka link</th>
                 <th style="text-align:center;">Match</th>
-                <th style="text-align:center;">Price Δ</th>
                 <th></th>
               </tr></thead>
               <tbody>${rows}</tbody>
@@ -540,53 +507,26 @@
     if (!link) { $('fLink').focus(); return; }
 
     $('addBtn').disabled = true;
-    let added;
     try {
-      added = await addHotProduct({ product_link: link });
+      await addHotProduct({ product_link: link });
       $('fLink').value = '';
       await reload();
       showSaveStatus('✓ Added');
       $('fLink').focus();
     } catch (err) {
       alert('Could not add: ' + (err.message || err));
-      return;
     } finally {
       $('addBtn').disabled = false;
-    }
-    // Pull the suggested product's price right away (non-blocking).
-    if (added && added.id) pullSuggestedPrice(added.id, link);
-  }
-
-  // Scrape the suggested URL's price and store it on the row.
-  async function pullSuggestedPrice(id, url) {
-    pricing.add(id);
-    renderBoard();
-    try {
-      const p = await scrapeHotPrice(url);
-      const patch = {
-        suggested_title: p.title || null,
-        suggested_price: p.price ?? null,
-        suggested_currency: p.currency || null,
-      };
-      await updateHotProduct(id, patch);
-      const row = ALL.find(r => r.id === id);
-      if (row) Object.assign(row, patch);
-    } catch (err) {
-      console.warn('suggested price failed:', err.message);
-    } finally {
-      pricing.delete(id);
-      renderBoard();
     }
   }
 
   // Tick / untick "Listed". Unticking also clears the Kapruka link.
   async function toggleListed(id, listed) {
     try {
-      // Unticking clears the Kapruka link and any comparison result with it.
+      // Unticking clears the Kapruka link and the match result with it.
       const patch = listed
         ? { listed: true }
-        : { listed: false, kapruka_link: null, kapruka_title: null, kapruka_price: null,
-            kapruka_currency: null, match_rate: null, price_diff: null };
+        : { listed: false, kapruka_link: null, kapruka_title: null, match_rate: null };
       await updateHotProduct(id, patch);
       const row = ALL.find(p => p.id === id);
       if (row) Object.assign(row, patch);
@@ -605,11 +545,10 @@
     const clean = value.trim();
     if (row && (row.kapruka_link || '') === clean) return; // no change
     try {
-      // Clearing the link also wipes the comparison result.
+      // Clearing the link also wipes the match result.
       const patch = clean
         ? { kapruka_link: clean, listed: true }
-        : { kapruka_link: null, listed: false, kapruka_title: null, kapruka_price: null,
-            kapruka_currency: null, match_rate: null, price_diff: null };
+        : { kapruka_link: null, listed: false, kapruka_title: null, match_rate: null };
       await updateHotProduct(id, patch);
       if (row) Object.assign(row, patch);
       renderStats();
@@ -619,34 +558,29 @@
       alert('Could not save: ' + (err.message || err));
       return;
     }
-    // With both links present, compute match rate + price difference.
+    // With both links present, score how well they match.
     if (clean && row) runComparison(id, row.product_link, clean);
   }
 
-  // Compare the suggested product to its Kapruka listing and store the result.
+  // Check whether the Kapruka listing matches the suggested product, store the rate.
   async function runComparison(id, suggestedUrl, kaprukaUrl) {
     comparing.add(id);
     renderBoard();
     try {
       const r = await compareHotProduct(suggestedUrl, kaprukaUrl);
       const patch = {
-        suggested_title: r.suggested?.title ?? null,
-        suggested_price: r.suggested?.price ?? null,
-        suggested_currency: r.suggested?.currency ?? null,
-        kapruka_title: r.kapruka?.title ?? null,
-        kapruka_price: r.kapruka?.price ?? null,
-        kapruka_currency: r.kapruka?.currency ?? null,
+        suggested_title: r.suggestedTitle ?? null,
+        kapruka_title: r.kaprukaTitle ?? null,
         match_rate: r.matchRate ?? null,
-        price_diff: r.priceDiff ?? null,
         compared_at: new Date().toISOString(),
       };
       await updateHotProduct(id, patch);
       const row = ALL.find(p => p.id === id);
       if (row) Object.assign(row, patch);
-      showSaveStatus('✓ Compared');
+      showSaveStatus('✓ Checked');
     } catch (err) {
-      console.warn('compare failed:', err.message);
-      alert('Could not compare prices: ' + (err.message || err));
+      console.warn('match check failed:', err.message);
+      alert('Could not check match: ' + (err.message || err));
     } finally {
       comparing.delete(id);
       renderBoard();
