@@ -74,9 +74,11 @@ const IDENTITY_FN = {
       matchRate: {
         type: 'integer',
         description:
-          'Confidence 0-100 that the candidate page is the same product MODEL as the query ' +
-          '(ignore storage/variant and price here — only the model identity). A store homepage, ' +
-          'category/tag listing, accessory, or a different model is a low score.',
+          'Confidence 0-100 that the candidate page is the same product as the query. ' +
+          'Judge the core product leniently — ignore storage/variant, price, and minor wording. ' +
+          'A differing model qualifier on the same core product is still a partial match (~55-70). ' +
+          'Only a store homepage, category/tag listing, accessory, or a genuinely different ' +
+          'product is a low score.',
       },
       isSameModel: { type: 'boolean' },
       reasoning: { type: 'string' },
@@ -97,10 +99,10 @@ export async function scoreIdentity(query, { title, url, site }) {
     `== USER QUERY ==\nName: ${query.name}\nDescription: ${query.description || '(none)'}\n\n` +
     `== CANDIDATE ==\nTitle: ${title || '(no title)'}\nURL: ${url}${sellerLine}\n\n` +
     `Rules:\n` +
-    `- Match on the CORE product (e.g. "Pineapple Gateau", "iPhone 15"). Ignore storage/colour/size/price.\n` +
+    `- Be LENIENT. Match on the CORE product (e.g. "Pineapple Gateau", "iPhone 15"). Ignore storage/colour/size/price, packaging, bundle extras, and minor wording differences.\n` +
     `- Retailers don't repeat their own name in product titles. If the query includes a brand or store name that matches the retailer/site, do NOT penalise its absence from the title.\n` +
-    `- Model qualifiers are part of the model identity: Lite, Pro, Pro Max, Max, Plus, "+", Mini, Note, Ultra, Air, SE, Neo, Prime, 5G, FE. If the query and candidate DIFFER on any such qualifier — one has it and the other doesn't, or they have different ones — they are DIFFERENT products: score below 25 and isSameModel=false. (e.g. "Redmi 9" vs "Redmi 9 Lite" = different; "Redmi 9" vs "Redmi Note 9" = different.) This is symmetric.\n` +
-    `- Score HIGH only when the core product AND its qualifiers match. Score LOW for a different product/qualifier, an accessory, or a homepage/category/listing page.\n` +
+    `- Model qualifiers (Lite, Pro, Pro Max, Max, Plus, "+", Mini, Note, Ultra, Air, SE, Neo, Prime, 5G, FE) refine the model. If the query and candidate share the same core product but DIFFER on such a qualifier, treat it as a PARTIAL match (score around 55-70, isSameModel=true) rather than a mismatch — it is close enough to be the same listing.\n` +
+    `- When the core product plausibly lines up, lean towards a HIGH score. Only score LOW (below 30, isSameModel=false) when the core product is genuinely different, or the page is an accessory, homepage, or category/search/listing page.\n` +
     `Call report_identity.`;
   try {
     const res = await getClient().chat.completions.create({
