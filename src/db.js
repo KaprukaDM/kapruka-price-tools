@@ -1,8 +1,16 @@
-// Persistence for both tools. Two backends behind one async API:
+// Persistence for both tools. Three backends behind one async API:
 //
-//   • Postgres (Supabase) — used when DATABASE_URL is set (production). Survives
-//     deploys/restarts and is queryable from Supabase.
-//   • SQLite (node:sqlite) — local fallback when DATABASE_URL is absent, so
+//   • Postgres (Supabase, direct wire protocol) — used when DATABASE_URL is
+//     set. Fastest, but needs outbound access to port 5432/6543, which some
+//     networks firewall off.
+//   • Supabase REST (PostgREST over HTTPS) — used when SUPABASE_URL and
+//     SUPABASE_SERVICE_KEY are set (and DATABASE_URL isn't). Same Supabase
+//     database, reached over plain HTTPS/443 instead of a raw DB port, so it
+//     works through firewalls that block direct Postgres connections. The
+//     two tables below must already exist (PostgREST can't run DDL) — see
+//     the CREATE TABLE block further down; run it once in the Supabase SQL
+//     Editor.
+//   • SQLite (node:sqlite) — local fallback when neither is configured, so
 //     development needs no database setup. Portable file at data/price-tools.db.
 //
 // Two tables either way:
@@ -10,16 +18,22 @@
 //   comparison_runs  - one row per partner reconciliation that actually recomputed
 //
 // Each row keeps flat summary columns for easy SQL plus a full JSON payload so
-// nothing is lost. ALL exported functions are async (Postgres is async; the
-// SQLite path resolves immediately).
+// nothing is lost. ALL exported functions are async (Postgres/REST are async;
+// the SQLite path resolves immediately).
 
 import 'dotenv/config';
 
 const DATABASE_URL = process.env.DATABASE_URL || '';
+const SUPABASE_URL = process.env.SUPABASE_URL || '';
+const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY || '';
 const nowIso = () => new Date().toISOString();
 
 // Pick the backend once at load.
-const backend = DATABASE_URL ? await makePostgresBackend(DATABASE_URL) : await makeSqliteBackend();
+const backend = DATABASE_URL
+  ? await makePostgresBackend(DATABASE_URL)
+  : SUPABASE_URL && SUPABASE_SERVICE_KEY
+    ? await makeSupabaseRestBackend(SUPABASE_URL, SUPABASE_SERVICE_KEY)
+    : await makeSqliteBackend();
 
 export const savePriceCheck = (args) => backend.savePriceCheck(args);
 export const saveComparisonRun = (data) => backend.saveComparisonRun(data);
@@ -30,7 +44,11 @@ export const getComparisonRun = (id) => backend.getComparisonRun(id);
 export const allPriceCheckRows = () => backend.allPriceCheckRows();
 export const allComparisonRows = (partnerId = null) => backend.allComparisonRows(partnerId);
 
-export const storageKind = DATABASE_URL ? 'postgres' : 'sqlite';
+export const storageKind = DATABASE_URL
+  ? 'postgres'
+  : SUPABASE_URL && SUPABASE_SERVICE_KEY
+    ? 'supabase-rest'
+    : 'sqlite';
 
 // ---------------------------------------------------------------------------
 // Postgres (Supabase) backend
@@ -166,6 +184,141 @@ async function makePostgresBackend(connectionString) {
         params,
       );
       return rows;
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Supabase REST backend (PostgREST over HTTPS — no direct DB port needed)
+// ---------------------------------------------------------------------------
+//
+// Run this once in the Supabase SQL Editor before using this backend — REST
+// can insert/query rows but can't create tables:
+//
+//   CREATE TABLE IF NOT EXISTS price_checks (
+//     id               BIGSERIAL PRIMARY KEY,
+//     created_at       TEXT NOT NULL,
+//     category         TEXT,
+//     query_name       TEXT,
+//     description      TEXT,
+//     result_count     INTEGER,
+//     discovered_count INTEGER,
+//     payload          JSONB NOT NULL
+//   );
+//   CREATE TABLE IF NOT EXISTS comparison_runs (
+//     id             BIGSERIAL PRIMARY KEY,
+//     created_at     TEXT NOT NULL,
+//     partner_id     TEXT,
+//     partner_name   TEXT,
+//     kapruka_slug   TEXT,
+//     partner_site   TEXT,
+//     platform       TEXT,
+//     kapruka_count  INTEGER,
+//     partner_count  INTEGER,
+//     matched        INTEGER,
+//     kapruka_higher INTEGER,
+//     kapruka_lower  INTEGER,
+//     same_price     INTEGER,
+//     only_kapruka   INTEGER,
+//     only_partner   INTEGER,
+//     payload        JSONB NOT NULL
+//   );
+//   CREATE INDEX IF NOT EXISTS idx_runs_partner ON comparison_runs (partner_id, created_at);
+//   CREATE INDEX IF NOT EXISTS idx_checks_name ON price_checks (query_name, created_at);
+
+async function makeSupabaseRestBackend(baseUrl, serviceKey) {
+  const REST = `${baseUrl.replace(/\/$/, '')}/rest/v1`;
+  const headers = {
+    apikey: serviceKey,
+    Authorization: `Bearer ${serviceKey}`,
+    'Content-Type': 'application/json',
+  };
+
+  async function restFetch(path, opts = {}) {
+    const res = await fetch(`${REST}${path}`, { ...opts, headers: { ...headers, ...(opts.headers || {}) } });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`Supabase REST ${res.status} on ${path}: ${text}`);
+    }
+    return res.status === 204 ? null : res.json();
+  }
+
+  async function insert(table, row) {
+    const rows = await restFetch(`/${table}`, {
+      method: 'POST',
+      headers: { Prefer: 'return=representation' },
+      body: JSON.stringify(row),
+    });
+    return Number(rows[0].id);
+  }
+
+  return {
+    async savePriceCheck({ category, query, result }) {
+      return insert('price_checks', {
+        created_at: nowIso(),
+        category,
+        query_name: query?.name ?? null,
+        description: query?.description ?? null,
+        result_count: (result.results || []).length,
+        discovered_count: (result.discovered || []).length,
+        payload: result,
+      });
+    },
+
+    async saveComparisonRun(data) {
+      const s = data.summary;
+      return insert('comparison_runs', {
+        created_at: data.generatedAt || nowIso(),
+        partner_id: data.partner.id,
+        partner_name: data.partner.name,
+        kapruka_slug: data.partner.kaprukaSlug,
+        partner_site: data.partner.partnerSite,
+        platform: data.partner.platform,
+        kapruka_count: data.catalogCounts.kapruka,
+        partner_count: data.catalogCounts.partner,
+        matched: s.matched,
+        kapruka_higher: s.kaprukaHigher,
+        kapruka_lower: s.kaprukaLower,
+        same_price: s.same,
+        only_kapruka: s.onlyKapruka,
+        only_partner: s.onlyPartner,
+        payload: data,
+      });
+    },
+
+    async recentPriceChecks(limit = 50) {
+      return restFetch(
+        `/price_checks?select=id,created_at,category,query_name,description,result_count,discovered_count` +
+          `&order=id.desc&limit=${limit}`,
+      );
+    },
+
+    async recentComparisonRuns(limit = 50, partnerId = null) {
+      const filter = partnerId ? `&partner_id=eq.${encodeURIComponent(partnerId)}` : '';
+      return restFetch(
+        `/comparison_runs?select=id,created_at,partner_id,partner_name,platform,kapruka_count,partner_count,` +
+          `matched,kapruka_higher,kapruka_lower,same_price,only_kapruka,only_partner` +
+          `&order=id.desc&limit=${limit}${filter}`,
+      );
+    },
+
+    async getComparisonRun(id) {
+      const rows = await restFetch(`/comparison_runs?select=payload&id=eq.${id}&limit=1`);
+      return rows[0] ? rows[0].payload : null;
+    },
+
+    // allPriceCheckRows/allComparisonRows return payload_json as a STRING (not
+    // a parsed object) to match the Postgres/SQLite backends' contract — every
+    // caller in export.js does JSON.parse(row.payload_json) itself.
+    async allPriceCheckRows() {
+      const rows = await restFetch(`/price_checks?select=id,created_at,payload&order=id.asc`);
+      return rows.map((r) => ({ id: r.id, created_at: r.created_at, payload_json: JSON.stringify(r.payload) }));
+    },
+
+    async allComparisonRows(partnerId = null) {
+      const filter = partnerId ? `&partner_id=eq.${encodeURIComponent(partnerId)}` : '';
+      const rows = await restFetch(`/comparison_runs?select=id,created_at,payload&order=id.asc${filter}`);
+      return rows.map((r) => ({ id: r.id, created_at: r.created_at, payload_json: JSON.stringify(r.payload) }));
     },
   };
 }

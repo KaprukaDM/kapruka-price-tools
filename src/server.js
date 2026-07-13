@@ -369,7 +369,12 @@ async function refreshIfStale() {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Price tools running at http://localhost:${PORT}`);
-  console.log(`Storage backend: ${storageKind}${storageKind === 'sqlite' ? ' (local file; set DATABASE_URL for Supabase)' : ' (Supabase/Postgres)'}`);
+  const backendLabel = {
+    sqlite: 'sqlite (local file; set DATABASE_URL or SUPABASE_URL/SUPABASE_SERVICE_KEY for Supabase)',
+    postgres: 'postgres (Supabase, direct connection)',
+    'supabase-rest': 'supabase-rest (Supabase, over HTTPS)',
+  }[storageKind];
+  console.log(`Storage backend: ${backendLabel}`);
   if (!process.env.OPENAI_API_KEY) console.warn('! OPENAI_API_KEY is not set');
   if (!process.env.SERP_API_KEY) console.warn('! SERP_API_KEY is not set');
 
