@@ -28,12 +28,27 @@ const SUPABASE_URL = process.env.SUPABASE_URL || '';
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY || '';
 const nowIso = () => new Date().toISOString();
 
-// Pick the backend once at load.
-const backend = DATABASE_URL
-  ? await makePostgresBackend(DATABASE_URL)
-  : SUPABASE_URL && SUPABASE_SERVICE_KEY
-    ? await makeSupabaseRestBackend(SUPABASE_URL, SUPABASE_SERVICE_KEY)
-    : await makeSqliteBackend();
+// Pick the backend once at load. If SUPABASE_URL/SUPABASE_SERVICE_KEY are set
+// but the host is unreachable (wrong project ref, deleted project, DNS/network
+// issue), every request would otherwise fail forever with a bare "fetch
+// failed". Probe it once and fall back to local SQLite instead, so a stale
+// config value degrades the app rather than breaking it.
+async function selectBackend() {
+  if (DATABASE_URL) return { backend: await makePostgresBackend(DATABASE_URL), kind: 'postgres' };
+  if (SUPABASE_URL && SUPABASE_SERVICE_KEY) {
+    const rest = await makeSupabaseRestBackend(SUPABASE_URL, SUPABASE_SERVICE_KEY);
+    try {
+      await rest.recentComparisonRuns(1);
+      return { backend: rest, kind: 'supabase-rest' };
+    } catch (err) {
+      console.warn(`! Supabase REST unreachable (${err.message}); falling back to local SQLite.`);
+    }
+  }
+  return { backend: await makeSqliteBackend(), kind: 'sqlite' };
+}
+
+const { backend, kind: storageKind } = await selectBackend();
+export { storageKind };
 
 export const savePriceCheck = (args) => backend.savePriceCheck(args);
 export const saveComparisonRun = (data) => backend.saveComparisonRun(data);
@@ -43,12 +58,6 @@ export const recentComparisonRuns = (limit = 50, partnerId = null) =>
 export const getComparisonRun = (id) => backend.getComparisonRun(id);
 export const allPriceCheckRows = () => backend.allPriceCheckRows();
 export const allComparisonRows = (partnerId = null) => backend.allComparisonRows(partnerId);
-
-export const storageKind = DATABASE_URL
-  ? 'postgres'
-  : SUPABASE_URL && SUPABASE_SERVICE_KEY
-    ? 'supabase-rest'
-    : 'sqlite';
 
 // ---------------------------------------------------------------------------
 // Postgres (Supabase) backend
