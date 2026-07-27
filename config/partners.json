@@ -53,5 +53,12 @@
     "partnerSite": "https://gerardmendis.com/",
     "partnerLabel": "gerardmendis.com",
     "platform": "shopify"
+  },
+  "thinex-new": {
+    "name": "Thinex New",
+    "kaprukaUrl": "https://www.kapruka.com/partner/thinex",
+    "partnerSite": "https://thinex.lk/",
+    "partnerLabel": "thinex.lk",
+    "platform": "woocommerce"
   }
 }
