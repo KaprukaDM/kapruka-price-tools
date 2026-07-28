@@ -1,0 +1,46 @@
+name: International Gifting Price Checker — Set Pairing
+
+# The static dashboard has no server to POST a manual Kapruka<->competitor
+# pairing to, so its "Save" button triggers this workflow instead (via the
+# GitHub API, using a repo-scoped token limited to Actions read/write — see
+# public/uae-compare/index.html). Sets the pairing, then immediately
+# recomputes and saves a fresh snapshot so the dashboard reflects the edit as
+# soon as this run finishes.
+
+on:
+  workflow_dispatch:
+    inputs:
+      country:
+        description: 'Kapruka country code'
+        required: true
+        default: 'UAE'
+      sku:
+        description: 'Kapruka product SKU'
+        required: true
+      fnpUrl:
+        description: 'Competitor product URL (omit or "--" to clear the pairing)'
+        required: false
+        default: ''
+
+jobs:
+  set-pairing:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - run: npm ci
+
+      - name: Set pairing and refresh snapshot
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: |
+          node src/uae-compare/cli-set-pairing.js \
+            "${{ github.event.inputs.country }}" \
+            "${{ github.event.inputs.sku }}" \
+            "${{ github.event.inputs.fnpUrl || '--' }}"

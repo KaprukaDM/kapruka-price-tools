@@ -67,6 +67,11 @@ export const allComparisonRows = (partnerId = null) => backend.allComparisonRows
 export const getIntlGiftPairings = (country) => backend.getIntlGiftPairings(country);
 export const setIntlGiftPairing = (country, sku, fnpUrl, matchSource, matchConfidence) =>
   backend.setIntlGiftPairing(country, sku, fnpUrl, matchSource, matchConfidence);
+// Latest full comparison result per country — written by the GitHub Actions
+// refresh job, read directly by the static dashboard (public Supabase anon
+// key, read-only via RLS). See public/uae-compare/index.html.
+export const getIntlGiftSnapshot = (country) => backend.getIntlGiftSnapshot(country);
+export const setIntlGiftSnapshot = (country, payload) => backend.setIntlGiftSnapshot(country, payload);
 
 // ---------------------------------------------------------------------------
 // Postgres (Supabase) backend
@@ -118,6 +123,12 @@ async function makePostgresBackend(connectionString) {
       updated_at        TEXT NOT NULL,
       UNIQUE (country, kapruka_sku)
     );
+    CREATE TABLE IF NOT EXISTS intl_gift_snapshots (
+      id             BIGSERIAL PRIMARY KEY,
+      country        TEXT NOT NULL UNIQUE,
+      generated_at   TEXT NOT NULL,
+      payload        JSONB NOT NULL
+    );
   `);
 
   return {
@@ -146,6 +157,23 @@ async function makePostgresBackend(connectionString) {
            fnp_url = EXCLUDED.fnp_url, match_source = EXCLUDED.match_source,
            match_confidence = EXCLUDED.match_confidence, updated_at = EXCLUDED.updated_at`,
         [country, sku, fnpUrl, matchSource || null, matchConfidence || null, nowIso()],
+      );
+    },
+
+    async getIntlGiftSnapshot(country) {
+      const { rows } = await pool.query(
+        `SELECT payload FROM intl_gift_snapshots WHERE country = $1`,
+        [country],
+      );
+      return rows[0] ? rows[0].payload : null;
+    },
+
+    async setIntlGiftSnapshot(country, payload) {
+      await pool.query(
+        `INSERT INTO intl_gift_snapshots (country, generated_at, payload)
+         VALUES ($1,$2,$3::jsonb)
+         ON CONFLICT (country) DO UPDATE SET generated_at = EXCLUDED.generated_at, payload = EXCLUDED.payload`,
+        [country, nowIso(), JSON.stringify(payload)],
       );
     },
 
@@ -291,6 +319,16 @@ async function makePostgresBackend(connectionString) {
 //     updated_at        TEXT NOT NULL,
 //     UNIQUE (country, kapruka_sku)
 //   );
+//   CREATE TABLE IF NOT EXISTS intl_gift_snapshots (
+//     id             BIGSERIAL PRIMARY KEY,
+//     country        TEXT NOT NULL UNIQUE,
+//     generated_at   TEXT NOT NULL,
+//     payload        JSONB NOT NULL
+//   );
+//   -- The static dashboard (GitHub Pages) reads this table directly with a
+//   -- public anon key, so it needs RLS enabled with a public SELECT policy:
+//   ALTER TABLE intl_gift_snapshots ENABLE ROW LEVEL SECURITY;
+//   CREATE POLICY "Public read" ON intl_gift_snapshots FOR SELECT USING (true);
 
 async function makeSupabaseRestBackend(baseUrl, serviceKey) {
   const REST = `${baseUrl.replace(/\/$/, '')}/rest/v1`;
@@ -353,6 +391,19 @@ async function makeSupabaseRestBackend(baseUrl, serviceKey) {
           match_confidence: matchConfidence || null,
           updated_at: nowIso(),
         }),
+      });
+    },
+
+    async getIntlGiftSnapshot(country) {
+      const rows = await restFetch(`/intl_gift_snapshots?select=payload&country=eq.${encodeURIComponent(country)}`);
+      return rows[0] ? rows[0].payload : null;
+    },
+
+    async setIntlGiftSnapshot(country, payload) {
+      await restFetch(`/intl_gift_snapshots?on_conflict=country`, {
+        method: 'POST',
+        headers: { Prefer: 'resolution=merge-duplicates' },
+        body: JSON.stringify({ country, generated_at: nowIso(), payload }),
       });
     },
 
@@ -483,6 +534,12 @@ async function makeSqliteBackend() {
       updated_at        TEXT NOT NULL,
       UNIQUE (country, kapruka_sku)
     );
+    CREATE TABLE IF NOT EXISTS intl_gift_snapshots (
+      id             INTEGER PRIMARY KEY AUTOINCREMENT,
+      country        TEXT NOT NULL UNIQUE,
+      generated_at   TEXT NOT NULL,
+      payload_json   TEXT NOT NULL
+    );
   `);
 
   const insChk = db.prepare(`
@@ -504,6 +561,11 @@ async function makeSqliteBackend() {
     ON CONFLICT (country, kapruka_sku) DO UPDATE SET
       fnp_url = excluded.fnp_url, match_source = excluded.match_source,
       match_confidence = excluded.match_confidence, updated_at = excluded.updated_at`);
+  const selSnapshot = db.prepare(`SELECT payload_json FROM intl_gift_snapshots WHERE country = ?`);
+  const upsertSnapshot = db.prepare(`
+    INSERT INTO intl_gift_snapshots (country, generated_at, payload_json)
+    VALUES (?, ?, ?)
+    ON CONFLICT (country) DO UPDATE SET generated_at = excluded.generated_at, payload_json = excluded.payload_json`);
 
   return {
     async getIntlGiftPairings(country) {
@@ -520,6 +582,15 @@ async function makeSqliteBackend() {
         return;
       }
       upsertPairing.run(country, sku, fnpUrl, matchSource || null, matchConfidence || null, nowIso());
+    },
+
+    async getIntlGiftSnapshot(country) {
+      const row = selSnapshot.get(country);
+      return row ? JSON.parse(row.payload_json) : null;
+    },
+
+    async setIntlGiftSnapshot(country, payload) {
+      upsertSnapshot.run(country, nowIso(), JSON.stringify(payload));
     },
 
     async savePriceCheck({ category, query, result }) {

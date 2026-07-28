@@ -61,6 +61,12 @@
   }
   #refreshBtn:hover:not(:disabled) { opacity: 0.9; }
   #refreshBtn:disabled { opacity: 0.55; cursor: not-allowed; }
+  #settingsBtn {
+    padding: 8px 12px; background: var(--surface); color: var(--text-muted); border: 1px solid var(--border-strong);
+    border-radius: 10px; cursor: pointer; font-size: 14px;
+  }
+  #settingsBtn:hover { border-color: var(--purple); color: var(--purple); }
+  #settingsBtn.configured { color: var(--green); border-color: var(--green); }
   .spinner {
     width: 13px; height: 13px; border: 2px solid rgba(255,255,255,0.4); border-top-color: #fff;
     border-radius: 50%; animation: spin 0.7s linear infinite; display: none;
@@ -78,6 +84,11 @@
     background: var(--red-bg); color: var(--red); border-radius: 10px; padding: 12px 16px;
     margin-bottom: 16px; font-size: 13px; display: none;
   }
+  .info-banner {
+    background: var(--purple-light); color: var(--purple); border-radius: 10px; padding: 12px 16px;
+    margin-bottom: 16px; font-size: 12.5px; line-height: 1.5;
+  }
+  .info-banner a { color: inherit; font-weight: 600; }
 
   table { width: 100%; border-collapse: collapse; background: var(--surface); border-radius: 14px; overflow: hidden; border: 1px solid var(--border); }
   thead th {
@@ -151,6 +162,7 @@
         <button type="button" data-view="table">Table</button>
         <button type="button" data-view="grid">Grid</button>
       </div>
+      <button id="settingsBtn" title="Set GitHub token (needed to trigger live refreshes/saves)">⚙</button>
       <button id="refreshBtn"><span class="spinner"></span><span id="refreshLabel">Refresh</span></button>
     </div>
   </div>
@@ -160,6 +172,7 @@
     <span class="country-tab-more" title="More countries coming soon">+ more countries coming soon</span>
   </div>
 
+  <div class="info-banner" id="infoBanner" hidden></div>
   <div class="error-banner" id="errorBanner"></div>
 
   <div class="stats" id="stats"></div>
@@ -181,16 +194,67 @@
 </div>
 
 <script>
+// ── Static dashboard, no server of its own ──────────────────────────────
+// This page is meant to be hosted on GitHub Pages (or any static host). It
+// reads the latest comparison straight from Supabase (public anon key,
+// read-only via RLS — see src/db.js for the RLS policy) and triggers
+// refreshes / pairing edits by dispatching GitHub Actions workflows, which
+// run the real scraping server-side and write the result back to Supabase.
+// See .github/workflows/uae-compare-*.yml and src/uae-compare/cli-*.js.
+const CONFIG = {
+  supabaseUrl: 'https://kmvtvbhlbnxzukzmykba.supabase.co',
+  // Project Settings -> API -> "anon" / "public" key in the Supabase
+  // dashboard. Safe to expose client-side — it only grants what RLS allows
+  // (public SELECT on intl_gift_snapshots, nothing else).
+  supabaseAnonKey: 'YOUR_SUPABASE_ANON_KEY',
+  githubOwner: 'KaprukaDM',
+  githubRepo: 'kapruka-price-tools',
+  refreshWorkflow: 'uae-compare-refresh.yml',
+  pairingWorkflow: 'uae-compare-set-pairing.yml',
+};
+
 const $ = (id) => document.getElementById(id);
 const refreshBtn = $('refreshBtn');
 const refreshLabel = $('refreshLabel');
+const settingsBtn = $('settingsBtn');
 const errorBanner = $('errorBanner');
+const infoBanner = $('infoBanner');
 const table = $('table');
 const grid = $('grid');
 const viewToggle = $('viewToggle');
 let LAST_DATA = null;
 let VIEW = localStorage.getItem('uaeCompareView') || 'table';
 let COUNTRY = 'UAE'; // only country wired up today — see src/uae-compare/countries.js
+
+// ── GitHub token (stored per-browser in localStorage — never in this file) ──
+// Needed only to TRIGGER a live refresh or save a pairing. Without it the
+// page still works read-only, showing whatever the last scheduled Action run
+// found. Use a FINE-GRAINED personal access token scoped to ONLY this repo
+// (KaprukaDM/kapruka-price-tools) with "Actions: Read and write" permission
+// and nothing else — if it ever leaked, the worst case is someone can
+// trigger extra workflow runs, not read secrets or change code.
+function getGithubToken() {
+  return localStorage.getItem('intlGiftsGithubToken') || '';
+}
+function setGithubToken(token) {
+  if (token) localStorage.setItem('intlGiftsGithubToken', token);
+  else localStorage.removeItem('intlGiftsGithubToken');
+  updateSettingsBtn();
+}
+function updateSettingsBtn() {
+  settingsBtn.classList.toggle('configured', !!getGithubToken());
+}
+settingsBtn.addEventListener('click', () => {
+  const current = getGithubToken();
+  const next = prompt(
+    'GitHub personal access token (fine-grained, scoped to this repo only, "Actions: Read and write").\n' +
+      'Needed to trigger a live refresh or save a pairing. Leave blank to clear.',
+    current,
+  );
+  if (next === null) return; // cancelled
+  setGithubToken(next.trim());
+});
+updateSettingsBtn();
 
 function escapeHtml(s) {
   return String(s ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -345,24 +409,93 @@ viewToggle.addEventListener('click', (e) => {
   applyView();
 });
 
+// ── Supabase (read) ──────────────────────────────────────────────────────
+async function fetchSnapshot(country) {
+  if (!CONFIG.supabaseAnonKey || CONFIG.supabaseAnonKey === 'YOUR_SUPABASE_ANON_KEY') {
+    throw new Error('This page needs its Supabase anon key configured — see the comment at the top of the <script> block.');
+  }
+  const url = `${CONFIG.supabaseUrl}/rest/v1/intl_gift_snapshots?select=payload&country=eq.${encodeURIComponent(country)}`;
+  const res = await fetch(url, {
+    headers: { apikey: CONFIG.supabaseAnonKey, Authorization: `Bearer ${CONFIG.supabaseAnonKey}` },
+  });
+  if (!res.ok) throw new Error(`Supabase read failed (HTTP ${res.status})`);
+  const rows = await res.json();
+  return rows[0]?.payload || null;
+}
+
+// ── GitHub Actions (trigger + wait) ──────────────────────────────────────
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function dispatchWorkflow(workflowFile, inputs, token) {
+  const url = `https://api.github.com/repos/${CONFIG.githubOwner}/${CONFIG.githubRepo}/actions/workflows/${workflowFile}/dispatches`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+    },
+    body: JSON.stringify({ ref: 'main', inputs }),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`Couldn't trigger the workflow (HTTP ${res.status}). Check the token's scope/permissions. ${text}`);
+  }
+}
+
+// Polls the workflow's recent runs until one started after `sinceIso`
+// reaches a terminal state. GitHub's dispatch endpoint doesn't return a run
+// id directly, so this is the standard way to track it.
+async function waitForWorkflowRun(workflowFile, sinceIso, token, { intervalMs = 3000, maxAttempts = 40 } = {}) {
+  const url = `https://api.github.com/repos/${CONFIG.githubOwner}/${CONFIG.githubRepo}/actions/workflows/${workflowFile}/runs?event=workflow_dispatch&per_page=5`;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    await sleep(intervalMs);
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' },
+    });
+    if (res.ok) {
+      const data = await res.json();
+      const run = (data.workflow_runs || []).find((r) => new Date(r.created_at) >= new Date(sinceIso));
+      if (run) {
+        if (run.status === 'completed') {
+          if (run.conclusion !== 'success') throw new Error(`Workflow run finished with status "${run.conclusion}" — check it on GitHub.`);
+          return run;
+        }
+      }
+    }
+  }
+  throw new Error('Timed out waiting for the workflow to finish (2 min). It may still complete — check the Actions tab, or just Refresh again shortly.');
+}
+
+function requireToken() {
+  const token = getGithubToken();
+  if (!token) {
+    settingsBtn.click();
+    return getGithubToken() || null;
+  }
+  return token;
+}
+
 async function savePairing(btn) {
   const sku = btn.dataset.sku;
   const input = document.querySelector(`input[data-sku="${sku}"]`);
   const fnpUrl = input.value.trim();
+
+  const token = requireToken();
+  if (!token) return; // user cancelled the token prompt
+
   btn.textContent = 'Saving…';
   btn.disabled = true;
+  setError(null);
   try {
-    const res = await fetch(`/api/uae-compare/pairings?country=${COUNTRY}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sku, fnpUrl: fnpUrl || null }),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Save failed');
+    const since = new Date().toISOString();
+    await dispatchWorkflow(CONFIG.pairingWorkflow, { country: COUNTRY, sku, fnpUrl: fnpUrl || '--' }, token);
+    btn.textContent = 'Running…';
+    await waitForWorkflowRun(CONFIG.pairingWorkflow, since, token);
     btn.textContent = 'Saved';
     btn.classList.add('saved');
     setTimeout(() => { btn.textContent = 'Save'; btn.classList.remove('saved'); btn.disabled = false; }, 1200);
-    await refresh({ silent: true });
+    await load({ silent: true });
   } catch (err) {
     btn.textContent = 'Save';
     btn.disabled = false;
@@ -374,25 +507,65 @@ function renderAll(data) {
   LAST_DATA = data;
   $('subtitle').textContent = `kapruka.com/online/${data.country} (LKR) converted against ${data.competitorName} (AED)`;
   $('fxPill').textContent = `1 AED = ${data.fx.aedToLkr.toFixed(2)} LKR`;
-  $('lastUpdated').textContent = `Updated ${new Date(data.generatedAt).toLocaleTimeString()}`;
+  $('lastUpdated').textContent = `Updated ${new Date(data.generatedAt).toLocaleString()}`;
   renderStats(data);
   renderTable(data);
   renderGrid(data);
   applyView();
 }
 
-async function refresh({ silent = false } = {}) {
-  if (!silent) {
-    refreshBtn.disabled = true;
-    refreshBtn.classList.add('loading');
-    refreshLabel.textContent = 'Refreshing…';
-  }
+function showInfo(msg) {
+  if (!msg) { infoBanner.hidden = true; return; }
+  infoBanner.hidden = false;
+  infoBanner.innerHTML = msg;
+}
+
+// Just re-reads the latest snapshot from Supabase — instant, but only as
+// fresh as the last scheduled/on-demand Action run.
+async function load({ silent = false } = {}) {
   setError(null);
   try {
-    const res = await fetch(`/api/uae-compare/refresh?country=${COUNTRY}`, { method: 'POST' });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Refresh failed');
+    const data = await fetchSnapshot(COUNTRY);
+    if (!data) {
+      showInfo(
+        'No data yet for this country. The scheduled refresh runs every 3 hours — or click Refresh to trigger one now (needs a GitHub token, ⚙ button).',
+      );
+      return;
+    }
+    showInfo(null);
     renderAll(data);
+  } catch (err) {
+    if (!silent) setError(err.message);
+  }
+}
+
+// Triggers a live refresh via GitHub Actions (if a token is configured),
+// waits for it, then reloads. Falls back to just re-reading the latest
+// cached snapshot if no token is set.
+async function refresh() {
+  const token = getGithubToken();
+  refreshBtn.disabled = true;
+  refreshBtn.classList.add('loading');
+  setError(null);
+
+  if (!token) {
+    refreshLabel.textContent = 'Loading…';
+    await load();
+    showInfo(
+      'Showing the latest scheduled run (auto-refreshes every 3h). Click the ⚙ button to add a GitHub token and enable instant on-demand refresh.',
+    );
+    refreshBtn.disabled = false;
+    refreshBtn.classList.remove('loading');
+    refreshLabel.textContent = 'Refresh';
+    return;
+  }
+
+  refreshLabel.textContent = 'Refreshing… (~1 min)';
+  try {
+    const since = new Date().toISOString();
+    await dispatchWorkflow(CONFIG.refreshWorkflow, { country: COUNTRY }, token);
+    await waitForWorkflowRun(CONFIG.refreshWorkflow, since, token);
+    await load();
   } catch (err) {
     setError(err.message);
   } finally {
@@ -404,7 +577,7 @@ async function refresh({ silent = false } = {}) {
 
 refreshBtn.addEventListener('click', () => refresh());
 applyView();
-refresh();
+load();
 </script>
 </body>
 </html>

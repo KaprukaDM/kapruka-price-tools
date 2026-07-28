@@ -12,6 +12,8 @@
     "dev": "node --watch src/server.js",
     "hot": "node src/hot-server.js",
     "uae-compare": "node src/uae-compare/server.js",
+    "intl-gifts:refresh": "node src/uae-compare/cli-refresh.js",
+    "intl-gifts:set-pairing": "node src/uae-compare/cli-set-pairing.js",
     "compare": "node src/compare/index.js",
     "relevancy": "node src/tools/find-online-relevancy.js",
     "clear-supabase": "node src/tools/clear-supabase-data.js"

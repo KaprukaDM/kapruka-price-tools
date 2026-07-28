@@ -1,0 +1,39 @@
+name: International Gifting Price Checker — Refresh
+
+# Re-scrapes Kapruka + the country's competitor site, recomputes the price
+# comparison, and saves it as the latest snapshot in Supabase. The static
+# dashboard (public/uae-compare/index.html, served via GitHub Pages) reads
+# whatever this last wrote — it has no server of its own to call.
+#
+# Runs on a schedule (keeps the dashboard fresh automatically) AND on demand
+# (the dashboard's Refresh button triggers this via the GitHub API for an
+# immediate update — see the "Refresh now" logic in index.html).
+
+on:
+  schedule:
+    - cron: '0 */3 * * *' # every 3 hours
+  workflow_dispatch:
+    inputs:
+      country:
+        description: 'Kapruka country code (kapruka.com/online/<code>)'
+        required: false
+        default: 'UAE'
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - run: npm ci
+
+      - name: Refresh snapshot
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: node src/uae-compare/cli-refresh.js "${{ github.event.inputs.country || 'UAE' }}"
