@@ -438,8 +438,11 @@ async function dispatchWorkflow(workflowFile, inputs, token) {
     body: JSON.stringify({ ref: 'main', inputs }),
   });
   if (!res.ok) {
+    if (res.status === 401 || res.status === 403) {
+      throw new Error('Your GitHub token is missing, expired, or lacks permission. Click the ⚙ button to set a new one.');
+    }
     const text = await res.text().catch(() => '');
-    throw new Error(`Couldn't trigger the workflow (HTTP ${res.status}). Check the token's scope/permissions. ${text}`);
+    throw new Error(`Couldn't trigger the workflow (HTTP ${res.status}). ${text}`);
   }
 }
 
@@ -453,6 +456,9 @@ async function waitForWorkflowRun(workflowFile, sinceIso, token, { intervalMs = 
     const res = await fetch(url, {
       headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' },
     });
+    if (res.status === 401 || res.status === 403) {
+      throw new Error('Your GitHub token is missing, expired, or lacks permission. Click the ⚙ button to set a new one.');
+    }
     if (res.ok) {
       const data = await res.json();
       const run = (data.workflow_runs || []).find((r) => new Date(r.created_at) >= new Date(sinceIso));
