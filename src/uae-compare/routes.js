@@ -1,27 +1,32 @@
-// API router for the FNP.ae vs Kapruka UAE price dashboard. Exported so it can
+// API router for the International Gifting Price Checker. Exported so it can
 // be mounted either by the standalone server (src/uae-compare/server.js,
 // `npm run uae-compare`) or embedded directly into the main Price Tools hub
 // (src/server.js) at /api/uae-compare/* — same routes, same behavior, just
 // sharing the hub's existing process instead of running as a separate service.
 //
-// Compares Kapruka's UAE gifts catalog (kapruka.com/online/UAE, LKR) against
-// the matching product on fnp.ae (AED), converted at the live AED->LKR rate.
+// Compares Kapruka's international gifts catalog for a given country
+// (kapruka.com/online/<country>, LKR) against the matching product on that
+// country's competitor site (see countries.js), converted at the live market
+// FX rate. UAE (fnp.ae) is the only country wired up today; see countries.js
+// for how to add more.
 //
-// Both catalogs are auto-scraped every refresh. fnp.ae has no public search
-// API, so matches are found by crawling its category pages and comparing
-// normalized product names (see matcher.js) — most Kapruka UAE hampers are
-// re-listed fnp.ae products under the same name, so this is high-confidence.
-// A dashboard row can still be manually re-paired (config/uae-pairings.json)
-// when the auto-match misses or picks the wrong product; manual pairings
-// always win over the auto-match.
+// Once a Kapruka product is matched to a competitor URL — auto-matched by
+// name or manually confirmed in the dashboard — that pairing is cached in the
+// database (src/db.js) and reused on every future refresh. The competitor's
+// catalog is still crawled every refresh (it's the reliable price source for
+// most categories), but name-matching only runs for products with no cached
+// pairing yet, so that work only shrinks over time. Paired products whose URL
+// isn't present in a given crawl (e.g. fnp.ae's /cakes category renders a
+// different random subsample of products on every request — see
+// fnp-scraper.js) fall back to a direct per-page fetch instead.
 
 import express from 'express';
 
-import { fetchKaprukaUaeCatalog } from './kapruka-scraper.js';
-import { fetchFnpCatalog, fetchFnpProduct } from './fnp-scraper.js';
+import { fetchKaprukaCountryCatalog } from './kapruka-scraper.js';
 import { autoMatch } from './matcher.js';
 import { getAedToLkrRate } from './fx.js';
 import { loadPairings, setPairing } from './pairings-store.js';
+import { getCountry } from './countries.js';
 
 // Run `tasks` (thunks) with at most `limit` in flight at once.
 async function mapWithConcurrency(items, limit, fn) {
@@ -37,83 +42,97 @@ async function mapWithConcurrency(items, limit, fn) {
   return results;
 }
 
-function buildComparison(kaprukaProducts, pairings, autoMatches, fnpByUrl, fnpResults, fxRate) {
-  return kaprukaProducts.map((k) => {
-    const manualUrl = pairings[k.sku] || null;
-    const auto = autoMatches.get(k.sku) || null;
-    const fnpUrl = manualUrl || auto?.fnpUrl || null;
-    const matchSource = manualUrl ? 'manual' : auto ? 'auto' : null;
-    const matchConfidence = manualUrl ? null : auto?.confidence || null;
+function toRow(k, fnpUrl, matchSource, matchConfidence, competitor, fxRate) {
+  let priceLKR = null;
+  let diffLKR = null;
+  let diffPct = null;
+  if (competitor?.priceAED != null && fxRate) {
+    priceLKR = competitor.priceAED * fxRate;
+    diffLKR = k.priceLKR - priceLKR;
+    diffPct = (diffLKR / priceLKR) * 100;
+  }
+  let status = 'unpaired';
+  if (fnpUrl) status = competitor?.priceAED != null ? 'ok' : 'scrape_failed';
 
-    // Prefer the price already captured while crawling fnp.ae's category
-    // pages; only a manually-pasted URL outside those categories needs a
-    // dedicated per-page scrape (see fnpResults).
-    const fnp = fnpUrl ? fnpByUrl.get(fnpUrl) || fnpResults.get(fnpUrl) : null;
-
-    let fnpPriceLKR = null;
-    let diffLKR = null;
-    let diffPct = null;
-    if (fnp?.priceAED != null && fxRate) {
-      fnpPriceLKR = fnp.priceAED * fxRate;
-      diffLKR = k.priceLKR - fnpPriceLKR;
-      diffPct = (diffLKR / fnpPriceLKR) * 100;
-    }
-
-    let status = 'unpaired';
-    if (fnpUrl) status = fnp?.priceAED != null ? 'ok' : 'scrape_failed';
-
-    return {
-      sku: k.sku,
-      kaprukaName: k.name,
-      kaprukaUrl: k.url,
-      kaprukaImage: k.image,
-      kaprukaPriceLKR: k.priceLKR,
-      fnpUrl,
-      fnpName: fnp?.name || null,
-      fnpImage: fnp?.image || null,
-      fnpPriceAED: fnp?.priceAED ?? null,
-      fnpPriceLKR,
-      diffLKR,
-      diffPct,
-      matchSource,
-      matchConfidence,
-      status,
-    };
-  });
+  return {
+    sku: k.sku,
+    kaprukaName: k.name,
+    kaprukaUrl: k.url,
+    kaprukaImage: k.image,
+    kaprukaPriceLKR: k.priceLKR,
+    fnpUrl,
+    fnpName: competitor?.name || null,
+    fnpImage: competitor?.image || null,
+    fnpPriceAED: competitor?.priceAED ?? null,
+    fnpPriceLKR: priceLKR,
+    diffLKR,
+    diffPct,
+    matchSource,
+    matchConfidence,
+    status,
+  };
 }
 
-async function runComparison({ forceFx = false } = {}) {
-  const [kaprukaProducts, fnpCatalog, pairings, fx] = await Promise.all([
-    fetchKaprukaUaeCatalog(),
-    fetchFnpCatalog(),
-    loadPairings(),
+async function runComparison(countryCode, { forceFx = false } = {}) {
+  const country = getCountry(countryCode);
+
+  const [kaprukaProducts, pairings, fx, competitorCatalog] = await Promise.all([
+    fetchKaprukaCountryCatalog(countryCode),
+    loadPairings(countryCode),
     getAedToLkrRate({ force: forceFx }),
+    // The catalog crawl is the reliable price source for most categories
+    // (hamper/combo/flower product pages don't reliably expose price outside
+    // their category-listing card — only cakes/variant pages do, via
+    // fetchProduct's #defaultProductPrice read). So it still runs every
+    // refresh; what's bypassed is re-matching already-paired products by name.
+    country.fetchCatalog(),
   ]);
 
-  const fnpByUrl = new Map(fnpCatalog.map((p) => [p.url, p]));
-  const autoMatches = autoMatch(kaprukaProducts, fnpCatalog);
+  const competitorByUrl = new Map(competitorCatalog.map((p) => [p.url, p]));
 
-  // Manual pairings that point at a URL NOT already in the crawled catalog
-  // (e.g. pasted from a category we don't crawl) need a live per-page scrape.
-  const manualUrlsNeedingScrape = [
-    ...new Set(Object.values(pairings).filter((url) => url && !fnpByUrl.has(url))),
-  ];
-  const fnpResults = new Map();
-  await mapWithConcurrency(manualUrlsNeedingScrape, 5, async (url) => {
+  const unpaired = kaprukaProducts.filter((k) => !pairings[k.sku]?.fnpUrl);
+  const newAutoMatches = unpaired.length ? autoMatch(unpaired, competitorCatalog) : new Map();
+
+  // Cache whatever the auto-matcher found so future refreshes don't need to
+  // re-match these — self-populating over time.
+  await Promise.all(
+    [...newAutoMatches.entries()].map(([sku, m]) => setPairing(countryCode, sku, m.fnpUrl, 'auto', m.confidence)),
+  );
+
+  // Paired products whose URL isn't in this round's crawl (e.g. cakes/
+  // chocolates, whose category page only shows a rotating subsample) get a
+  // direct per-page fetch instead — the fallback path that actually is
+  // reliable for that case.
+  const pairedUrlsNeedingDirectFetch = kaprukaProducts
+    .map((k) => pairings[k.sku]?.fnpUrl)
+    .filter((url) => url && !competitorByUrl.has(url));
+  await mapWithConcurrency([...new Set(pairedUrlsNeedingDirectFetch)], 5, async (url) => {
     try {
-      fnpResults.set(url, await fetchFnpProduct(url));
+      competitorByUrl.set(url, await country.fetchProduct(url));
     } catch (err) {
-      fnpResults.set(url, { name: null, priceAED: null, error: err.message });
+      competitorByUrl.set(url, { name: null, priceAED: null, error: err.message });
     }
   });
 
-  const comparisons = buildComparison(kaprukaProducts, pairings, autoMatches, fnpByUrl, fnpResults, fx.rate);
+  const comparisons = kaprukaProducts.map((k) => {
+    const existing = pairings[k.sku];
+    if (existing?.fnpUrl) {
+      return toRow(k, existing.fnpUrl, existing.matchSource, existing.matchConfidence, competitorByUrl.get(existing.fnpUrl), fx.rate);
+    }
+    const auto = newAutoMatches.get(k.sku);
+    if (auto) {
+      return toRow(k, auto.fnpUrl, 'auto', auto.confidence, competitorByUrl.get(auto.fnpUrl), fx.rate);
+    }
+    return toRow(k, null, null, null, null, fx.rate);
+  });
+
   const pairedCount = comparisons.filter((c) => c.status !== 'unpaired').length;
 
   return {
+    country: countryCode,
+    competitorName: country.competitorName,
     fx: { aedToLkr: fx.rate, asOf: fx.asOf },
     kaprukaCount: kaprukaProducts.length,
-    fnpCatalogCount: fnpCatalog.length,
     pairedCount,
     comparisons,
     generatedAt: new Date().toISOString(),
@@ -126,27 +145,37 @@ async function runComparison({ forceFx = false } = {}) {
 export function uaeCompareApiRouter() {
   const router = express.Router();
 
-  // Full refresh: re-scrape Kapruka's UAE catalog, re-scrape every paired
-  // fnp.ae product, and fetch a fresh FX rate.
-  router.post('/api/uae-compare/refresh', async (_req, res) => {
+  // Full refresh: re-scrape Kapruka's country catalog, fetch every paired
+  // competitor product directly, crawl+match anything still unpaired, and
+  // fetch a fresh FX rate.
+  router.post('/api/uae-compare/refresh', async (req, res) => {
+    const countryCode = req.query.country || 'UAE';
     try {
-      res.json(await runComparison({ forceFx: true }));
+      res.json(await runComparison(countryCode, { forceFx: true }));
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(400).json({ error: err.message });
     }
   });
 
-  router.get('/api/uae-compare/pairings', async (_req, res) => {
-    res.json(await loadPairings());
+  router.get('/api/uae-compare/pairings', async (req, res) => {
+    const countryCode = req.query.country || 'UAE';
+    res.json(await loadPairings(countryCode));
   });
 
   router.post('/api/uae-compare/pairings', async (req, res) => {
+    const countryCode = req.query.country || 'UAE';
     const { sku, fnpUrl } = req.body || {};
     if (!sku) return res.status(400).json({ error: 'sku is required' });
-    if (fnpUrl && !/^https?:\/\/(www\.)?fnp\.ae\//i.test(fnpUrl)) {
-      return res.status(400).json({ error: 'fnpUrl must be an fnp.ae product link' });
+    let country;
+    try {
+      country = getCountry(countryCode);
+    } catch (err) {
+      return res.status(400).json({ error: err.message });
     }
-    const pairings = await setPairing(sku, fnpUrl || null);
+    if (fnpUrl && !country.competitorUrlPattern.test(fnpUrl)) {
+      return res.status(400).json({ error: `fnpUrl must be a ${country.competitorName} product link` });
+    }
+    const pairings = await setPairing(countryCode, sku, fnpUrl || null, 'manual', null);
     res.json(pairings);
   });
 

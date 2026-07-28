@@ -1,4 +1,7 @@
-// Scrapes the Kapruka UAE gifts catalog (https://www.kapruka.com/online/UAE).
+// Scrapes a Kapruka international gifts catalog, e.g.
+// https://www.kapruka.com/online/UAE — the same page shape is used for every
+// destination country (just swap the country code), so this scraper is
+// shared across all countries in the International Gifting Price Checker.
 // Each product card embeds a JSON-LD Product block — same technique already
 // proven in kapruka-relevancy-python/bulk.py and src/compare/sources.js.
 // Pagination is discovered from the page's own paginate('...') JS call rather
@@ -6,7 +9,6 @@
 
 import * as cheerio from 'cheerio';
 
-const LISTING_URL = 'https://www.kapruka.com/online/UAE';
 const PAGE_SAFETY_CAP = 10;
 
 // Kapruka geolocates prices by the real connecting IP — a server hosted
@@ -95,20 +97,22 @@ function withPage(templateUrl, page) {
   return u.toString();
 }
 
-// Fetch every product on the Kapruka UAE listing, following pagination until
-// the page count is exhausted or a page yields nothing new.
-export async function fetchKaprukaUaeCatalog() {
+// Fetch every product on a Kapruka country listing (e.g. country="UAE" ->
+// kapruka.com/online/UAE), following pagination until the page count is
+// exhausted or a page yields nothing new.
+export async function fetchKaprukaCountryCatalog(country) {
+  const listingUrl = `https://www.kapruka.com/online/${encodeURIComponent(country)}`;
   const seen = new Map();
-  const firstHtml = await fetchHtml(LISTING_URL);
+  const firstHtml = await fetchHtml(listingUrl);
   for (const p of parseListingProducts(firstHtml)) seen.set(p.url, p);
 
-  const template = findPaginationTemplate(firstHtml, LISTING_URL);
+  const template = findPaginationTemplate(firstHtml, listingUrl);
   let page = 2;
   while (template && page <= PAGE_SAFETY_CAP) {
     const pageUrl = withPage(template, page);
     let pageHtml;
     try {
-      pageHtml = await fetchHtml(pageUrl, LISTING_URL);
+      pageHtml = await fetchHtml(pageUrl, listingUrl);
     } catch {
       break;
     }

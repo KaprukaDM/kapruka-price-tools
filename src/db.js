@@ -13,9 +13,15 @@
 //   • SQLite (node:sqlite) — local fallback when neither is configured, so
 //     development needs no database setup. Portable file at data/price-tools.db.
 //
-// Two tables either way:
-//   price_checks     - one row per Price Checker query (/api/match)
-//   comparison_runs  - one row per partner reconciliation that actually recomputed
+// Three tables either way:
+//   price_checks        - one row per Price Checker query (/api/match)
+//   comparison_runs     - one row per partner reconciliation that actually recomputed
+//   intl_gift_pairings  - one row per (country, Kapruka SKU) -> matching URL on that
+//                         country's competitor site (International Gifting Price
+//                         Checker). Once a pairing is confirmed (auto-matched or
+//                         manually set), it's cached here so future refreshes fetch
+//                         that exact competitor product page directly instead of
+//                         re-crawling/re-matching against the competitor's catalog.
 //
 // Each row keeps flat summary columns for easy SQL plus a full JSON payload so
 // nothing is lost. ALL exported functions are async (Postgres/REST are async;
@@ -58,6 +64,9 @@ export const recentComparisonRuns = (limit = 50, partnerId = null) =>
 export const getComparisonRun = (id) => backend.getComparisonRun(id);
 export const allPriceCheckRows = () => backend.allPriceCheckRows();
 export const allComparisonRows = (partnerId = null) => backend.allComparisonRows(partnerId);
+export const getIntlGiftPairings = (country) => backend.getIntlGiftPairings(country);
+export const setIntlGiftPairing = (country, sku, fnpUrl, matchSource, matchConfidence) =>
+  backend.setIntlGiftPairing(country, sku, fnpUrl, matchSource, matchConfidence);
 
 // ---------------------------------------------------------------------------
 // Postgres (Supabase) backend
@@ -99,9 +108,47 @@ async function makePostgresBackend(connectionString) {
     );
     CREATE INDEX IF NOT EXISTS idx_runs_partner ON comparison_runs (partner_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_checks_name ON price_checks (query_name, created_at);
+    CREATE TABLE IF NOT EXISTS intl_gift_pairings (
+      id                BIGSERIAL PRIMARY KEY,
+      country           TEXT NOT NULL,
+      kapruka_sku       TEXT NOT NULL,
+      fnp_url           TEXT NOT NULL,
+      match_source      TEXT,
+      match_confidence  TEXT,
+      updated_at        TEXT NOT NULL,
+      UNIQUE (country, kapruka_sku)
+    );
   `);
 
   return {
+    async getIntlGiftPairings(country) {
+      const { rows } = await pool.query(
+        `SELECT kapruka_sku, fnp_url, match_source, match_confidence
+         FROM intl_gift_pairings WHERE country = $1`,
+        [country],
+      );
+      const out = {};
+      for (const r of rows) {
+        out[r.kapruka_sku] = { fnpUrl: r.fnp_url, matchSource: r.match_source, matchConfidence: r.match_confidence };
+      }
+      return out;
+    },
+
+    async setIntlGiftPairing(country, sku, fnpUrl, matchSource, matchConfidence) {
+      if (!fnpUrl) {
+        await pool.query(`DELETE FROM intl_gift_pairings WHERE country = $1 AND kapruka_sku = $2`, [country, sku]);
+        return;
+      }
+      await pool.query(
+        `INSERT INTO intl_gift_pairings (country, kapruka_sku, fnp_url, match_source, match_confidence, updated_at)
+         VALUES ($1,$2,$3,$4,$5,$6)
+         ON CONFLICT (country, kapruka_sku) DO UPDATE SET
+           fnp_url = EXCLUDED.fnp_url, match_source = EXCLUDED.match_source,
+           match_confidence = EXCLUDED.match_confidence, updated_at = EXCLUDED.updated_at`,
+        [country, sku, fnpUrl, matchSource || null, matchConfidence || null, nowIso()],
+      );
+    },
+
     async savePriceCheck({ category, query, result }) {
       const { rows } = await pool.query(
         `INSERT INTO price_checks
@@ -234,6 +281,16 @@ async function makePostgresBackend(connectionString) {
 //   );
 //   CREATE INDEX IF NOT EXISTS idx_runs_partner ON comparison_runs (partner_id, created_at);
 //   CREATE INDEX IF NOT EXISTS idx_checks_name ON price_checks (query_name, created_at);
+//   CREATE TABLE IF NOT EXISTS intl_gift_pairings (
+//     id                BIGSERIAL PRIMARY KEY,
+//     country           TEXT NOT NULL,
+//     kapruka_sku       TEXT NOT NULL,
+//     fnp_url           TEXT NOT NULL,
+//     match_source      TEXT,
+//     match_confidence  TEXT,
+//     updated_at        TEXT NOT NULL,
+//     UNIQUE (country, kapruka_sku)
+//   );
 
 async function makeSupabaseRestBackend(baseUrl, serviceKey) {
   const REST = `${baseUrl.replace(/\/$/, '')}/rest/v1`;
@@ -249,7 +306,10 @@ async function makeSupabaseRestBackend(baseUrl, serviceKey) {
       const text = await res.text().catch(() => '');
       throw new Error(`Supabase REST ${res.status} on ${path}: ${text}`);
     }
-    return res.status === 204 ? null : res.json();
+    // PostgREST returns an empty body (not just on 204) whenever the request
+    // didn't ask for `Prefer: return=representation` — e.g. a plain upsert.
+    const text = await res.text();
+    return text ? JSON.parse(text) : null;
   }
 
   async function insert(table, row) {
@@ -262,6 +322,40 @@ async function makeSupabaseRestBackend(baseUrl, serviceKey) {
   }
 
   return {
+    async getIntlGiftPairings(country) {
+      const rows = await restFetch(
+        `/intl_gift_pairings?select=kapruka_sku,fnp_url,match_source,match_confidence` +
+          `&country=eq.${encodeURIComponent(country)}`,
+      );
+      const out = {};
+      for (const r of rows) {
+        out[r.kapruka_sku] = { fnpUrl: r.fnp_url, matchSource: r.match_source, matchConfidence: r.match_confidence };
+      }
+      return out;
+    },
+
+    async setIntlGiftPairing(country, sku, fnpUrl, matchSource, matchConfidence) {
+      if (!fnpUrl) {
+        await restFetch(
+          `/intl_gift_pairings?country=eq.${encodeURIComponent(country)}&kapruka_sku=eq.${encodeURIComponent(sku)}`,
+          { method: 'DELETE' },
+        );
+        return;
+      }
+      await restFetch(`/intl_gift_pairings?on_conflict=country,kapruka_sku`, {
+        method: 'POST',
+        headers: { Prefer: 'resolution=merge-duplicates' },
+        body: JSON.stringify({
+          country,
+          kapruka_sku: sku,
+          fnp_url: fnpUrl,
+          match_source: matchSource || null,
+          match_confidence: matchConfidence || null,
+          updated_at: nowIso(),
+        }),
+      });
+    },
+
     async savePriceCheck({ category, query, result }) {
       return insert('price_checks', {
         created_at: nowIso(),
@@ -379,6 +473,16 @@ async function makeSqliteBackend() {
     );
     CREATE INDEX IF NOT EXISTS idx_runs_partner ON comparison_runs (partner_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_checks_name ON price_checks (query_name, created_at);
+    CREATE TABLE IF NOT EXISTS intl_gift_pairings (
+      id                INTEGER PRIMARY KEY AUTOINCREMENT,
+      country           TEXT NOT NULL,
+      kapruka_sku       TEXT NOT NULL,
+      fnp_url           TEXT NOT NULL,
+      match_source      TEXT,
+      match_confidence  TEXT,
+      updated_at        TEXT NOT NULL,
+      UNIQUE (country, kapruka_sku)
+    );
   `);
 
   const insChk = db.prepare(`
@@ -390,8 +494,34 @@ async function makeSqliteBackend() {
        kapruka_count, partner_count, matched, kapruka_higher, kapruka_lower,
        same_price, only_kapruka, only_partner, payload_json)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+  const selPairings = db.prepare(
+    `SELECT kapruka_sku, fnp_url, match_source, match_confidence FROM intl_gift_pairings WHERE country = ?`,
+  );
+  const delPairing = db.prepare(`DELETE FROM intl_gift_pairings WHERE country = ? AND kapruka_sku = ?`);
+  const upsertPairing = db.prepare(`
+    INSERT INTO intl_gift_pairings (country, kapruka_sku, fnp_url, match_source, match_confidence, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT (country, kapruka_sku) DO UPDATE SET
+      fnp_url = excluded.fnp_url, match_source = excluded.match_source,
+      match_confidence = excluded.match_confidence, updated_at = excluded.updated_at`);
 
   return {
+    async getIntlGiftPairings(country) {
+      const out = {};
+      for (const r of selPairings.all(country)) {
+        out[r.kapruka_sku] = { fnpUrl: r.fnp_url, matchSource: r.match_source, matchConfidence: r.match_confidence };
+      }
+      return out;
+    },
+
+    async setIntlGiftPairing(country, sku, fnpUrl, matchSource, matchConfidence) {
+      if (!fnpUrl) {
+        delPairing.run(country, sku);
+        return;
+      }
+      upsertPairing.run(country, sku, fnpUrl, matchSource || null, matchConfidence || null, nowIso());
+    },
+
     async savePriceCheck({ category, query, result }) {
       const info = insChk.run(
         nowIso(),

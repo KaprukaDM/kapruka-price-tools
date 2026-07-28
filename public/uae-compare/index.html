@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>FNP.ae vs Kapruka — UAE Price Compare</title>
+<title>International Gifting Price Checker — Kapruka</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,300&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -41,6 +41,14 @@
     font-size: 12.5px; font-weight: 600; color: var(--text-muted); font-family: 'DM Sans', sans-serif;
   }
   .view-toggle button.active { background: var(--surface); color: var(--purple); box-shadow: 0 1px 2px rgba(0,0,0,0.06); }
+
+  .country-tabs { display: flex; align-items: center; gap: 8px; margin-bottom: 16px; }
+  .country-tab {
+    padding: 7px 16px; border-radius: 999px; border: 1px solid var(--border-strong); background: var(--surface);
+    cursor: pointer; font-size: 12.5px; font-weight: 600; color: var(--text-muted); font-family: 'DM Sans', sans-serif;
+  }
+  .country-tab.active { background: var(--purple); border-color: var(--purple); color: #fff; }
+  .country-tab-more { font-size: 11.5px; color: var(--text-faint); padding: 0 4px; }
   .fx-pill {
     font-family: 'DM Mono', monospace; font-size: 12.5px; background: var(--purple-light); color: var(--purple);
     padding: 7px 14px; border-radius: 999px; font-weight: 500; white-space: nowrap;
@@ -133,8 +141,8 @@
   <div class="page-header">
     <div>
       <a href="/" style="font-size:12px; color:var(--text-muted); text-decoration:none;">← Price Tools</a>
-      <h1 style="margin-top:4px;">FNP.ae vs Kapruka — UAE Price Compare</h1>
-      <div class="subtitle">kapruka.com/online/UAE (LKR) converted against fnp.ae (AED)</div>
+      <h1 style="margin-top:4px;">International Gifting Price Checker</h1>
+      <div class="subtitle" id="subtitle">kapruka.com/online/UAE (LKR) converted against fnp.ae (AED)</div>
     </div>
     <div class="header-right">
       <span class="fx-pill" id="fxPill">FX: —</span>
@@ -145,6 +153,11 @@
       </div>
       <button id="refreshBtn"><span class="spinner"></span><span id="refreshLabel">Refresh</span></button>
     </div>
+  </div>
+
+  <div class="country-tabs" id="countryTabs">
+    <button type="button" class="country-tab active" data-country="UAE">🇦🇪 UAE</button>
+    <span class="country-tab-more" title="More countries coming soon">+ more countries coming soon</span>
   </div>
 
   <div class="error-banner" id="errorBanner"></div>
@@ -177,6 +190,7 @@ const grid = $('grid');
 const viewToggle = $('viewToggle');
 let LAST_DATA = null;
 let VIEW = localStorage.getItem('uaeCompareView') || 'table';
+let COUNTRY = 'UAE'; // only country wired up today — see src/uae-compare/countries.js
 
 function escapeHtml(s) {
   return String(s ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -338,7 +352,7 @@ async function savePairing(btn) {
   btn.textContent = 'Saving…';
   btn.disabled = true;
   try {
-    const res = await fetch('/api/uae-compare/pairings', {
+    const res = await fetch(`/api/uae-compare/pairings?country=${COUNTRY}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ sku, fnpUrl: fnpUrl || null }),
@@ -358,6 +372,7 @@ async function savePairing(btn) {
 
 function renderAll(data) {
   LAST_DATA = data;
+  $('subtitle').textContent = `kapruka.com/online/${data.country} (LKR) converted against ${data.competitorName} (AED)`;
   $('fxPill').textContent = `1 AED = ${data.fx.aedToLkr.toFixed(2)} LKR`;
   $('lastUpdated').textContent = `Updated ${new Date(data.generatedAt).toLocaleTimeString()}`;
   renderStats(data);
@@ -374,7 +389,7 @@ async function refresh({ silent = false } = {}) {
   }
   setError(null);
   try {
-    const res = await fetch('/api/uae-compare/refresh', { method: 'POST' });
+    const res = await fetch(`/api/uae-compare/refresh?country=${COUNTRY}`, { method: 'POST' });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Refresh failed');
     renderAll(data);
