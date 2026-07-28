@@ -11,7 +11,10 @@
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
     "hot": "node src/hot-server.js",
-    "compare": "node src/compare/index.js"
+    "uae-compare": "node src/uae-compare/server.js",
+    "compare": "node src/compare/index.js",
+    "relevancy": "node src/tools/find-online-relevancy.js",
+    "clear-supabase": "node src/tools/clear-supabase-data.js"
   },
   "dependencies": {
     "cheerio": "^1.0.0",

@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FNP.ae vs Kapruka — UAE Price Compare</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,300&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #f5f4f0; --surface: #fffffe; --surface2: #f0ede8;
+    --border: rgba(0,0,0,0.07); --border-strong: rgba(0,0,0,0.16);
+    --text: #111; --text-muted: #888; --text-faint: #bbb;
+    --purple: #5e3a8e; --purple-light: #f3eeff; --purple-mid: rgba(94,58,142,0.08);
+    --green: #16a34a; --green-bg: #dcfce7;
+    --amber: #b45309; --amber-bg: #fef3c7;
+    --red: #dc2626; --red-bg: #fee2e2;
+  }
+  * , *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+    background: var(--bg); color: var(--text); min-height: 100vh;
+    padding: 32px 20px 60px; -webkit-font-smoothing: antialiased;
+  }
+  .container { max-width: 1280px; margin: 0 auto; }
+
+  .page-header {
+    background: var(--surface); padding: 20px 28px; border-radius: 16px; margin-bottom: 20px;
+    border: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center;
+    gap: 16px; flex-wrap: wrap;
+  }
+  .page-header h1 { font-size: 20px; font-weight: 600; letter-spacing: -0.02em; }
+  .page-header .subtitle { font-size: 11px; font-weight: 700; letter-spacing: 0.10em; text-transform: uppercase; color: var(--text-muted); margin-top: 3px; }
+  .header-right { display: flex; align-items: center; gap: 14px; }
+  .view-toggle {
+    display: flex; background: var(--surface2); border: 1px solid var(--border); border-radius: 10px; padding: 3px;
+  }
+  .view-toggle button {
+    border: none; background: transparent; padding: 6px 14px; border-radius: 8px; cursor: pointer;
+    font-size: 12.5px; font-weight: 600; color: var(--text-muted); font-family: 'DM Sans', sans-serif;
+  }
+  .view-toggle button.active { background: var(--surface); color: var(--purple); box-shadow: 0 1px 2px rgba(0,0,0,0.06); }
+  .fx-pill {
+    font-family: 'DM Mono', monospace; font-size: 12.5px; background: var(--purple-light); color: var(--purple);
+    padding: 7px 14px; border-radius: 999px; font-weight: 500; white-space: nowrap;
+  }
+  .last-updated { font-size: 11.5px; color: var(--text-muted); white-space: nowrap; }
+  #refreshBtn {
+    padding: 10px 22px; background: var(--purple); color: white; border: none; border-radius: 10px;
+    cursor: pointer; font-weight: 600; font-size: 13.5px; font-family: 'DM Sans', sans-serif;
+    display: inline-flex; align-items: center; gap: 8px; transition: opacity 0.15s;
+  }
+  #refreshBtn:hover:not(:disabled) { opacity: 0.9; }
+  #refreshBtn:disabled { opacity: 0.55; cursor: not-allowed; }
+  .spinner {
+    width: 13px; height: 13px; border: 2px solid rgba(255,255,255,0.4); border-top-color: #fff;
+    border-radius: 50%; animation: spin 0.7s linear infinite; display: none;
+  }
+  #refreshBtn.loading .spinner { display: inline-block; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 20px; }
+  .stat { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 16px 18px; }
+  .stat .n { font-size: 26px; font-weight: 700; letter-spacing: -0.02em; }
+  .stat .l { font-size: 11.5px; color: var(--text-muted); margin-top: 2px; }
+  .stat.good .n { color: var(--green); } .stat.bad .n { color: var(--red); } .stat.mid .n { color: var(--amber); }
+
+  .error-banner {
+    background: var(--red-bg); color: var(--red); border-radius: 10px; padding: 12px 16px;
+    margin-bottom: 16px; font-size: 13px; display: none;
+  }
+
+  table { width: 100%; border-collapse: collapse; background: var(--surface); border-radius: 14px; overflow: hidden; border: 1px solid var(--border); }
+  thead th {
+    text-align: left; font-size: 10.5px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+    color: var(--text-muted); background: var(--surface2); padding: 12px 14px; border-bottom: 1px solid var(--border);
+  }
+  tbody td { padding: 12px 14px; border-bottom: 1px solid var(--border); font-size: 13px; vertical-align: middle; }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr:hover { background: var(--purple-mid); }
+
+  .prod-cell { display: flex; align-items: center; gap: 10px; min-width: 220px; }
+  .prod-cell img { width: 40px; height: 40px; border-radius: 8px; object-fit: cover; background: var(--surface2); flex-shrink: 0; }
+  .prod-cell a { color: var(--text); text-decoration: none; font-weight: 500; line-height: 1.3; }
+  .prod-cell a:hover { color: var(--purple); text-decoration: underline; }
+
+  .price { font-family: 'DM Mono', monospace; font-size: 12.5px; white-space: nowrap; }
+  .fnp-input-wrap { display: flex; gap: 6px; align-items: center; min-width: 240px; }
+  .fnp-input-wrap input {
+    flex: 1; padding: 7px 10px; border: 1px solid var(--border-strong); border-radius: 8px;
+    font-size: 12px; font-family: 'DM Mono', monospace; background: var(--bg); color: var(--text);
+  }
+  .fnp-input-wrap input:focus { outline: none; border-color: var(--purple); }
+  .save-btn {
+    padding: 7px 12px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--surface);
+    cursor: pointer; font-size: 11.5px; font-weight: 600; color: var(--text); font-family: 'DM Sans', sans-serif;
+  }
+  .save-btn:hover { border-color: var(--purple); color: var(--purple); }
+  .save-btn.saved { color: var(--green); border-color: var(--green); }
+
+  .badge { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 11.5px; font-weight: 700; white-space: nowrap; }
+  .badge.good { color: var(--green); background: var(--green-bg); }
+  .badge.bad { color: var(--red); background: var(--red-bg); }
+  .badge.mid { color: var(--amber); background: var(--amber-bg); }
+  .badge.faint { color: var(--text-muted); background: var(--surface2); }
+  .match-tag { font-size: 10.5px; color: var(--text-faint); margin-top: 3px; }
+
+  .empty { padding: 40px; text-align: center; color: var(--text-muted); font-size: 13.5px; }
+
+  /* ── GRID VIEW ─────────────────────────────────────────── */
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px; }
+  .grid[hidden], table[hidden] { display: none; }
+  .card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 14px;
+    display: flex; flex-direction: column; gap: 10px;
+  }
+  .card-imgs { display: flex; gap: 8px; }
+  .card-imgs .img-wrap { flex: 1; text-align: center; }
+  .card-imgs img { width: 100%; aspect-ratio: 1/1; object-fit: cover; border-radius: 10px; background: var(--surface2); }
+  .card-imgs .img-label { font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-faint); margin-top: 4px; font-weight: 700; }
+  .card-name { font-size: 13px; font-weight: 600; line-height: 1.35; }
+  .card-name a { color: var(--text); text-decoration: none; }
+  .card-name a:hover { color: var(--purple); text-decoration: underline; }
+  .card-prices { display: flex; justify-content: space-between; align-items: baseline; font-family: 'DM Mono', monospace; font-size: 12.5px; }
+  .card-fnp-name { font-size: 11.5px; color: var(--text-muted); line-height: 1.3; }
+  .card-fnp-name a { color: inherit; text-decoration: none; }
+  .card-fnp-name a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="page-header">
+    <div>
+      <a href="/" style="font-size:12px; color:var(--text-muted); text-decoration:none;">← Price Tools</a>
+      <h1 style="margin-top:4px;">FNP.ae vs Kapruka — UAE Price Compare</h1>
+      <div class="subtitle">kapruka.com/online/UAE (LKR) converted against fnp.ae (AED)</div>
+    </div>
+    <div class="header-right">
+      <span class="fx-pill" id="fxPill">FX: —</span>
+      <span class="last-updated" id="lastUpdated"></span>
+      <div class="view-toggle" id="viewToggle">
+        <button type="button" data-view="table">Table</button>
+        <button type="button" data-view="grid">Grid</button>
+      </div>
+      <button id="refreshBtn"><span class="spinner"></span><span id="refreshLabel">Refresh</span></button>
+    </div>
+  </div>
+
+  <div class="error-banner" id="errorBanner"></div>
+
+  <div class="stats" id="stats"></div>
+
+  <table id="table">
+    <thead>
+      <tr>
+        <th>Kapruka Product (LKR)</th>
+        <th>fnp.ae Match</th>
+        <th>fnp.ae Price</th>
+        <th>Converted (LKR)</th>
+        <th>Difference</th>
+      </tr>
+    </thead>
+    <tbody id="tbody"></tbody>
+  </table>
+
+  <div class="grid" id="grid" hidden></div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const refreshBtn = $('refreshBtn');
+const refreshLabel = $('refreshLabel');
+const errorBanner = $('errorBanner');
+const table = $('table');
+const grid = $('grid');
+const viewToggle = $('viewToggle');
+let LAST_DATA = null;
+let VIEW = localStorage.getItem('uaeCompareView') || 'table';
+
+function escapeHtml(s) {
+  return String(s ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+const lkr = (v) => (v == null ? '—' : 'Rs. ' + Number(v).toLocaleString('en-LK', { maximumFractionDigits: 0 }));
+const aed = (v) => (v == null ? '—' : 'AED ' + Number(v).toLocaleString('en-AE', { maximumFractionDigits: 2 }));
+
+function setError(msg) {
+  if (!msg) { errorBanner.style.display = 'none'; errorBanner.textContent = ''; return; }
+  errorBanner.style.display = 'block';
+  errorBanner.textContent = msg;
+}
+
+// Only "Kapruka cheaper than fnp.ae" is flagged — that's the actionable case
+// (underpriced vs. the market, price could likely be raised). "Kapruka
+// pricier" is just informational, not a problem to fix.
+function statusBadge(row) {
+  if (row.status === 'unpaired') return '<span class="badge faint">No fnp.ae link yet</span>';
+  if (row.status === 'scrape_failed') return '<span class="badge mid">Could not read fnp.ae price</span>';
+  if (row.diffPct == null) return '<span class="badge faint">—</span>';
+  const pct = row.diffPct;
+  const sign = pct > 0 ? '+' : '';
+  if (pct < -1) return `<span class="badge bad">⚑ ${sign}${pct.toFixed(1)}% · Kapruka cheaper — review price</span>`;
+  if (pct > 1) return `<span class="badge good">${sign}${pct.toFixed(1)}% · Kapruka pricier</span>`;
+  return `<span class="badge mid">${sign}${pct.toFixed(1)}% · About the same</span>`;
+}
+
+function matchTag(row) {
+  if (row.matchSource === 'manual') return 'Manually paired';
+  if (row.matchSource === 'auto') {
+    const label = row.matchConfidence === 'exact' ? 'Auto-matched (exact name)' : `Auto-matched (${row.matchConfidence} confidence)`;
+    return label;
+  }
+  return '';
+}
+
+// Sort by Kapruka's own price, most expensive first — independent of match status.
+function sortedComparisons(data) {
+  return [...data.comparisons].sort((a, b) => (b.kaprukaPriceLKR ?? 0) - (a.kaprukaPriceLKR ?? 0));
+}
+
+function renderStats(data) {
+  const rows = data.comparisons;
+  const paired = rows.filter((r) => r.status !== 'unpaired');
+  const ok = rows.filter((r) => r.status === 'ok');
+  const flagged = ok.filter((r) => r.diffPct < -1).length;
+  const pricier = ok.filter((r) => r.diffPct > 1).length;
+  const unpaired = rows.length - paired.length;
+  const card = (n, l, cls = '') => `<div class="stat ${cls}"><div class="n">${n}</div><div class="l">${l}</div></div>`;
+  $('stats').innerHTML =
+    card(data.kaprukaCount, 'Kapruka UAE products') +
+    card(paired.length, 'Paired with fnp.ae') +
+    card(flagged, '⚑ Flagged — Kapruka cheaper', flagged ? 'bad' : '') +
+    card(pricier, 'Kapruka pricier', 'good') +
+    card(unpaired, 'Unpaired', unpaired ? 'mid' : '');
+}
+
+function renderTable(data) {
+  const tbody = $('tbody');
+  if (!data.comparisons.length) {
+    tbody.innerHTML = '<tr><td colspan="5" class="empty">No Kapruka UAE products found.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = sortedComparisons(data).map((r) => `
+    <tr data-sku="${escapeHtml(r.sku)}">
+      <td>
+        <div class="prod-cell">
+          ${r.kaprukaImage ? `<img src="${escapeHtml(r.kaprukaImage)}" alt="">` : ''}
+          <div>
+            <a href="${escapeHtml(r.kaprukaUrl)}" target="_blank" rel="noopener">${escapeHtml(r.kaprukaName)}</a>
+            <div class="price">${lkr(r.kaprukaPriceLKR)}</div>
+          </div>
+        </div>
+      </td>
+      <td>
+        <div class="fnp-input-wrap">
+          <input type="url" placeholder="https://www.fnp.ae/..." value="${escapeHtml(r.fnpUrl || '')}" data-sku="${escapeHtml(r.sku)}">
+          <button class="save-btn" data-sku="${escapeHtml(r.sku)}">Save</button>
+        </div>
+        ${r.fnpName ? `<div class="price" style="margin-top:5px;"><a href="${escapeHtml(r.fnpUrl)}" target="_blank" rel="noopener" style="color:var(--text-muted);">${escapeHtml(r.fnpName)}</a></div>` : ''}
+        ${matchTag(r) ? `<div class="match-tag">${escapeHtml(matchTag(r))}</div>` : ''}
+      </td>
+      <td class="price">${aed(r.fnpPriceAED)}</td>
+      <td class="price">${lkr(r.fnpPriceLKR)}</td>
+      <td>${statusBadge(r)}</td>
+    </tr>
+  `).join('');
+
+  bindRowInputs(tbody);
+}
+
+function bindRowInputs(root) {
+  root.querySelectorAll('.save-btn').forEach((btn) => {
+    btn.addEventListener('click', () => savePairing(btn));
+  });
+  root.querySelectorAll('input[type="url"]').forEach((input) => {
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') savePairing(root.querySelector(`.save-btn[data-sku="${input.dataset.sku}"]`));
+    });
+  });
+}
+
+function renderGrid(data) {
+  if (!data.comparisons.length) {
+    grid.innerHTML = '<div class="empty">No Kapruka UAE products found.</div>';
+    return;
+  }
+  grid.innerHTML = sortedComparisons(data).map((r) => `
+    <div class="card" data-sku="${escapeHtml(r.sku)}">
+      <div class="card-imgs">
+        <div class="img-wrap">
+          <a href="${escapeHtml(r.kaprukaUrl)}" target="_blank" rel="noopener">
+            ${r.kaprukaImage ? `<img src="${escapeHtml(r.kaprukaImage)}" alt="">` : ''}
+          </a>
+          <div class="img-label">Kapruka</div>
+        </div>
+        <div class="img-wrap">
+          ${r.fnpImage ? `<a href="${escapeHtml(r.fnpUrl || '')}" target="_blank" rel="noopener"><img src="${escapeHtml(r.fnpImage)}" alt=""></a>` : '<div style="aspect-ratio:1/1;border-radius:10px;background:var(--surface2);"></div>'}
+          <div class="img-label">fnp.ae</div>
+        </div>
+      </div>
+      <div class="card-name"><a href="${escapeHtml(r.kaprukaUrl)}" target="_blank" rel="noopener">${escapeHtml(r.kaprukaName)}</a></div>
+      ${r.fnpName ? `<div class="card-fnp-name"><a href="${escapeHtml(r.fnpUrl)}" target="_blank" rel="noopener">${escapeHtml(r.fnpName)}</a></div>` : ''}
+      <div class="card-prices">
+        <span>${lkr(r.kaprukaPriceLKR)}</span>
+        <span>${aed(r.fnpPriceAED)}${r.fnpPriceLKR != null ? ' · ' + lkr(r.fnpPriceLKR) : ''}</span>
+      </div>
+      ${statusBadge(r)}
+      ${matchTag(r) ? `<div class="match-tag">${escapeHtml(matchTag(r))}</div>` : ''}
+      <div class="fnp-input-wrap">
+        <input type="url" placeholder="https://www.fnp.ae/..." value="${escapeHtml(r.fnpUrl || '')}" data-sku="${escapeHtml(r.sku)}">
+        <button class="save-btn" data-sku="${escapeHtml(r.sku)}">Save</button>
+      </div>
+    </div>
+  `).join('');
+
+  bindRowInputs(grid);
+}
+
+function applyView() {
+  const isGrid = VIEW === 'grid';
+  table.hidden = isGrid;
+  grid.hidden = !isGrid;
+  viewToggle.querySelectorAll('button').forEach((b) => b.classList.toggle('active', b.dataset.view === VIEW));
+}
+
+viewToggle.addEventListener('click', (e) => {
+  const btn = e.target.closest('button[data-view]');
+  if (!btn) return;
+  VIEW = btn.dataset.view;
+  localStorage.setItem('uaeCompareView', VIEW);
+  applyView();
+});
+
+async function savePairing(btn) {
+  const sku = btn.dataset.sku;
+  const input = document.querySelector(`input[data-sku="${sku}"]`);
+  const fnpUrl = input.value.trim();
+  btn.textContent = 'Saving…';
+  btn.disabled = true;
+  try {
+    const res = await fetch('/api/uae-compare/pairings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sku, fnpUrl: fnpUrl || null }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Save failed');
+    btn.textContent = 'Saved';
+    btn.classList.add('saved');
+    setTimeout(() => { btn.textContent = 'Save'; btn.classList.remove('saved'); btn.disabled = false; }, 1200);
+    await refresh({ silent: true });
+  } catch (err) {
+    btn.textContent = 'Save';
+    btn.disabled = false;
+    setError(err.message);
+  }
+}
+
+function renderAll(data) {
+  LAST_DATA = data;
+  $('fxPill').textContent = `1 AED = ${data.fx.aedToLkr.toFixed(2)} LKR`;
+  $('lastUpdated').textContent = `Updated ${new Date(data.generatedAt).toLocaleTimeString()}`;
+  renderStats(data);
+  renderTable(data);
+  renderGrid(data);
+  applyView();
+}
+
+async function refresh({ silent = false } = {}) {
+  if (!silent) {
+    refreshBtn.disabled = true;
+    refreshBtn.classList.add('loading');
+    refreshLabel.textContent = 'Refreshing…';
+  }
+  setError(null);
+  try {
+    const res = await fetch('/api/uae-compare/refresh', { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Refresh failed');
+    renderAll(data);
+  } catch (err) {
+    setError(err.message);
+  } finally {
+    refreshBtn.disabled = false;
+    refreshBtn.classList.remove('loading');
+    refreshLabel.textContent = 'Refresh';
+  }
+}
+
+refreshBtn.addEventListener('click', () => refresh());
+applyView();
+refresh();
+</script>
+</body>
+</html>

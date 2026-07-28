@@ -28,12 +28,16 @@ import {
   overpricedReport,
   productRows,
 } from './export.js';
+import { uaeCompareApiRouter } from './uae-compare/routes.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
 
 app.use(express.json());
 app.use(express.static(join(__dirname, '..', 'public')));
+// International (FNP.ae vs Kapruka UAE) price dashboard — static page already
+// served above from public/uae-compare/; this adds its /api/uae-compare/* routes.
+app.use(uaeCompareApiRouter());
 
 // Categories + their sites (drives the dropdown).
 app.get('/api/categories', async (_req, res) => {
