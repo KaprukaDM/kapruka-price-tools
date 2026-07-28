@@ -224,7 +224,26 @@ const grid = $('grid');
 const viewToggle = $('viewToggle');
 let LAST_DATA = null;
 let VIEW = localStorage.getItem('uaeCompareView') || 'table';
-let COUNTRY = 'UAE'; // only country wired up today — see src/uae-compare/countries.js
+// Only UAE is wired up today (see src/uae-compare/countries.js), but the URL
+// already supports ?country=CODE so the portal's country picker links here
+// correctly as more countries are added.
+let COUNTRY = (new URLSearchParams(window.location.search).get('country') || 'UAE').toUpperCase();
+
+function setCountry(code) {
+  COUNTRY = code;
+  const url = new URL(window.location);
+  url.searchParams.set('country', code);
+  window.history.replaceState({}, '', url);
+  document.querySelectorAll('.country-tab[data-country]').forEach((b) => b.classList.toggle('active', b.dataset.country === code));
+}
+setCountry(COUNTRY);
+
+$('countryTabs').addEventListener('click', (e) => {
+  const btn = e.target.closest('.country-tab[data-country]');
+  if (!btn || btn.dataset.country === COUNTRY) return;
+  setCountry(btn.dataset.country);
+  load();
+});
 
 // ── GitHub token (stored per-browser in localStorage — never in this file) ──
 // Needed only to TRIGGER a live refresh or save a pairing. Without it the
