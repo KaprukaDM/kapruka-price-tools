@@ -24,7 +24,11 @@ async function compute(partner, log) {
   }
   const [kapruka, partnerCat] = await Promise.all([
     fetchKaprukaCatalog(src, { log }),
-    fetchPartnerCatalog(partner.partnerSite, { log, platform: partner.platform || 'auto' }),
+    fetchPartnerCatalog(partner.partnerSite, {
+      log,
+      platform: partner.platform || 'auto',
+      viaBrowser: partner.viaBrowser || false,
+    }),
   ]);
   const result = matchCatalogs(kapruka, partnerCat.products);
   return {

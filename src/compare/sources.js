@@ -31,6 +31,13 @@ function fixMojibake(s) {
 
 const UA = { 'User-Agent': 'Mozilla/5.0 (price-reconcile bot)', 'Accept-Language': 'en-LK,en' };
 
+// Some partner sites (e.g. dimoretail.lk) sit behind Cloudflare's bot-protection
+// JS challenge, which 403s plain fetch() requests before our code ever sees the
+// platform. A real (even headless) browser can pass that challenge; a bare
+// fetch() cannot. Set DISABLE_BROWSER=1 on hosts with no Playwright browser
+// installed (e.g. Render free tier) to skip this fallback entirely.
+const BROWSER_DISABLED = /^(1|true)$/i.test(process.env.DISABLE_BROWSER || '');
+
 // Kapruka geolocates prices by the real connecting IP (headers don't override it),
 // so a server hosted abroad sees USD instead of LKR. Set SCRAPE_PROXY to a Sri
 // Lankan-exit HTTP(S) proxy to force LKR pricing. Left blank, requests go direct
@@ -64,6 +71,59 @@ async function fetchJsonSafe(url) {
   try {
     const text = await fetchText(url);
     return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+// Is this origin actively blocking us (as opposed to just not running
+// WooCommerce/Shopify)? Checked once, only after both direct platform probes
+// come back empty, so normal (unblocked) partners never pay for this extra call.
+async function isCloudflareBlocked(origin) {
+  try {
+    const c = new AbortController();
+    const t = setTimeout(() => c.abort(), 15000);
+    const opts = { headers: UA, redirect: 'follow', signal: c.signal };
+    if (SCRAPE_PROXY) {
+      if (!proxyDispatcher) {
+        const { ProxyAgent } = await import('undici');
+        proxyDispatcher = new ProxyAgent(SCRAPE_PROXY);
+      }
+      opts.dispatcher = proxyDispatcher;
+    }
+    const r = await fetch(origin, opts);
+    clearTimeout(t);
+    if (r.status !== 403) return false;
+    return r.headers.get('cf-mitigated') != null || (r.headers.get('server') || '').toLowerCase() === 'cloudflare';
+  } catch {
+    return false;
+  }
+}
+
+// Fetch JSON through a real headless browser instead of fetch() — the only way
+// past a Cloudflare JS challenge. Slow (~5-10s) and not guaranteed to pass, so
+// this is only ever tried as a last resort, never as the first attempt.
+async function fetchJsonViaBrowser(url) {
+  if (BROWSER_DISABLED) return null;
+  try {
+    const { chromium } = await import('playwright');
+    const launchOpts = {};
+    if (SCRAPE_PROXY) launchOpts.proxy = { server: SCRAPE_PROXY };
+    const browser = await chromium.launch(launchOpts);
+    try {
+      const context = await browser.newContext({
+        userAgent: UA['User-Agent'],
+        extraHTTPHeaders: { 'Accept-Language': UA['Accept-Language'] },
+      });
+      const page = await context.newPage();
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      // Cloudflare's managed challenge normally clears itself within a few seconds.
+      await page.waitForTimeout(6000);
+      const text = await page.evaluate(() => document.body.innerText);
+      return JSON.parse(text);
+    } finally {
+      await browser.close();
+    }
   } catch {
     return null;
   }
@@ -291,14 +351,24 @@ export async function probeKaprukaSource(input) {
 }
 
 // Detect a partner site's platform with a single tiny request each. Returns
-// 'woocommerce' | 'shopify' | null.
+// { platform: 'woocommerce' | 'shopify' | null, viaBrowser: boolean }.
+// `viaBrowser` tells the caller to persist that flag on the partner, so every
+// later comparison run for this partner goes straight to the browser fetch
+// instead of wasting time on a direct request that's known to be blocked.
 export async function detectPartnerPlatform(site) {
   const origin = toOrigin(site);
   const woo = await fetchJsonSafe(`${origin}/wp-json/wc/store/v1/products?per_page=1`);
-  if (Array.isArray(woo) && woo.length) return 'woocommerce';
+  if (Array.isArray(woo) && woo.length) return { platform: 'woocommerce', viaBrowser: false };
   const shop = await fetchJsonSafe(`${origin}/products.json?limit=1`);
-  if (shop && Array.isArray(shop.products) && shop.products.length) return 'shopify';
-  return null;
+  if (shop && Array.isArray(shop.products) && shop.products.length) return { platform: 'shopify', viaBrowser: false };
+
+  if (await isCloudflareBlocked(origin)) {
+    const wooB = await fetchJsonViaBrowser(`${origin}/wp-json/wc/store/v1/products?per_page=1`);
+    if (Array.isArray(wooB) && wooB.length) return { platform: 'woocommerce', viaBrowser: true };
+    const shopB = await fetchJsonViaBrowser(`${origin}/products.json?limit=1`);
+    if (shopB && Array.isArray(shopB.products) && shopB.products.length) return { platform: 'shopify', viaBrowser: true };
+  }
+  return { platform: null, viaBrowser: false };
 }
 
 // ---- Partner site (auto-detected platform) -------------------------------
@@ -311,10 +381,10 @@ function minorUnitDivide(value, minorUnit) {
 
 // WooCommerce Store API: /wp-json/wc/store/v1/products?per_page=100&page=N.
 // Prices are integer strings scaled by currency_minor_unit.
-async function fetchWooCatalog(origin, log) {
+async function fetchWooCatalog(origin, log, fetchJson = fetchJsonSafe) {
   const out = [];
   for (let page = 1; page <= 100; page++) {
-    const arr = await fetchJsonSafe(`${origin}/wp-json/wc/store/v1/products?per_page=100&page=${page}`);
+    const arr = await fetchJson(`${origin}/wp-json/wc/store/v1/products?per_page=100&page=${page}`);
     if (!Array.isArray(arr) || arr.length === 0) break;
     for (const p of arr) {
       const pr = p.prices || {};
@@ -340,10 +410,10 @@ async function fetchWooCatalog(origin, log) {
 
 // Shopify: /products.json?limit=250&page=N. Prices are major-unit strings; we
 // take the cheapest available variant and its SKU.
-async function fetchShopifyCatalog(origin, log) {
+async function fetchShopifyCatalog(origin, log, fetchJson = fetchJsonSafe) {
   const out = [];
   for (let page = 1; page <= 100; page++) {
-    const data = await fetchJsonSafe(`${origin}/products.json?limit=250&page=${page}`);
+    const data = await fetchJson(`${origin}/products.json?limit=250&page=${page}`);
     const products = data && Array.isArray(data.products) ? data.products : null;
     if (!products || products.length === 0) break;
     for (const p of products) {
@@ -381,19 +451,28 @@ async function fetchShopifyCatalog(origin, log) {
  * platform. Returns the standard product shape. Throws if the platform isn't
  * supported (i.e. neither WooCommerce nor Shopify exposed a public catalogue).
  * @param {string} site  partner site URL or host
+ * @param {{ log?: (m: string) => void, platform?: string, viaBrowser?: boolean }} [opts]
+ *   `viaBrowser` should be true for partners already known to sit behind a
+ *   Cloudflare-style block (persisted from detectPartnerPlatform's result).
  */
-export async function fetchPartnerCatalog(site, { log = () => {}, platform = 'auto' } = {}) {
+export async function fetchPartnerCatalog(site, { log = () => {}, platform = 'auto', viaBrowser = false } = {}) {
   const origin = toOrigin(site);
+  const fetchJson = viaBrowser ? fetchJsonViaBrowser : fetchJsonSafe;
 
   if (platform === 'woocommerce' || platform === 'auto') {
-    const woo = await fetchWooCatalog(origin, log);
+    const woo = await fetchWooCatalog(origin, log, fetchJson);
     if (woo.length) return { products: woo, platform: 'woocommerce' };
     if (platform === 'woocommerce') return { products: woo, platform: 'woocommerce' };
   }
   if (platform === 'shopify' || platform === 'auto') {
-    const shop = await fetchShopifyCatalog(origin, log);
+    const shop = await fetchShopifyCatalog(origin, log, fetchJson);
     if (shop.length) return { products: shop, platform: 'shopify' };
     if (platform === 'shopify') return { products: shop, platform: 'shopify' };
+  }
+  // Direct fetch found nothing in auto mode — if the site is actively blocking
+  // us, retry once through a real browser before giving up.
+  if (!viaBrowser && platform === 'auto' && (await isCloudflareBlocked(origin))) {
+    return fetchPartnerCatalog(site, { log, platform: 'auto', viaBrowser: true });
   }
   throw new Error(
     `Could not read a product catalogue from ${origin}. Supported platforms: ` +

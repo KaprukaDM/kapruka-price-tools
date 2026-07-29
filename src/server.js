@@ -171,7 +171,7 @@ app.post('/api/partners', async (req, res) => {
       });
     }
     // 2) Partner site must expose a readable catalogue (WooCommerce or Shopify).
-    const platform = await detectPartnerPlatform(partnerSite);
+    const { platform, viaBrowser } = await detectPartnerPlatform(partnerSite);
     if (!platform) {
       return res.status(400).json({
         error: `Could not read a product catalogue from ${siteLabel(partnerSite)}. ` +
@@ -185,6 +185,7 @@ app.post('/api/partners', async (req, res) => {
       partnerSite: site,
       partnerLabel: siteLabel(site),
       platform,
+      viaBrowser,
     });
     res.json({ ...entry, platform, kaprukaPreviewCount: kCount });
   } catch (err) {

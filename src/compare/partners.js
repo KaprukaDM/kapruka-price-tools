@@ -29,7 +29,7 @@ export function siteLabel(site) {
 // Persist a new partner to config/partners.json and return it with its id.
 // `kaprukaUrl` is the pasted Kapruka link (partner storefront OR brand/category
 // listing); it's parsed at fetch time by parseKaprukaSource().
-export async function addPartner({ name, kaprukaUrl, partnerSite, partnerLabel, platform }) {
+export async function addPartner({ name, kaprukaUrl, partnerSite, partnerLabel, platform, viaBrowser }) {
   const partners = await loadPartners();
   let id = slugify(name);
   const base = id;
@@ -41,6 +41,7 @@ export async function addPartner({ name, kaprukaUrl, partnerSite, partnerLabel, 
     partnerSite,
     partnerLabel,
     ...(platform ? { platform } : {}),
+    ...(viaBrowser ? { viaBrowser: true } : {}),
   };
   await writeFile(PARTNERS_PATH, JSON.stringify(partners, null, 2) + '\n');
   return { id, ...partners[id] };
