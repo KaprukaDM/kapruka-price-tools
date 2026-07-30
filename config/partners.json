@@ -60,5 +60,19 @@
     "partnerSite": "https://thinex.lk/",
     "partnerLabel": "thinex.lk",
     "platform": "woocommerce"
+  },
+  "tecroot": {
+    "name": "TecRoot",
+    "kaprukaUrl": "https://www.kapruka.com/partner/tecroot",
+    "partnerSite": "https://tecroot.lk/",
+    "partnerLabel": "tecroot.lk",
+    "platform": "woocommerce"
+  },
+  "joy-clothing": {
+    "name": "Joy Clothing",
+    "kaprukaUrl": "https://www.kapruka.com/partner/joey-clothing",
+    "partnerSite": "https://joeyclothing.com/",
+    "partnerLabel": "joeyclothing.com",
+    "platform": "shopify"
   }
 }
