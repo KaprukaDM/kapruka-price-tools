@@ -121,7 +121,7 @@ export async function runComparison({ partnerId, force = false, log = () => {} }
   const ageMs = hit ? nowMs() - hit.at : Infinity;
   const fresh = hit && ageMs < CACHE_TTL_MS;
 
-  // Normal page load: return fresh cache instantly.
+  // Normal page load, not forced: return fresh cache instantly.
   if (!force && fresh) {
     return {
       ...hit.payload,
@@ -132,8 +132,21 @@ export async function runComparison({ partnerId, force = false, log = () => {} }
     };
   }
 
-  // If cache exists but user clicked refresh or cache is old:
-  // return old data instantly and refresh in background.
+  // Explicitly forced (the scheduled job, or a background scrape right after
+  // adding a partner) must always wait for a genuinely fresh result — never
+  // silently hand back stale data just because a disk-cache entry happens to
+  // exist. This matters a lot for callers like refresh-all-partners.js: they
+  // only persist to Supabase when `cached` comes back false, so returning
+  // stale-but-unlabelled-as-such here would make `force: true` silently do
+  // nothing (no rescrape, no save) forever once one cache entry exists.
+  if (force) {
+    const payload = await refreshCache(partner, log);
+    return { ...payload, cached: false, stale: false, refreshing: false, cacheAgeMs: 0 };
+  }
+
+  // Not forced, but no fresh cache: if we have *some* cache (just stale),
+  // serve it immediately and refresh in the background (stale-while-
+  // revalidate) so an on-demand page view doesn't have to block.
   if (hit) {
     refreshCache(partner, log).catch(() => {});
 
@@ -146,7 +159,7 @@ export async function runComparison({ partnerId, force = false, log = () => {} }
     };
   }
 
-  // First ever load: no cache exists, so we must wait once.
+  // First ever load: no cache exists at all, so we must wait once.
   const payload = await refreshCache(partner, log);
 
   return {

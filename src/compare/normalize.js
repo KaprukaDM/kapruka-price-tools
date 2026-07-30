@@ -67,9 +67,22 @@ const CPU_TOKEN = /^\d{3,5}(u|h|hx|hs|hk|p|k|y|e|t|g[1-9])$/;
 // length >=4 (bhd340, mg3710, eg200, dcm25n, br1948r, vkg32ee685, ogs709), minus
 // spec and CPU tokens. Keeps real model numbers, drops specs like 2100w / 256gb /
 // 13th / 1335u that would otherwise cause false matches between different products.
+//
+// Some catalogues write the same code as two separate words instead of one —
+// "Naviforce NF 9269 ..." vs. a partner site's "NF 9269 ..." both split the
+// brand-prefix ("nf") from the number ("9269"), so neither half alone has both
+// a letter and a digit and the whole thing was invisible to matching, even
+// though both sides use the identical code. Join a short (1-3 letter) prefix
+// immediately followed by a 3-6 digit run into one token first, so "nf 9269"
+// becomes "nf9269" on both sides before the rule above is applied. Skipped for
+// stopwords ("in 2024", "by 2025") so we don't manufacture false codes out of
+// ordinary phrases that happen to precede a number.
 export function extractModelCodes(s) {
   const out = new Set();
-  for (const t of normalizeName(s).split(' ')) {
+  const joined = normalizeName(s).replace(/\b([a-z]{1,3}) (\d{3,6})\b/g, (whole, prefix, digits) =>
+    STOPWORDS.has(prefix) ? whole : prefix + digits,
+  );
+  for (const t of joined.split(' ')) {
     if (t.length < 4 || SPEC_TOKEN.test(t) || CPU_TOKEN.test(t)) continue;
     const letters = (t.match(/[a-z]/g) || []).length;
     const digits = (t.match(/[0-9]/g) || []).length;
