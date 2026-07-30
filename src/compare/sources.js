@@ -1,5 +1,6 @@
 // Catalogue fetchers for the two sites being reconciled, parameterised by
-// partner so the same code works for any Kapruka partner (see config/partners.json).
+// partner so the same code works for any Kapruka partner (see the shared
+// `partners` table in Supabase, src/compare/partners.js).
 //
 //   Kapruka (our listing):  server-rendered partner page. Pages are loaded via
 //     the same endpoint the "View more" button hits:

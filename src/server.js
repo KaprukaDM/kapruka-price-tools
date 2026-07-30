@@ -149,7 +149,7 @@ app.get('/api/partners', async (_req, res) => {
 });
 
 // Add a new partner: validate the two links, auto-detect the store platform,
-// then persist to config/partners.json. Body: { name, kaprukaUrl, partnerSite }.
+// then persist to the shared `partners` table in Supabase. Body: { name, kaprukaUrl, partnerSite }.
 app.post('/api/partners', async (req, res) => {
   const { name, kaprukaUrl, partnerSite } = req.body || {};
   if (!name || !kaprukaUrl || !partnerSite) {

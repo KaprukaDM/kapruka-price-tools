@@ -34,8 +34,10 @@ On the Comparison page click **➕ Add a store** and paste:
   (`kapruka.com/partner/<slug>`) or a brand/category page
   (`kapruka.com/online/<category>/price/<brand>`).
 
-It validates both, detects the store platform, saves the partner to
-`config/partners.json`, and runs the comparison. No code changes needed.
+It validates both, detects the store platform, saves the partner to the
+`partners` table in Supabase (shared across every running instance of this
+app — no per-machine config file to sync), and runs the comparison. No code
+changes needed.
 
 ## Deploy to Render
 
