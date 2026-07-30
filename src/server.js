@@ -193,31 +193,31 @@ app.post('/api/partners', async (req, res) => {
   }
 });
 
-// Partner price reconciliation. By default this serves the latest STORED run
-// for the partner (written by the scheduled refresh job, src/tools/refresh-
-// all-partners.js) rather than live-scraping on every page view — Kapruka
-// geo-detects the connecting IP, so a live fetch from a host with bad geo
-// pricing would silently overwrite good stored data with USD/price-missing
-// results. ?refresh=1 (the UI's "Refresh" button) bypasses this and forces a
-// live refetch, which is then persisted as the new latest row.
+// Partner price reconciliation. Always serves the latest STORED run for the
+// partner (written by the scheduled refresh job, src/tools/refresh-all-
+// partners.js) rather than live-scraping on page view — Kapruka geo-detects
+// the connecting IP, so a live fetch from a host with bad geo pricing would
+// silently overwrite good stored data with USD/price-missing results. There
+// used to be a ?refresh=1 escape hatch (the UI's "Refresh" button) that
+// forced a live re-scrape from whatever server happened to be handling the
+// request; it was removed for exactly that reason — refreshing now only
+// happens via the scheduled job, which runs from a known-good host. A brand
+// new partner with no stored run yet still gets one live fetch so it has
+// something to show at all.
 app.get('/api/compare', async (req, res) => {
   try {
-    const force = req.query.refresh === '1' || req.query.refresh === 'true';
     const partnerId = req.query.partner || undefined;
-
-    if (!force) {
-      const partner = await getPartner(partnerId);
-      const [latest] = await recentComparisonRuns(1, partner.id);
-      if (latest) {
-        const stored = await getComparisonRun(latest.id);
-        if (stored) {
-          res.json({ ...stored, cached: true, stored: true });
-          return;
-        }
+    const partner = await getPartner(partnerId);
+    const [latest] = await recentComparisonRuns(1, partner.id);
+    if (latest) {
+      const stored = await getComparisonRun(latest.id);
+      if (stored) {
+        res.json({ ...stored, cached: true, stored: true });
+        return;
       }
     }
 
-    const data = await runComparison({ partnerId, force });
+    const data = await runComparison({ partnerId });
     if (!data.cached) {
       try {
         data.recordId = await saveComparisonRun(data);

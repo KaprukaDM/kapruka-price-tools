@@ -118,17 +118,16 @@ function footmeta() {
   $('footmeta').textContent =
     `Catalogues: ${DATA.catalogCounts.kapruka} on Kapruka, ${DATA.catalogCounts.partner} on ${PARTNER_LABEL} ` +
     `(${DATA.partner.platform}) · matched by model code (high) or name similarity (review) · ` +
-    `generated ${at.toLocaleString()}` + (DATA.cached ? ' (cached)' : ' · saved to database');
+    `generated ${at.toLocaleString()}` + (DATA.stored ? ' · from stored data' : ' · saved to database');
 }
 
-async function load(force) {
+async function load() {
   const partnerId = $('partner').value;
   $('status').style.display = '';
   $('app').style.display = 'none';
-  $('status').innerHTML = '<span class="spin"></span>' +
-    (force ? 'Refreshing live prices from both sites… (~10s)' : 'Fetching both catalogues and matching products… (~10s)');
+  $('status').innerHTML = '<span class="spin"></span>Loading…';
   try {
-    const url = '/api/compare?partner=' + encodeURIComponent(partnerId) + (force ? '&refresh=1' : '');
+    const url = '/api/compare?partner=' + encodeURIComponent(partnerId);
     const res = await fetch(url);
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'request failed');
@@ -185,7 +184,7 @@ async function addStore() {
     await loadPartners(data.id);
     $('addCard').style.display = 'none';
     $('addName').value = $('addSite').value = $('addKapruka').value = '';
-    load(false); // first run for this partner -> computes + stores to DB
+    load(); // first run for this partner -> computes + stores to DB
   } catch (err) {
     $('addHint').textContent = ' ' + err.message;
   } finally {
@@ -196,8 +195,7 @@ async function addStore() {
 
 $('search').addEventListener('input', render);
 $('overOnly').addEventListener('change', render);
-$('refresh').addEventListener('click', () => load(true));
-$('partner').addEventListener('change', () => load(false));
+$('partner').addEventListener('change', () => load());
 $('toggleAdd').addEventListener('click', () => {
   const c = $('addCard');
   c.style.display = c.style.display === 'none' ? '' : 'none';
@@ -206,5 +204,5 @@ $('addSubmit').addEventListener('click', addStore);
 
 (async function init() {
   await loadPartners();
-  load(false);
+  load();
 })();
