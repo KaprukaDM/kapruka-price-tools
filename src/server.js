@@ -217,7 +217,10 @@ app.get('/api/compare', async (req, res) => {
       }
     }
 
-    const data = await runComparison({ partnerId });
+    const data = await runComparison({
+      partnerId,
+      log: (msg) => console.log(`[compare:${partner.id}] ${msg}`),
+    });
     if (!data.cached) {
       try {
         data.recordId = await saveComparisonRun(data);
