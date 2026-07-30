@@ -2,6 +2,22 @@ const $ = (id) => document.getElementById(id);
 let DATA = null;
 let TAB = 'matched';
 let PARTNER_LABEL = 'partner site';
+let PAGE = 1;
+const PAGE_SIZE = 50;
+
+function pagerHtml(totalPages, totalItems) {
+  if (totalPages <= 1) return '';
+  return `<div class="pager">
+      <button class="ghost" id="pgPrev" type="button" ${PAGE === 1 ? 'disabled' : ''}>‹ Prev</button>
+      <span>Page ${PAGE} of ${totalPages} · ${totalItems} items</span>
+      <button class="ghost" id="pgNext" type="button" ${PAGE === totalPages ? 'disabled' : ''}>Next ›</button>
+    </div>`;
+}
+function wirePager(totalPages) {
+  if (totalPages <= 1) return;
+  $('pgPrev')?.addEventListener('click', () => { PAGE = Math.max(1, PAGE - 1); render(); $('table').scrollIntoView({ block: 'start', behavior: 'smooth' }); });
+  $('pgNext')?.addEventListener('click', () => { PAGE = Math.min(totalPages, PAGE + 1); render(); $('table').scrollIntoView({ block: 'start', behavior: 'smooth' }); });
+}
 
 const lkr = (v) => (v == null ? '—' : 'Rs.' + Number(v).toLocaleString('en-LK'));
 function escapeHtml(s) {
@@ -44,6 +60,7 @@ function buildTabs(s, partnerName) {
   $('tabs').querySelectorAll('.tab').forEach((el) =>
     el.addEventListener('click', () => {
       TAB = el.dataset.tab;
+      PAGE = 1;
       buildTabs(s, partnerName);
       render();
     }),
@@ -90,27 +107,38 @@ function render() {
   const match = (name) => !q || name.toLowerCase().includes(q);
   let html = '';
   let shown = 0;
+  let totalPages = 1;
 
   if (TAB === 'matched') {
     let rows = DATA.matched.filter((m) => match(m.name + ' ' + m.partnerName));
     if ($('overOnly').checked) rows = rows.filter((m) => m.verdict === 'kapruka_higher');
     shown = rows.length;
-    html = `<table><thead><tr>
+    totalPages = Math.max(1, Math.ceil(shown / PAGE_SIZE));
+    PAGE = Math.min(PAGE, totalPages);
+    const pageRows = rows.slice((PAGE - 1) * PAGE_SIZE, PAGE * PAGE_SIZE);
+    html = `<div class="table-wrap"><table><thead><tr>
         <th>Product</th><th class="num">Kapruka</th><th class="num">${escapeHtml(PARTNER_LABEL)}</th>
         <th class="num">Diff</th><th class="num">%</th><th>Verdict</th></tr></thead>
-      <tbody>${matchedRows(rows)}</tbody></table>`;
+      <tbody>${matchedRows(pageRows)}</tbody></table></div>`;
   } else if (TAB === 'onlyKapruka') {
     const rows = DATA.onlyKapruka.filter((r) => match(r.name));
     shown = rows.length;
-    html = `<table><thead><tr><th>Product (listed on Kapruka, not found on ${escapeHtml(PARTNER_LABEL)})</th>
-        <th class="num">Kapruka price</th></tr></thead><tbody>${listRows(rows, false)}</tbody></table>`;
+    totalPages = Math.max(1, Math.ceil(shown / PAGE_SIZE));
+    PAGE = Math.min(PAGE, totalPages);
+    const pageRows = rows.slice((PAGE - 1) * PAGE_SIZE, PAGE * PAGE_SIZE);
+    html = `<div class="table-wrap"><table><thead><tr><th>Product (listed on Kapruka, not found on ${escapeHtml(PARTNER_LABEL)})</th>
+        <th class="num">Kapruka price</th></tr></thead><tbody>${listRows(pageRows, false)}</tbody></table></div>`;
   } else {
     const rows = DATA.onlyPartner.filter((r) => match(r.name));
     shown = rows.length;
-    html = `<table><thead><tr><th>Product (on ${escapeHtml(PARTNER_LABEL)}, not listed on Kapruka)</th>
-        <th class="num">Partner price</th></tr></thead><tbody>${listRows(rows, true)}</tbody></table>`;
+    totalPages = Math.max(1, Math.ceil(shown / PAGE_SIZE));
+    PAGE = Math.min(PAGE, totalPages);
+    const pageRows = rows.slice((PAGE - 1) * PAGE_SIZE, PAGE * PAGE_SIZE);
+    html = `<div class="table-wrap"><table><thead><tr><th>Product (on ${escapeHtml(PARTNER_LABEL)}, not listed on Kapruka)</th>
+        <th class="num">Partner price</th></tr></thead><tbody>${listRows(pageRows, true)}</tbody></table></div>`;
   }
-  $('table').innerHTML = shown ? html : '<p class="empty">No products match your filter.</p>';
+  $('table').innerHTML = shown ? html + pagerHtml(totalPages, shown) : '<p class="empty">No products match your filter.</p>';
+  wirePager(totalPages);
 }
 
 function footmeta() {
@@ -184,6 +212,7 @@ async function attemptLoad(partnerId, startedAt) {
 
 async function load() {
   const partnerId = $('partner').value;
+  PAGE = 1;
   if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
   $('status').style.display = '';
   $('app').style.display = 'none';
@@ -214,13 +243,38 @@ async function requestRefresh() {
   }
 }
 
+let PARTNERS = [];
+
 async function loadPartners(selectId) {
   const res = await fetch('/api/partners');
   const partners = await res.json();
+  PARTNERS = partners;
   $('partner').innerHTML = partners
     .map((p) => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}</option>`)
     .join('');
-  if (selectId) $('partner').value = selectId;
+  $('partner').value = selectId || (partners[0] && partners[0].id) || '';
+  syncPartnerSearchLabel();
+}
+
+function syncPartnerSearchLabel() {
+  const p = PARTNERS.find((p) => p.id === $('partner').value);
+  $('partnerSearch').value = p ? p.name : '';
+}
+
+function renderPartnerMenu(query) {
+  const q = query.trim().toLowerCase();
+  const items = PARTNERS.filter((p) => !q || p.name.toLowerCase().includes(q));
+  $('partnerMenu').innerHTML = items.length
+    ? items.map((p) => `<div class="combo-item" data-id="${escapeHtml(p.id)}">${escapeHtml(p.name)}</div>`).join('')
+    : '<div class="combo-empty">No matching partners</div>';
+  $('partnerMenu').hidden = false;
+}
+
+function selectPartner(id) {
+  $('partner').value = id;
+  syncPartnerSearchLabel();
+  $('partnerMenu').hidden = true;
+  $('partner').dispatchEvent(new Event('change'));
 }
 
 async function addStore() {
@@ -256,9 +310,28 @@ async function addStore() {
   }
 }
 
-$('search').addEventListener('input', render);
-$('overOnly').addEventListener('change', render);
+$('search').addEventListener('input', () => { PAGE = 1; render(); });
+$('overOnly').addEventListener('change', () => { PAGE = 1; render(); });
 $('partner').addEventListener('change', () => load());
+// Clicking a pre-filled box should offer the full list to pick a different
+// partner from, not just filter down to the one already selected.
+$('partnerSearch').addEventListener('focus', () => { $('partnerSearch').select(); renderPartnerMenu(''); });
+$('partnerSearch').addEventListener('input', () => renderPartnerMenu($('partnerSearch').value));
+$('partnerSearch').addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') { $('partnerMenu').hidden = true; syncPartnerSearchLabel(); $('partnerSearch').blur(); }
+  else if (e.key === 'Enter') {
+    e.preventDefault();
+    const first = $('partnerMenu').querySelector('.combo-item');
+    if (first) selectPartner(first.dataset.id);
+  }
+});
+$('partnerMenu').addEventListener('mousedown', (e) => {
+  const item = e.target.closest('.combo-item');
+  if (item) selectPartner(item.dataset.id);
+});
+document.addEventListener('click', (e) => {
+  if (!$('partnerCombo').contains(e.target)) { $('partnerMenu').hidden = true; syncPartnerSearchLabel(); }
+});
 $('refresh').addEventListener('click', requestRefresh);
 $('toggleAdd').addEventListener('click', () => {
   const c = $('addCard');

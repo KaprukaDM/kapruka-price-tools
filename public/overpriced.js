@@ -1,5 +1,21 @@
 const $ = (id) => document.getElementById(id);
 let DATA = null;
+let PAGE = 1;
+const PAGE_SIZE = 50;
+
+function pagerHtml(totalPages, totalItems) {
+  if (totalPages <= 1) return '';
+  return `<div class="pager">
+      <button class="ghost" id="pgPrev" type="button" ${PAGE === 1 ? 'disabled' : ''}>‹ Prev</button>
+      <span>Page ${PAGE} of ${totalPages} · ${totalItems} items</span>
+      <button class="ghost" id="pgNext" type="button" ${PAGE === totalPages ? 'disabled' : ''}>Next ›</button>
+    </div>`;
+}
+function wirePager(totalPages) {
+  if (totalPages <= 1) return;
+  $('pgPrev')?.addEventListener('click', () => { PAGE = Math.max(1, PAGE - 1); render(); $('table').scrollIntoView({ block: 'start', behavior: 'smooth' }); });
+  $('pgNext')?.addEventListener('click', () => { PAGE = Math.min(totalPages, PAGE + 1); render(); $('table').scrollIntoView({ block: 'start', behavior: 'smooth' }); });
+}
 
 const lkr = (v) => (v == null ? '—' : 'Rs.' + Number(v).toLocaleString('en-LK'));
 function escapeHtml(s) {
@@ -43,7 +59,11 @@ function render() {
     return;
   }
 
-  const body = rows
+  const totalPages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
+  PAGE = Math.min(PAGE, totalPages);
+  const pageRows = rows.slice((PAGE - 1) * PAGE_SIZE, PAGE * PAGE_SIZE);
+
+  const body = pageRows
     .map((m) => {
       const pct = m.pct == null ? '' : `+${m.pct.toFixed(1)}%`;
       const conf = m.confidence === 'high'
@@ -61,11 +81,12 @@ function render() {
     })
     .join('');
 
-  $('table').innerHTML = `<table><thead><tr>
+  $('table').innerHTML = `<div class="table-wrap"><table><thead><tr>
       <th>Store</th><th>Product</th>
       <th class="num">Kapruka</th><th class="num">Partner site</th>
       <th class="num">Overcharge</th><th class="num">%</th></tr></thead>
-    <tbody>${body}</tbody></table>`;
+    <tbody>${body}</tbody></table></div>${pagerHtml(totalPages, rows.length)}`;
+  wirePager(totalPages);
 }
 
 function footmeta() {
@@ -119,8 +140,8 @@ async function refreshNow() {
   }
 }
 
-$('search').addEventListener('input', render);
-$('store').addEventListener('change', render);
+$('search').addEventListener('input', () => { PAGE = 1; render(); });
+$('store').addEventListener('change', () => { PAGE = 1; render(); });
 $('refresh').addEventListener('click', refreshNow);
 
 load();

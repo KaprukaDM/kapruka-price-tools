@@ -23,20 +23,7 @@ function badge(rate) {
   return `<span class="badge ${cls}">${rate ?? 0}%</span>`;
 }
 
-// When a Kapruka source price is set, show how each store compares to it.
-function deltaVsSource(r, sourcePrice) {
-  if (sourcePrice == null || r.price == null) return '';
-  if (r.currency && r.currency.toUpperCase() !== 'LKR') return '';
-  const diff = Number(r.price) - sourcePrice;
-  const pct = Math.round((Math.abs(diff) / sourcePrice) * 100);
-  if (diff === 0) return `<div class="ctx delta-eq">same as Kapruka</div>`;
-  const abs = Math.abs(diff).toLocaleString('en-LK');
-  return diff < 0
-    ? `<div class="ctx delta-lo">▼ Rs.${abs} cheaper (${pct}%)</div>`
-    : `<div class="ctx delta-hi">▲ Rs.${abs} dearer (${pct}%)</div>`;
-}
-
-function buildTable(list, sourcePrice = null) {
+function buildTable(list) {
   const rows = list
     .map((r) => {
       const st = STATUS_LABEL[r.status] || STATUS_LABEL.error;
@@ -53,7 +40,7 @@ function buildTable(list, sourcePrice = null) {
       return `<tr>
         <td><strong>${escapeHtml(r.site)}</strong><div class="ctx">${escapeHtml(r.domain || '')}</div></td>
         <td>${title}${reason}</td>
-        <td><span class="price">${fmtPrice(r)}</span>${ctx}${deltaVsSource(r, sourcePrice)}</td>
+        <td><span class="price">${fmtPrice(r)}</span>${ctx}</td>
         <td>${badge(r.matchRate)}</td>
         <td class="${st.cls}">${st.text}${note}</td>
       </tr>`;
@@ -64,41 +51,22 @@ function buildTable(list, sourcePrice = null) {
     </tr></thead><tbody>${rows}</tbody></table>`;
 }
 
-// Reference card for the Kapruka source product (URL mode only).
-function sourceCard(src) {
-  if (!src) return '';
-  const price =
-    src.price != null ? `Rs.${Number(src.price).toLocaleString('en-LK')}` : '—';
-  const img = src.image
-    ? `<img src="${escapeHtml(src.image)}" alt="" onerror="this.style.display='none'" />`
-    : '';
-  const link = src.url
-    ? `<a href="${escapeHtml(src.url)}" target="_blank" rel="noopener">${escapeHtml(src.name || 'Kapruka product')}</a>`
-    : escapeHtml(src.name || 'Kapruka product');
-  return `<div class="source-card">${img}
-    <div class="s-meta"><div class="s-label">Source · Kapruka</div><div class="s-name">${link}</div></div>
-    <div class="s-price">${price}</div>
-  </div>`;
-}
-
 function render(data) {
   const out = $('out');
   const curated = data.results || [];
   const discovered = data.discovered || [];
-  const src = kaprukaSource;
-  const srcPrice = src ? src.price ?? null : null;
   if (curated.length === 0 && discovered.length === 0) {
-    out.innerHTML = sourceCard(src) + '<p class="empty">No results.</p>';
+    out.innerHTML = '<p class="empty">No results.</p>';
     return;
   }
-  let html = sourceCard(src);
+  let html = '';
   if (curated.length) {
-    html += '<h3 style="margin:24px 0 4px">Curated sites</h3>' + buildTable(curated, srcPrice);
+    html += '<h3 style="margin:24px 0 4px">Curated sites</h3>' + buildTable(curated);
   }
   if (discovered.length) {
     html +=
       '<h3 style="margin:28px 0 4px">Top Sri Lankan shops (from web search)</h3>' +
-      buildTable(discovered, srcPrice);
+      buildTable(discovered);
   }
   html += `<p class="note" style="margin-top:14px">
     Flagged rows still link to the source page so you can verify manually.
@@ -138,62 +106,6 @@ function progressShell() {
 }
 
 let es = null;
-let mode = 'manual'; // 'manual' | 'kapruka'
-let kaprukaSource = null; // resolved Kapruka product when in URL mode
-
-function setMode(m) {
-  mode = m;
-  document.querySelectorAll('.mode-btn').forEach((b) =>
-    b.classList.toggle('active', b.dataset.mode === m),
-  );
-  const url = m === 'kapruka';
-  $('kaprukaFields').hidden = !url;
-  // In URL mode the name/description come from the Kapruka page, so hide those.
-  $('nameField').hidden = url;
-  $('descField').hidden = url;
-  $('go').textContent = url ? 'Fetch from Kapruka & match' : 'Match prices';
-  $('hint').textContent = '';
-}
-
-// URL mode: resolve the Kapruka product first, fill the query fields, then match.
-async function runFromUrl() {
-  const url = $('kurl').value.trim();
-  if (!url) {
-    $('hint').textContent = ' Paste a Kapruka product URL first.';
-    return;
-  }
-  $('hint').textContent = '';
-  $('go').disabled = true;
-  $('out').innerHTML = '<p class="empty"><span class="spin"></span>Reading the Kapruka product…</p>';
-  try {
-    const res = await fetch('/api/kapruka/resolve', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url }),
-    });
-    const data = await res.json();
-    if (!res.ok) {
-      $('out').innerHTML = `<p class="empty">Error: ${escapeHtml(data.error || 'could not read product')}</p>`;
-      $('go').disabled = false;
-      return;
-    }
-    kaprukaSource = {
-      name: data.name,
-      price: data.price,
-      currency: data.currency,
-      url: data.url,
-      image: data.image,
-    };
-    // Feed the resolved values into the shared query fields and run the match.
-    $('name').value = data.name || '';
-    $('description').value = data.description || '';
-    if (data.suggestedCategory) $('category').value = data.suggestedCategory;
-    run();
-  } catch (err) {
-    $('out').innerHTML = `<p class="empty">Error: ${escapeHtml(err.message)}</p>`;
-    $('go').disabled = false;
-  }
-}
 
 // Stream the match over Server-Sent Events so we can show live progress
 // (which/how many sites are done) instead of a silent ~60s wait.
@@ -272,16 +184,5 @@ function run() {
   };
 }
 
-document.querySelectorAll('.mode-btn').forEach((b) =>
-  b.addEventListener('click', () => setMode(b.dataset.mode)),
-);
-
-$('go').addEventListener('click', () => {
-  if (mode === 'kapruka') {
-    runFromUrl();
-  } else {
-    kaprukaSource = null; // manual mode has no reference price
-    run();
-  }
-});
+$('go').addEventListener('click', run);
 loadCategories();

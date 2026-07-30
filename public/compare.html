@@ -16,6 +16,15 @@
     .stat.bad .n { color:var(--bad); }
     .stat.good .n { color:var(--ok); }
     .toolbar { display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin-bottom:14px; }
+    .combo { position:relative; max-width:240px; width:100%; }
+    .combo input { max-width:none; }
+    .combo-menu { position:absolute; top:calc(100% + 4px); left:0; right:0; background:#fff;
+                  border:1px solid var(--line); border-radius:9px; box-shadow:0 8px 24px rgba(64,41,112,.14);
+                  max-height:260px; overflow-y:auto; z-index:20; }
+    .combo-item { padding:9px 13px; font-size:14px; cursor:pointer; }
+    .combo-item:hover, .combo-item.active { background:var(--tint); }
+    .combo-empty { padding:9px 13px; font-size:13px; color:var(--mut); }
+    @media (max-width:680px) { .combo { max-width:none; } }
     .tabs { display:flex; gap:6px; flex-wrap:wrap; }
     .tab { padding:9px 15px; border-radius:9px; border:1px solid var(--line); background:#fff;
            cursor:pointer; font-size:13px; font-weight:600; color:var(--mut); }
@@ -60,8 +69,12 @@
     <p class="sub" id="subtitle">Reconcile a partner's Kapruka listing against their own website.</p>
 
     <div class="toolbar" style="margin-bottom:14px">
-      <label for="partner" style="margin:0">Partner</label>
-      <select id="partner" style="max-width:240px"></select>
+      <label for="partnerSearch" style="margin:0">Partner</label>
+      <div class="combo" id="partnerCombo">
+        <input id="partnerSearch" type="text" placeholder="Search partner…" autocomplete="off" />
+        <select id="partner" hidden></select>
+        <div id="partnerMenu" class="combo-menu" hidden></div>
+      </div>
       <button class="ghost" id="toggleAdd" type="button" style="margin-top:0">➕ Add a store</button>
     </div>
 
