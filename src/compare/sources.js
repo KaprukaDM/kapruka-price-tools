@@ -373,24 +373,30 @@ export async function probeKaprukaSource(input) {
 }
 
 // Detect a partner site's platform with a single tiny request each. Returns
-// { platform: 'woocommerce' | 'shopify' | null, viaBrowser: boolean }.
+// { platform: 'woocommerce' | 'shopify' | null, viaBrowser: boolean, blocked: boolean }.
 // `viaBrowser` tells the caller to persist that flag on the partner, so every
 // later comparison run for this partner goes straight to the browser fetch
 // instead of wasting time on a direct request that's known to be blocked.
+// `blocked` (only meaningful when platform is null) distinguishes "the site
+// sits behind Cloudflare/bot-protection and we couldn't get through even via
+// a real browser" from "we got through fine, it's just not WooCommerce or
+// Shopify" — callers use this to route unsupported sites into two different
+// worklists (custom scraper needed vs. block-evasion needed).
 export async function detectPartnerPlatform(site) {
   const origin = toOrigin(site);
   const woo = await fetchJsonSafe(`${origin}/wp-json/wc/store/v1/products?per_page=1`);
-  if (Array.isArray(woo) && woo.length) return { platform: 'woocommerce', viaBrowser: false };
+  if (Array.isArray(woo) && woo.length) return { platform: 'woocommerce', viaBrowser: false, blocked: false };
   const shop = await fetchJsonSafe(`${origin}/products.json?limit=1`);
-  if (shop && Array.isArray(shop.products) && shop.products.length) return { platform: 'shopify', viaBrowser: false };
+  if (shop && Array.isArray(shop.products) && shop.products.length) return { platform: 'shopify', viaBrowser: false, blocked: false };
 
-  if (await isCloudflareBlocked(origin)) {
+  const blocked = await isCloudflareBlocked(origin);
+  if (blocked) {
     const wooB = await fetchJsonViaBrowser(`${origin}/wp-json/wc/store/v1/products?per_page=1`);
-    if (Array.isArray(wooB) && wooB.length) return { platform: 'woocommerce', viaBrowser: true };
+    if (Array.isArray(wooB) && wooB.length) return { platform: 'woocommerce', viaBrowser: true, blocked: false };
     const shopB = await fetchJsonViaBrowser(`${origin}/products.json?limit=1`);
-    if (shopB && Array.isArray(shopB.products) && shopB.products.length) return { platform: 'shopify', viaBrowser: true };
+    if (shopB && Array.isArray(shopB.products) && shopB.products.length) return { platform: 'shopify', viaBrowser: true, blocked: false };
   }
-  return { platform: null, viaBrowser: false };
+  return { platform: null, viaBrowser: false, blocked };
 }
 
 // ---- Partner site (auto-detected platform) -------------------------------

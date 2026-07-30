@@ -184,6 +184,26 @@ A newly-added partner gets one live fetch on its first page view (see above),
 then the scheduled job takes over — automatically, on *any* instance, since
 the registry itself is shared.
 
+### Sites that can't be added automatically
+
+Adding a partner requires the site to expose either a WooCommerce Store API
+(`/wp-json/wc/store/v1/products`) or a Shopify `/products.json` catalogue. If
+neither is found, the partner is **not** added — but the request is logged to
+the shared `unsupported_partners` table (same 3-backend setup as `partners`,
+see `src/db.js`) instead of just failing silently, along with a `reason`:
+
+- `unsupported-platform` — the site isn't WooCommerce or Shopify (custom/
+  homegrown storefront). Needs a bespoke scraper for that specific site.
+- `blocked` — the site sits behind Cloudflare/bot-protection and blocked even
+  the headless-browser fallback. Needs either a stronger fetch strategy or to
+  stay off the list (see the `robots.txt` note in git history for
+  `uniquetreatslk.com`, declined because it explicitly disallows AI bots).
+
+Check the worklist any time with `GET /api/unsupported-partners`, or query
+`unsupported_partners` directly in Supabase. It's append-only (one row per
+failed attempt) — nothing in the app reads it automatically, it's purely a
+backlog for whoever picks up custom-scraper work next.
+
 ## Accessing the VPS
 
 The VPS runs Windows, reachable only via **Remote Desktop (RDP)** — there's no

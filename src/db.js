@@ -28,6 +28,11 @@
 //                         manually set), it's cached here so future refreshes fetch
 //                         that exact competitor product page directly instead of
 //                         re-crawling/re-matching against the competitor's catalog.
+//   unsupported_partners - append-only log of partner-site requests that couldn't
+//                         be added automatically (no WooCommerce/Shopify catalogue
+//                         found, or the site blocks automated requests). Nothing
+//                         reads this at runtime; it's a worklist for building
+//                         one-off custom scrapers for these sites later.
 //
 // Each row keeps flat summary columns for easy SQL plus a full JSON payload so
 // nothing is lost. ALL exported functions are async (Postgres/REST are async;
@@ -97,6 +102,8 @@ export const setIntlGiftPairing = (country, sku, fnpUrl, matchSource, matchConfi
 // key, read-only via RLS). See public/uae-compare/index.html.
 export const getIntlGiftSnapshot = (country) => backend.getIntlGiftSnapshot(country);
 export const setIntlGiftSnapshot = (country, payload) => backend.setIntlGiftSnapshot(country, payload);
+export const listUnsupportedPartners = () => backend.listUnsupportedPartners();
+export const addUnsupportedPartner = (row) => backend.addUnsupportedPartner(row);
 
 // ---------------------------------------------------------------------------
 // Postgres (Supabase) backend
@@ -166,9 +173,34 @@ async function makePostgresBackend(connectionString) {
       generated_at   TEXT NOT NULL,
       payload        JSONB NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS unsupported_partners (
+      id            BIGSERIAL PRIMARY KEY,
+      created_at    TEXT NOT NULL,
+      name          TEXT,
+      kapruka_url   TEXT,
+      partner_site  TEXT NOT NULL,
+      reason        TEXT,
+      detail        TEXT
+    );
   `);
 
   return {
+    async listUnsupportedPartners() {
+      const { rows } = await pool.query(
+        `SELECT id, created_at, name, kapruka_url, partner_site, reason, detail
+         FROM unsupported_partners ORDER BY id DESC`,
+      );
+      return rows;
+    },
+
+    async addUnsupportedPartner({ name, kaprukaUrl, partnerSite, reason, detail }) {
+      await pool.query(
+        `INSERT INTO unsupported_partners (created_at, name, kapruka_url, partner_site, reason, detail)
+         VALUES ($1,$2,$3,$4,$5,$6)`,
+        [nowIso(), name || null, kaprukaUrl || null, partnerSite, reason || null, detail || null],
+      );
+    },
+
     async listPartnerRows() {
       const { rows } = await pool.query(
         `SELECT id, name, kapruka_url, kapruka_slug, partner_site, partner_label, platform, via_browser, refresh_requested_at
@@ -406,6 +438,15 @@ async function makePostgresBackend(connectionString) {
 //     generated_at   TEXT NOT NULL,
 //     payload        JSONB NOT NULL
 //   );
+//   CREATE TABLE IF NOT EXISTS unsupported_partners (
+//     id            BIGSERIAL PRIMARY KEY,
+//     created_at    TEXT NOT NULL,
+//     name          TEXT,
+//     kapruka_url   TEXT,
+//     partner_site  TEXT NOT NULL,
+//     reason        TEXT,
+//     detail        TEXT
+//   );
 //   -- The static dashboard (GitHub Pages) reads this table directly with a
 //   -- public anon key, so it needs RLS enabled with a public SELECT policy:
 //   ALTER TABLE intl_gift_snapshots ENABLE ROW LEVEL SECURITY;
@@ -441,6 +482,24 @@ async function makeSupabaseRestBackend(baseUrl, serviceKey) {
   }
 
   return {
+    async listUnsupportedPartners() {
+      return restFetch('/unsupported_partners?select=id,created_at,name,kapruka_url,partner_site,reason,detail&order=id.desc');
+    },
+
+    async addUnsupportedPartner({ name, kaprukaUrl, partnerSite, reason, detail }) {
+      await restFetch('/unsupported_partners', {
+        method: 'POST',
+        body: JSON.stringify({
+          created_at: nowIso(),
+          name: name || null,
+          kapruka_url: kaprukaUrl || null,
+          partner_site: partnerSite,
+          reason: reason || null,
+          detail: detail || null,
+        }),
+      });
+    },
+
     async listPartnerRows() {
       const rows = await restFetch(
         '/partners?select=id,name,kapruka_url,kapruka_slug,partner_site,partner_label,platform,via_browser,refresh_requested_at' +
@@ -674,6 +733,15 @@ async function makeSqliteBackend() {
       generated_at   TEXT NOT NULL,
       payload_json   TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS unsupported_partners (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      created_at    TEXT NOT NULL,
+      name          TEXT,
+      kapruka_url   TEXT,
+      partner_site  TEXT NOT NULL,
+      reason        TEXT,
+      detail        TEXT
+    );
   `);
 
   const insChk = db.prepare(`
@@ -711,8 +779,22 @@ async function makeSqliteBackend() {
     INSERT INTO intl_gift_snapshots (country, generated_at, payload_json)
     VALUES (?, ?, ?)
     ON CONFLICT (country) DO UPDATE SET generated_at = excluded.generated_at, payload_json = excluded.payload_json`);
+  const selUnsupported = db.prepare(`
+    SELECT id, created_at, name, kapruka_url, partner_site, reason, detail
+    FROM unsupported_partners ORDER BY id DESC`);
+  const insUnsupported = db.prepare(`
+    INSERT INTO unsupported_partners (created_at, name, kapruka_url, partner_site, reason, detail)
+    VALUES (?, ?, ?, ?, ?, ?)`);
 
   return {
+    async listUnsupportedPartners() {
+      return selUnsupported.all();
+    },
+
+    async addUnsupportedPartner({ name, kaprukaUrl, partnerSite, reason, detail }) {
+      insUnsupported.run(nowIso(), name || null, kaprukaUrl || null, partnerSite, reason || null, detail || null);
+    },
+
     async listPartnerRows() {
       return selPartners.all().map(rowToPartner);
     },

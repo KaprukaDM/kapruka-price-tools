@@ -3,7 +3,7 @@ import express from 'express';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
-import { loadCategories, runMatch } from './pipeline.js';
+import { loadCategories, runMatch, addCategorySites } from './pipeline.js';
 import { runComparison } from './compare/run.js';
 import { listPartners, addPartner, siteLabel, getPartner, requestRefresh } from './compare/partners.js';
 import {
@@ -19,6 +19,8 @@ import {
   recentComparisonRuns,
   getComparisonRun,
   storageKind,
+  listUnsupportedPartners,
+  addUnsupportedPartner,
 } from './db.js';
 import {
   exportPriceChecksCsv,
@@ -29,6 +31,7 @@ import {
   productRows,
 } from './export.js';
 import { uaeCompareApiRouter } from './uae-compare/routes.js';
+import { sendWhatsAppMessage, whatsappConfigured } from './notify/whatsapp.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -44,6 +47,29 @@ app.get('/api/categories', async (_req, res) => {
   try {
     const categories = await loadCategories();
     res.json(categories);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Add a category (or add competitor sites to an existing one) for the Price
+// Checker. Body: { name, links: string[] } — up to 5 competitor site links.
+app.post('/api/categories', async (req, res) => {
+  const { name, links } = req.body || {};
+  const categoryName = (name || '').trim();
+  const cleanLinks = (Array.isArray(links) ? links : []).map((l) => String(l || '').trim()).filter(Boolean);
+  if (!categoryName || cleanLinks.length === 0) {
+    return res.status(400).json({ error: 'A category name and at least one competitor link are required.' });
+  }
+  if (cleanLinks.length > 5) {
+    return res.status(400).json({ error: 'Up to 5 competitor links per category.' });
+  }
+  try {
+    const result = await addCategorySites(categoryName, cleanLinks);
+    if (result.added.length === 0) {
+      return res.status(400).json({ error: 'Those links did not resolve to any new sites (invalid URL or already added).' });
+    }
+    res.json(result);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -212,11 +238,24 @@ app.post('/api/partners', async (req, res) => {
       });
     }
     // 2) Partner site must expose a readable catalogue (WooCommerce or Shopify).
-    const { platform, viaBrowser } = await detectPartnerPlatform(partnerSite);
+    const { platform, viaBrowser, blocked } = await detectPartnerPlatform(partnerSite);
     if (!platform) {
+      const reason = blocked ? 'blocked' : 'unsupported-platform';
+      const detail = blocked
+        ? 'Site blocks automated requests (Cloudflare/bot protection) even via a real browser.'
+        : 'No WooCommerce or Shopify product catalogue was found.';
+      await addUnsupportedPartner({ name, kaprukaUrl: src.link, partnerSite, reason, detail }).catch(() => {});
+      if (whatsappConfigured()) {
+        sendWhatsAppMessage(
+          `🔧 New unsupported partner site\n\n` +
+            `Name: ${name}\nSite: ${partnerSite}\nReason: ${reason}\n${detail}\n\n` +
+            `Needs a custom scraper — see GET /api/unsupported-partners for the full list.`,
+        ).catch((err) => console.warn('! WhatsApp notify failed:', err.message));
+      }
       return res.status(400).json({
         error: `Could not read a product catalogue from ${siteLabel(partnerSite)}. ` +
-          'Supported store platforms are WooCommerce and Shopify.',
+          'Supported store platforms are WooCommerce and Shopify. ' +
+          "This site has been logged so we can build a custom scraper for it.",
       });
     }
     const site = partnerSite.startsWith('http') ? partnerSite : `https://${partnerSite}`;
@@ -230,6 +269,17 @@ app.post('/api/partners', async (req, res) => {
     });
     if (SCRAPE_ON_ADD) scrapeAndSaveInBackground(entry.id).catch(() => {});
     res.json({ ...entry, platform, kaprukaPreviewCount: kCount, scraping: SCRAPE_ON_ADD });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Worklist of partner-site requests that couldn't be added automatically (not
+// WooCommerce/Shopify, or blocked by bot protection) — for building custom
+// scrapers. Nothing else in the app reads this.
+app.get('/api/unsupported-partners', async (_req, res) => {
+  try {
+    res.json(await listUnsupportedPartners());
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

@@ -106,10 +106,54 @@ function progressShell() {
 }
 
 let es = null;
+let searchMode = 'search'; // 'search' | 'url'
+
+function setSearchMode(mode) {
+  searchMode = mode;
+  $('modeSearch').classList.toggle('active', mode === 'search');
+  $('modeSearch').setAttribute('aria-selected', String(mode === 'search'));
+  $('modeUrl').classList.toggle('active', mode === 'url');
+  $('modeUrl').setAttribute('aria-selected', String(mode === 'url'));
+  $('searchFields').style.display = mode === 'search' ? '' : 'none';
+  $('urlFields').style.display = mode === 'url' ? '' : 'none';
+  $('hint').textContent = '';
+}
+
+// In URL mode, resolve the pasted Kapruka product link into a name/description/
+// category first (via /api/kapruka/resolve), then hand off to the normal
+// streaming match exactly as if the user had typed those fields in themselves.
+async function resolveProductUrl() {
+  const url = $('productUrl').value.trim();
+  if (!url) {
+    $('hint').textContent = ' Paste a Kapruka product URL first.';
+    return null;
+  }
+  const res = await fetch('/api/kapruka/resolve', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url }),
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    $('hint').textContent = ' ' + (data.error || 'Could not read that product page.');
+    return null;
+  }
+  if (data.suggestedCategory) $('category').value = data.suggestedCategory;
+  $('name').value = data.name || '';
+  $('description').value = data.description || '';
+  return data;
+}
 
 // Stream the match over Server-Sent Events so we can show live progress
 // (which/how many sites are done) instead of a silent ~60s wait.
-function run() {
+async function run() {
+  if (searchMode === 'url') {
+    $('go').disabled = true;
+    const product = await resolveProductUrl();
+    $('go').disabled = false;
+    if (!product) return;
+  }
+
   const category = $('category').value;
   const name = $('name').value.trim();
   const description = $('description').value.trim();
@@ -185,4 +229,42 @@ function run() {
 }
 
 $('go').addEventListener('click', run);
+$('modeSearch').addEventListener('click', () => setSearchMode('search'));
+$('modeUrl').addEventListener('click', () => setSearchMode('url'));
 loadCategories();
+
+$('toggleAddCategory').addEventListener('click', () => {
+  const form = $('addCategoryForm');
+  form.style.display = form.style.display === 'none' ? '' : 'none';
+});
+
+$('saveCategory').addEventListener('click', async () => {
+  const name = $('newCategoryName').value.trim();
+  const links = Array.from(document.querySelectorAll('.competitor-link'))
+    .map((el) => el.value.trim())
+    .filter(Boolean);
+  if (!name || links.length === 0) {
+    $('categoryHint').textContent = ' Enter a category name and at least one competitor link.';
+    return;
+  }
+  $('saveCategory').disabled = true;
+  try {
+    const res = await fetch('/api/categories', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, links }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      $('categoryHint').textContent = ' ' + (data.error || 'Could not save that category.');
+      return;
+    }
+    $('categoryHint').textContent = ` Saved — ${data.added.length} site(s) added to "${data.category}".`;
+    $('newCategoryName').value = '';
+    document.querySelectorAll('.competitor-link').forEach((el) => (el.value = ''));
+    await loadCategories();
+    $('category').value = data.category;
+  } finally {
+    $('saveCategory').disabled = false;
+  }
+});

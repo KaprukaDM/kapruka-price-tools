@@ -1,7 +1,7 @@
 // Orchestration: for a category + product query, run serp -> scrape -> match
 // for every configured site, and return one best result per site.
 
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
@@ -23,6 +23,39 @@ const NAME_ONLY_CATEGORIES = new Set(['Cakes']);
 export async function loadCategories() {
   const raw = await readFile(CATEGORIES_PATH, 'utf-8');
   return JSON.parse(raw);
+}
+
+function siteFromLink(link) {
+  let domain;
+  try {
+    domain = new URL(link.startsWith('http') ? link : `https://${link}`).hostname.replace(/^www\./, '');
+  } catch {
+    return null;
+  }
+  const label = domain.split('.')[0];
+  return { name: label.charAt(0).toUpperCase() + label.slice(1), domain };
+}
+
+// Add (or create) a category with up to 5 competitor site links. Existing
+// domains for that category are left untouched (no duplicates). This edits
+// config/categories.json directly — like the old per-machine partners.json,
+// a change here is only visible on the instance that made it until synced
+// via git to the other one.
+export async function addCategorySites(categoryName, links) {
+  const categories = await loadCategories();
+  const existing = categories[categoryName] || [];
+  const seenDomains = new Set(existing.map((s) => s.domain));
+  const added = [];
+  for (const link of links.slice(0, 5)) {
+    const site = siteFromLink(link);
+    if (!site || seenDomains.has(site.domain)) continue;
+    existing.push(site);
+    seenDomains.add(site.domain);
+    added.push(site);
+  }
+  categories[categoryName] = existing;
+  await writeFile(CATEGORIES_PATH, JSON.stringify(categories, null, 2) + '\n', 'utf-8');
+  return { category: categoryName, sites: existing, added };
 }
 
 // Process a single site end-to-end. Always resolves (never rejects) so one bad
