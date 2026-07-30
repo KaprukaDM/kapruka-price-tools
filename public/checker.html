@@ -56,23 +56,24 @@
       <span id="hint" class="hint"></span>
     </div>
 
-    <div class="card" style="margin-top:18px">
-      <button type="button" class="ghost" id="toggleAddCategory">➕ Add a category</button>
-      <div id="addCategoryForm" style="display:none;margin-top:16px">
-        <label for="newCategoryName">Category name</label>
-        <input id="newCategoryName" placeholder="e.g. Home Appliances" />
-        <label style="margin-top:14px">Competitor links (up to 5)</label>
-        <input class="competitor-link" placeholder="https://competitor1.lk" style="margin-bottom:8px" />
-        <input class="competitor-link" placeholder="https://competitor2.lk" style="margin-bottom:8px" />
-        <input class="competitor-link" placeholder="https://competitor3.lk" style="margin-bottom:8px" />
-        <input class="competitor-link" placeholder="https://competitor4.lk" style="margin-bottom:8px" />
-        <input class="competitor-link" placeholder="https://competitor5.lk" />
-        <button id="saveCategory">Save category</button>
-        <span id="categoryHint" class="hint"></span>
-      </div>
-    </div>
-
     <div id="out"></div>
+  </div>
+
+  <div class="floating-panel" id="categoryPanel">
+    <button type="button" class="ghost" id="toggleAddCategory">➕ Add a category</button>
+    <div id="addCategoryForm" class="floating-form" style="display:none">
+      <button type="button" class="panel-close" id="closeAddCategory" aria-label="Close">×</button>
+      <label for="newCategoryName">Category name</label>
+      <input id="newCategoryName" placeholder="e.g. Home Appliances" />
+      <label style="margin-top:14px">Competitor links (up to 5)</label>
+      <input class="competitor-link" placeholder="https://competitor1.lk" style="margin-bottom:8px" />
+      <input class="competitor-link" placeholder="https://competitor2.lk" style="margin-bottom:8px" />
+      <input class="competitor-link" placeholder="https://competitor3.lk" style="margin-bottom:8px" />
+      <input class="competitor-link" placeholder="https://competitor4.lk" style="margin-bottom:8px" />
+      <input class="competitor-link" placeholder="https://competitor5.lk" />
+      <button id="saveCategory">Save category</button>
+      <span id="categoryHint" class="hint"></span>
+    </div>
   </div>
 
   <script src="app.js"></script>

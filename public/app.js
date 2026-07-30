@@ -237,6 +237,9 @@ $('toggleAddCategory').addEventListener('click', () => {
   const form = $('addCategoryForm');
   form.style.display = form.style.display === 'none' ? '' : 'none';
 });
+$('closeAddCategory').addEventListener('click', () => {
+  $('addCategoryForm').style.display = 'none';
+});
 
 $('saveCategory').addEventListener('click', async () => {
   const name = $('newCategoryName').value.trim();

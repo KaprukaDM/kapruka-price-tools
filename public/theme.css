@@ -119,6 +119,21 @@ a:hover { text-decoration: underline; }
        cursor:pointer; font-size:13px; font-weight:600; color:var(--mut); margin-top:0; }
 .tab.active { background:var(--purple); color:#fff; border-color:var(--purple); }
 
+/* Small floating widget pinned to the top-right of the page (e.g. "add a
+   category" on the Price Checker) so it doesn't push the main flow down. */
+.floating-panel { position:fixed; top:92px; right:24px; z-index:40; }
+.floating-form { position:relative; margin-top:10px; width:300px; max-width:calc(100vw - 48px);
+                 background:var(--card); border:1px solid var(--line); border-radius:14px;
+                 padding:20px; box-shadow:0 10px 30px rgba(64,41,112,.2); }
+.panel-close { position:absolute; top:8px; right:10px; margin:0; padding:0; width:26px; height:26px;
+               background:none; border:none; color:var(--mut); font-size:20px; line-height:1;
+               cursor:pointer; border-radius:6px; }
+.panel-close:hover { background:var(--tint); color:var(--purple-dk); }
+@media (max-width:680px) {
+  .floating-panel { position:static; margin:18px 20px 0; }
+  .floating-form { width:auto; max-width:none; }
+}
+
 @media (max-width:640px){ .grid{ grid-template-columns:1fr; } }
 @media (max-width:680px) {
   .toolbar { flex-direction:column; align-items:stretch; }
