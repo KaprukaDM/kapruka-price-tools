@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path';
 
 import { loadCategories, runMatch } from './pipeline.js';
 import { runComparison } from './compare/run.js';
-import { listPartners, addPartner, siteLabel } from './compare/partners.js';
+import { listPartners, addPartner, siteLabel, getPartner } from './compare/partners.js';
 import {
   probeKaprukaSource,
   detectPartnerPlatform,
@@ -193,14 +193,30 @@ app.post('/api/partners', async (req, res) => {
   }
 });
 
-// Partner price reconciliation. Result is cached in memory per partner for 30
-// min; ?refresh=1 forces a live refetch (~10s). Any run that actually recomputes
-// (a refresh or a cache miss) is persisted as a new timestamped row; cached
-// responses are not re-stored.
+// Partner price reconciliation. By default this serves the latest STORED run
+// for the partner (written by the scheduled refresh job, src/tools/refresh-
+// all-partners.js) rather than live-scraping on every page view — Kapruka
+// geo-detects the connecting IP, so a live fetch from a host with bad geo
+// pricing would silently overwrite good stored data with USD/price-missing
+// results. ?refresh=1 (the UI's "Refresh" button) bypasses this and forces a
+// live refetch, which is then persisted as the new latest row.
 app.get('/api/compare', async (req, res) => {
   try {
     const force = req.query.refresh === '1' || req.query.refresh === 'true';
     const partnerId = req.query.partner || undefined;
+
+    if (!force) {
+      const partner = await getPartner(partnerId);
+      const [latest] = await recentComparisonRuns(1, partner.id);
+      if (latest) {
+        const stored = await getComparisonRun(latest.id);
+        if (stored) {
+          res.json({ ...stored, cached: true, stored: true });
+          return;
+        }
+      }
+    }
+
     const data = await runComparison({ partnerId, force });
     if (!data.cached) {
       try {
