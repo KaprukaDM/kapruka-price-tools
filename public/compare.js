@@ -118,49 +118,48 @@ function footmeta() {
   $('footmeta').textContent =
     `Catalogues: ${DATA.catalogCounts.kapruka} on Kapruka, ${DATA.catalogCounts.partner} on ${PARTNER_LABEL} ` +
     `(${DATA.partner.platform}) · matched by model code (high) or name similarity (review) · ` +
-    `generated ${at.toLocaleString()}` + (DATA.stored ? ' · from stored data' : ' · saved to database');
+    `Last updated: ${at.toLocaleString()}`;
 }
 
-function statusHtml(lastLine, elapsedSec) {
+function scrapingStatusHtml(lastLine, elapsedSec) {
   const elapsed = elapsedSec != null ? ` · ${elapsedSec}s elapsed` : '';
   return (
     '<div class="spin"></div>' +
-    `<div>${escapeHtml(lastLine || 'Loading…')}${elapsed}</div>` +
+    `<div>${escapeHtml(lastLine || 'Scraping…')}${elapsed}</div>` +
     '<div class="progress-bar"><div class="progress-bar-fill"></div></div>'
   );
 }
 
-async function pollProgress(partnerId, startedAt) {
+let pollTimer = null;
+
+// Renders whatever /api/compare currently has for this partner. If there's
+// no stored data yet ("pending"), this shows either live scrape progress (if
+// this server instance is the one actively scraping it — see SCRAPE_ON_ADD
+// in server.js) or a calm "check back later" message (if it's waiting on the
+// scheduled job instead, which runs as a separate process this page can't
+// see progress from) — and keeps polling every few seconds either way until
+// real data shows up.
+async function attemptLoad(partnerId, startedAt) {
   try {
-    const res = await fetch('/api/compare/progress?partner=' + encodeURIComponent(partnerId));
-    const p = await res.json();
-    const elapsedSec = Math.round((Date.now() - startedAt) / 1000);
-    const lastLine = p.lines && p.lines.length ? p.lines[p.lines.length - 1].trim() : null;
-    $('status').innerHTML = statusHtml(lastLine, elapsedSec);
-  } catch {
-    // Transient poll failure — leave the current status text as-is.
-  }
-}
-
-async function load() {
-  const partnerId = $('partner').value;
-  $('status').style.display = '';
-  $('app').style.display = 'none';
-  const startedAt = Date.now();
-  $('status').innerHTML = statusHtml('Loading…', null);
-
-  // A brand-new partner's first scrape can take many minutes (large catalogs,
-  // plus a per-product price-hydration fallback) — poll for real progress so
-  // this doesn't look indistinguishable from a hang. Harmless no-op once the
-  // partner already has stored data, since that request resolves instantly
-  // and this interval gets cleared right away.
-  const progressTimer = setInterval(() => pollProgress(partnerId, startedAt), 1200);
-
-  try {
-    const url = '/api/compare?partner=' + encodeURIComponent(partnerId);
-    const res = await fetch(url);
+    const res = await fetch('/api/compare?partner=' + encodeURIComponent(partnerId));
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'request failed');
+
+    if (data.pending) {
+      const pRes = await fetch('/api/compare/progress?partner=' + encodeURIComponent(partnerId));
+      const p = await pRes.json();
+      if (p.running) {
+        const elapsedSec = Math.round((Date.now() - startedAt) / 1000);
+        const lastLine = p.lines && p.lines.length ? p.lines[p.lines.length - 1].trim() : null;
+        $('status').innerHTML = scrapingStatusHtml(lastLine, elapsedSec);
+      } else {
+        $('status').innerHTML = `<div>${escapeHtml(data.message || 'Not ready yet — check back shortly.')}</div>`;
+      }
+      if (!pollTimer) pollTimer = setInterval(() => attemptLoad(partnerId, startedAt), 4000);
+      return;
+    }
+
+    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
     DATA = data;
     PARTNER_LABEL = data.partner.partnerLabel || data.partner.name;
     $('title').textContent = `${data.partner.name} — Kapruka vs. ${PARTNER_LABEL}`;
@@ -176,10 +175,42 @@ async function load() {
     footmeta();
     $('status').style.display = 'none';
     $('app').style.display = '';
+    $('refreshHint').textContent = '';
   } catch (err) {
+    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
     $('status').innerHTML = `Error: ${escapeHtml(err.message)} <button class="ghost" onclick="location.reload()">Retry</button>`;
+  }
+}
+
+async function load() {
+  const partnerId = $('partner').value;
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+  $('status').style.display = '';
+  $('app').style.display = 'none';
+  $('status').innerHTML = scrapingStatusHtml('Loading…', null);
+  await attemptLoad(partnerId, Date.now());
+}
+
+// The Refresh button doesn't scrape anything itself, from anywhere — it just
+// records a request. The scheduled job (running from a confirmed-good
+// Kapruka-geo host) picks it up on its next pass and does the actual
+// rescrape. Safe to click from any instance, including the VPS.
+async function requestRefresh() {
+  const partnerId = $('partner').value;
+  if (!partnerId) return;
+  $('refresh').disabled = true;
+  $('refreshHint').textContent = '';
+  try {
+    const res = await fetch('/api/compare/refresh-request?partner=' + encodeURIComponent(partnerId), {
+      method: 'POST',
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not request refresh');
+    $('refreshHint').textContent = 'Refresh requested — updates within ~15 min.';
+  } catch (err) {
+    $('refreshHint').textContent = 'Error: ' + err.message;
   } finally {
-    clearInterval(progressTimer);
+    $('refresh').disabled = false;
   }
 }
 
@@ -228,6 +259,7 @@ async function addStore() {
 $('search').addEventListener('input', render);
 $('overOnly').addEventListener('change', render);
 $('partner').addEventListener('change', () => load());
+$('refresh').addEventListener('click', requestRefresh);
 $('toggleAdd').addEventListener('click', () => {
   const c = $('addCard');
   c.style.display = c.style.display === 'none' ? '' : 'none';

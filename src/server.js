@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path';
 
 import { loadCategories, runMatch } from './pipeline.js';
 import { runComparison } from './compare/run.js';
-import { listPartners, addPartner, siteLabel, getPartner } from './compare/partners.js';
+import { listPartners, addPartner, siteLabel, getPartner, requestRefresh } from './compare/partners.js';
 import {
   probeKaprukaSource,
   detectPartnerPlatform,
@@ -148,6 +148,47 @@ app.get('/api/partners', async (_req, res) => {
   }
 });
 
+// In-memory progress for a background scrape (see /api/compare/progress
+// below). A brand-new partner with a large catalog can legitimately take many
+// minutes — the Kapruka-side catalog fetch alone can be dozens of pages, and
+// the MCP price-hydration fallback (src/compare/mcpPrices.js) opens each
+// still-missing product's own page in a real headless browser, one at a time.
+// Without this, a long-but-working scrape is indistinguishable from a hang.
+const COMPARE_PROGRESS = new Map(); // partnerId -> { lines: string[], startedAt: number }
+
+// Only this local machine (confirmed to get correct LKR pricing from
+// Kapruka) should ever scrape live. Set SCRAPE_ON_ADD=1 in .env on a
+// confirmed-good-geo host to have adding a partner kick off an immediate
+// background scrape for faster turnaround; leave it unset everywhere else
+// (e.g. the VPS, confirmed to get USD pricing) so a new partner there just
+// waits for the scheduled job (src/tools/refresh-all-partners.js) to pick it
+// up from the good host instead.
+const SCRAPE_ON_ADD = process.env.SCRAPE_ON_ADD === '1';
+
+// Fire-and-forget: scrape one partner and save the result, tracking progress
+// under its id the same way /api/compare/progress already exposes. Used both
+// for the immediate background scrape after adding a partner (see below) and
+// could be triggered the same way elsewhere later if needed.
+async function scrapeAndSaveInBackground(partnerId) {
+  const progress = { lines: [], startedAt: Date.now() };
+  COMPARE_PROGRESS.set(partnerId, progress);
+  const log = (msg) => {
+    console.log(`[compare:${partnerId}] ${msg}`);
+    progress.lines.push(msg);
+    if (progress.lines.length > 30) progress.lines.shift();
+  };
+  try {
+    const data = await runComparison({ partnerId, log });
+    await saveComparisonRun(data);
+    log(`✓ Done — ${data.summary.kaprukaHigher} overpriced of ${data.summary.matched} matched`);
+  } catch (err) {
+    log(`✗ Failed: ${err.message}`);
+    console.warn(`! background scrape failed for ${partnerId}:`, err.message);
+  } finally {
+    COMPARE_PROGRESS.delete(partnerId);
+  }
+}
+
 // Add a new partner: validate the two links, auto-detect the store platform,
 // then persist to the shared `partners` table in Supabase. Body: { name, kaprukaUrl, partnerSite }.
 app.post('/api/partners', async (req, res) => {
@@ -187,19 +228,12 @@ app.post('/api/partners', async (req, res) => {
       platform,
       viaBrowser,
     });
-    res.json({ ...entry, platform, kaprukaPreviewCount: kCount });
+    if (SCRAPE_ON_ADD) scrapeAndSaveInBackground(entry.id).catch(() => {});
+    res.json({ ...entry, platform, kaprukaPreviewCount: kCount, scraping: SCRAPE_ON_ADD });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
-
-// In-memory progress for a first-time partner scrape (see /api/compare/progress
-// below). A brand-new partner with a large catalog can legitimately take many
-// minutes — the Kapruka-side catalog fetch alone can be dozens of pages, and
-// the MCP price-hydration fallback (src/compare/mcpPrices.js) opens each
-// still-missing product's own page in a real headless browser, one at a time.
-// Without this, a long-but-working scrape is indistinguishable from a hang.
-const COMPARE_PROGRESS = new Map(); // partnerId -> { lines: string[], startedAt: number }
 
 app.get('/api/compare/progress', (req, res) => {
   const partnerId = req.query.partner || '';
@@ -211,17 +245,30 @@ app.get('/api/compare/progress', (req, res) => {
   res.json({ running: true, lines: state.lines, elapsedMs: Date.now() - state.startedAt });
 });
 
+// Mark a partner as wanting a fresh scrape. Doesn't scrape anything itself —
+// just records a timestamp; the scheduled job (running from this confirmed-
+// good-geo machine) picks it up on its next pass, since that's the only
+// place live scraping should ever happen from. Safe to call from any
+// instance (the VPS included) — it's just a Supabase write.
+app.post('/api/compare/refresh-request', async (req, res) => {
+  try {
+    const partner = await getPartner(req.query.partner || req.body?.partner);
+    await requestRefresh(partner.id);
+    res.json({ ok: true, partnerId: partner.id });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Partner price reconciliation. Always serves the latest STORED run for the
 // partner (written by the scheduled refresh job, src/tools/refresh-all-
-// partners.js) rather than live-scraping on page view — Kapruka geo-detects
-// the connecting IP, so a live fetch from a host with bad geo pricing would
-// silently overwrite good stored data with USD/price-missing results. There
-// used to be a ?refresh=1 escape hatch (the UI's "Refresh" button) that
-// forced a live re-scrape from whatever server happened to be handling the
-// request; it was removed for exactly that reason — refreshing now only
-// happens via the scheduled job, which runs from a known-good host. A brand
-// new partner with no stored run yet still gets one live fetch so it has
-// something to show at all.
+// partners.js) — never live-scrapes on a page view. Kapruka geo-detects the
+// connecting IP, so a live fetch from a host with bad geo pricing would
+// produce wrong data; scraping only ever happens from this confirmed-good
+// host, either via the scheduled job or the immediate background scrape
+// after adding a partner (see SCRAPE_ON_ADD above). If no stored run exists
+// yet, this returns a "pending" response instead of blocking on a live
+// fetch — the frontend polls /api/compare/progress and re-tries.
 app.get('/api/compare', async (req, res) => {
   try {
     const partnerId = req.query.partner || undefined;
@@ -234,29 +281,13 @@ app.get('/api/compare', async (req, res) => {
         return;
       }
     }
-
-    const progress = { lines: [], startedAt: Date.now() };
-    COMPARE_PROGRESS.set(partner.id, progress);
-    const log = (msg) => {
-      console.log(`[compare:${partner.id}] ${msg}`);
-      progress.lines.push(msg);
-      if (progress.lines.length > 30) progress.lines.shift();
-    };
-
-    let data;
-    try {
-      data = await runComparison({ partnerId, log });
-    } finally {
-      COMPARE_PROGRESS.delete(partner.id);
-    }
-    if (!data.cached) {
-      try {
-        data.recordId = await saveComparisonRun(data);
-      } catch (e) {
-        console.warn('! failed to persist comparison run:', e.message);
-      }
-    }
-    res.json(data);
+    res.json({
+      pending: true,
+      partner: { id: partner.id, name: partner.name, partnerLabel: partner.partnerLabel },
+      message: SCRAPE_ON_ADD
+        ? 'This store was just added — check back in a few minutes.'
+        : 'This store was just added — check back in about 15 minutes.',
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

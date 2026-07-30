@@ -5,7 +5,7 @@
 // recurring source of confusion once this app started running from more
 // than one server.
 
-import { listPartnerRows, getPartnerRow, insertPartnerRow } from '../db.js';
+import { listPartnerRows, getPartnerRow, insertPartnerRow, requestPartnerRefresh } from '../db.js';
 
 const slugify = (s) =>
   String(s).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'partner';
@@ -44,7 +44,9 @@ export async function getPartner(id) {
   return first;
 }
 
-// Lightweight list for the UI dropdown / API.
+// Lightweight list for the UI dropdown / API. Includes refreshRequestedAt so
+// refresh-all-partners.js can decide whether a pending "Refresh" click still
+// needs picking up, without a second round-trip per partner.
 export async function listPartners() {
   const rows = await listPartnerRows();
   return rows.map((p) => ({
@@ -52,5 +54,13 @@ export async function listPartners() {
     name: p.name,
     kaprukaSlug: p.kaprukaSlug,
     partnerLabel: p.partnerLabel || p.partnerSite,
+    refreshRequestedAt: p.refreshRequestedAt,
   }));
+}
+
+// Mark a partner as wanting a fresh scrape. Doesn't scrape anything itself —
+// just records the request; the scheduled job (running from a confirmed-good
+// Kapruka-geo host) is what actually acts on it, next time it runs.
+export async function requestRefresh(id) {
+  await requestPartnerRefresh(id);
 }

@@ -13,19 +13,22 @@
 // an office/SL-based box) sidesteps that without needing a proxy — whatever
 // serves the dashboard just reads the latest stored run per partner.
 //
-// Gap-filling, not a full re-scrape every time: a partner whose latest
-// stored run already has zero price-missing entries is left alone — no
-// point re-hitting a site that's already complete. Only partners with no
-// stored run yet, or with price-missing entries in their latest run, get
-// rescraped. This also cuts down on how often we hit Kapruka/partner sites
-// (see the HTTP 429 rate-limiting noted elsewhere), since a fully-clean
-// partner stops being requested at all once it's done.
+// Deliberately narrow, not "gap-fill everything": this only rescrapes a
+// partner that either (a) has no stored run at all yet (brand new), or
+// (b) has a pending "Refresh" request (see public/compare.js's Refresh
+// button + POST /api/compare/refresh-request) newer than its latest run.
+// A partner that already has *some* data is left alone even if it still has
+// price-missing entries — re-checking is now an explicit, user-initiated
+// action (the Refresh button), not something this job does on its own for
+// every partner, every run. That's a deliberate choice: it keeps this job
+// fast and avoids repeatedly hitting Kapruka/partner sites (see the HTTP 429
+// rate-limiting noted elsewhere) for partners nobody has asked to re-check.
 //
 // Usage:
 //   node src/tools/refresh-all-partners.js
 //
-// Schedule on Windows (daily at 03:00, adjust path/time as needed):
-//   schtasks /create /tn "Kapruka Price Refresh" /sc daily /st 03:00 ^
+// Schedule on Windows (every 15 min, adjust as needed):
+//   schtasks /create /tn "Kapruka Price Refresh" /sc minute /mo 15 ^
 //     /tr "node \"C:\Users\fari\Desktop\Price Analysis\src\tools\refresh-all-partners.js\""
 
 import 'dotenv/config';
@@ -33,24 +36,20 @@ import { runComparison } from '../compare/run.js';
 import { listPartners } from '../compare/partners.js';
 import { saveComparisonRun, recentComparisonRuns, storageKind } from '../db.js';
 
-// price_missing isn't stored as its own column — derive it from the summary
-// columns that are: matched = same + kapruka_higher + kapruka_lower + price_missing.
-function priceMissingCount(row) {
-  return row.matched - row.kapruka_higher - row.kapruka_lower - row.same_price;
-}
-
 async function main() {
   console.log(`Storage backend: ${storageKind}`);
   const partners = await listPartners();
-  console.log(`Checking ${partners.length} partner(s) for gaps to fill…`);
+  console.log(`Checking ${partners.length} partner(s) for new additions / refresh requests…`);
 
   let refreshed = 0;
   let skipped = 0;
   let failed = 0;
   for (const p of partners) {
     const [latest] = await recentComparisonRuns(1, p.id);
-    if (latest && latest.matched > 0 && priceMissingCount(latest) <= 0) {
-      console.log(`  · ${p.name}: already complete (0 price-missing of ${latest.matched}) — skipping`);
+    const refreshPending = p.refreshRequestedAt &&
+      (!latest || new Date(p.refreshRequestedAt) > new Date(latest.created_at));
+    if (latest && !refreshPending) {
+      console.log(`  · ${p.name}: already has data, no refresh requested — skipping`);
       skipped += 1;
       continue;
     }
@@ -66,7 +65,7 @@ async function main() {
       failed += 1;
     }
   }
-  console.log(`Done — ${refreshed} refreshed, ${skipped} already complete, ${failed} failed.`);
+  console.log(`Done — ${refreshed} refreshed, ${skipped} already have data, ${failed} failed.`);
   if (failed > 0 && refreshed === 0 && skipped === 0) process.exitCode = 1;
 }
 

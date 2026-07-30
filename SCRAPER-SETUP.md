@@ -47,8 +47,10 @@ never run the scheduled scraper itself; it only ever reads what this machine
 - **Wrapper:** `scripts/refresh-all-partners.bat` (resolves the full path to
   `node.exe` and sets the working directory explicitly — a bare `node` on PATH
   isn't reliably resolved inside a non-interactive Task Scheduler session)
-- **Windows Scheduled Task:** `Kapruka Price Refresh`, daily at 3:00 AM, on
-  this local machine
+- **Windows Scheduled Task:** `Kapruka Price Refresh`, every 15 minutes, on
+  this local machine, with `StartWhenAvailable` on (catches up immediately if
+  the machine was asleep/off when a 15-minute mark passed, instead of just
+  skipping it)
 - **Log:** `logs/refresh-all-partners.log`
 
 Check/manage the task:
@@ -62,13 +64,17 @@ Run it manually without the scheduler:
 node src/tools/refresh-all-partners.js
 ```
 
-### Gap-filling, not a full re-scrape every time
+### Deliberately narrow: new partners + explicit refresh requests only
 
-The script loops over every partner in the shared `partners` table, but **skips any
-partner whose latest stored Supabase run already has zero `price_missing`
-entries** — it only rescrapes partners with gaps (or no stored run yet). This
-matters for two reasons: it avoids wasted requests against Kapruka/partner
-sites, and it directly reduces how often the next issue gets triggered:
+Earlier this job auto-rescraped *any* partner with leftover `price_missing`
+entries, every run ("gap-filling"). It's now narrower on purpose: it only
+rescrapes a partner that either **has no stored run at all yet** (brand new),
+or **has a pending refresh request** newer than its latest run (see "The
+Refresh button" below). A partner that already has *some* data is left alone
+even if it still has gaps — re-checking is now an explicit, user-initiated
+action, not something that happens silently on a schedule. This keeps the job
+fast and avoids repeatedly hitting Kapruka/partner sites for partners nobody
+asked to re-check.
 
 ### 429 rate-limiting
 
@@ -77,27 +83,52 @@ succession) can trip Kapruka's per-IP rate limit mid-fetch. `fetchText()` in
 `src/compare/sources.js` retries a `429` with backoff (honouring `Retry-After`
 if Kapruka sends one, else 1s/2s/4s/8s), and `fetchKaprukaCatalog()` adds a
 350ms delay between page requests to reduce how often the limit gets tripped
-in the first place. Even so, a partner with a large catalogue may need two
-runs of the scheduled job to fully complete — this is expected, not a bug; the
-gap-fill logic will pick it up again next time since it won't show as
-"complete" until `price_missing` is actually zero.
+in the first place. Even so, a partner with a large catalogue may need more
+than one run to fully complete — since the job only triggers on "no data yet"
+or "refresh requested," a partial failure on a brand-new partner naturally
+gets retried on the next 15-minute run too (still no stored data → still
+counts as "new"), until it eventually succeeds.
 
-## How the web app serves data (no live scraping on page view)
+## How the web app serves data
 
 `/api/compare` (used by `compare.html`) and `/api/overpriced` (the dashboard)
 **only ever read the latest stored Supabase run** — neither triggers a live
-scrape on a normal page view. There used to be a "Refresh" button that forced
-a live re-scrape from whichever server was handling the request; it was
-**removed** because it let anyone browsing either instance silently overwrite
-good stored data with bad data, if that instance happened to be on a host with
-poor Kapruka geo-pricing (or just from load/rate-limiting mid-scrape).
+scrape on a normal page view. If no stored run exists yet for a partner (just
+added, not yet scraped), `/api/compare` returns `{ pending: true, message }`
+instead of blocking on a live fetch; `compare.js` polls every few seconds
+until real data shows up.
 
-The only exception: a partner with **no stored run at all yet** (brand new,
-just added) gets one live fetch so it has something to show, and that result
-is saved as its first row.
+### Immediate background scrape on add (`SCRAPE_ON_ADD`)
 
-**Net effect:** the only way partner data ever gets refreshed is the scheduled
-job described above. Nothing else writes to `comparison_runs`.
+Adding a partner always saves it to Supabase instantly. Whether it *also*
+kicks off an immediate background scrape (for faster turnaround than waiting
+for the next scheduled run) depends on `SCRAPE_ON_ADD=1` in that instance's
+`.env` — only set on hosts confirmed to get correct Kapruka LKR pricing (this
+local machine). Left unset elsewhere (the VPS), so a partner added there just
+waits for the scheduled job to pick it up from a good host instead — adding
+never triggers live scraping on the VPS itself.
+
+While a background scrape is running, `compare.js` polls `/api/compare/progress`
+and shows the same live status/progress bar as before. Once nothing is
+running and there's still no stored data, it shows a calm "check back
+shortly" message instead, and keeps polling.
+
+### The Refresh button (brought back, redesigned)
+
+Clicking it (`POST /api/compare/refresh-request`) doesn't scrape anything
+itself, from anywhere — it just writes a `refresh_requested_at` timestamp
+onto that partner's row in Supabase. The scheduled job (running only from
+this confirmed-good-geo machine) picks up any pending request on its next
+15-minute pass and does the actual rescrape. Safe to click from *any*
+instance, including the VPS, since it never triggers scraping on the request
+path — this avoids the original problem (a live re-scrape from whatever
+server handled the click, possibly with bad geo-pricing, silently overwriting
+good data).
+
+**Net effect:** the only two things that ever write to `comparison_runs` are
+the scheduled job and the optional immediate background scrape on add
+(`SCRAPE_ON_ADD`) — both always run from this confirmed-good-geo machine.
+Nothing else writes to it.
 
 ## The VPS's own disk-cache + MCP fallback (optional, separate mechanism)
 

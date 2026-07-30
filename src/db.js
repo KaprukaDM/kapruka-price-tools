@@ -73,6 +73,7 @@ function rowToPartner(r) {
     partnerLabel: r.partner_label || undefined,
     platform: r.platform || undefined,
     viaBrowser: !!r.via_browser,
+    refreshRequestedAt: r.refresh_requested_at || null,
   };
 }
 
@@ -83,6 +84,7 @@ export const recentComparisonRuns = (limit = 50, partnerId = null) =>
   backend.recentComparisonRuns(limit, partnerId);
 export const getComparisonRun = (id) => backend.getComparisonRun(id);
 export const allPriceCheckRows = () => backend.allPriceCheckRows();
+export const requestPartnerRefresh = (id) => backend.requestPartnerRefresh(id);
 export const allComparisonRows = (partnerId = null) => backend.allComparisonRows(partnerId);
 export const listPartnerRows = () => backend.listPartnerRows();
 export const getPartnerRow = (id) => backend.getPartnerRow(id);
@@ -137,15 +139,16 @@ async function makePostgresBackend(connectionString) {
     CREATE INDEX IF NOT EXISTS idx_runs_partner ON comparison_runs (partner_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_checks_name ON price_checks (query_name, created_at);
     CREATE TABLE IF NOT EXISTS partners (
-      id            TEXT PRIMARY KEY,
-      name          TEXT NOT NULL,
-      kapruka_url   TEXT,
-      kapruka_slug  TEXT,
-      partner_site  TEXT NOT NULL,
-      partner_label TEXT,
-      platform      TEXT,
-      via_browser   BOOLEAN DEFAULT false,
-      created_at    TEXT NOT NULL
+      id                    TEXT PRIMARY KEY,
+      name                  TEXT NOT NULL,
+      kapruka_url           TEXT,
+      kapruka_slug          TEXT,
+      partner_site          TEXT NOT NULL,
+      partner_label         TEXT,
+      platform              TEXT,
+      via_browser           BOOLEAN DEFAULT false,
+      created_at            TEXT NOT NULL,
+      refresh_requested_at  TEXT
     );
     CREATE TABLE IF NOT EXISTS intl_gift_pairings (
       id                BIGSERIAL PRIMARY KEY,
@@ -168,7 +171,7 @@ async function makePostgresBackend(connectionString) {
   return {
     async listPartnerRows() {
       const { rows } = await pool.query(
-        `SELECT id, name, kapruka_url, kapruka_slug, partner_site, partner_label, platform, via_browser
+        `SELECT id, name, kapruka_url, kapruka_slug, partner_site, partner_label, platform, via_browser, refresh_requested_at
          FROM partners ORDER BY created_at ASC`,
       );
       return rows.map(rowToPartner);
@@ -176,7 +179,7 @@ async function makePostgresBackend(connectionString) {
 
     async getPartnerRow(id) {
       const { rows } = await pool.query(
-        `SELECT id, name, kapruka_url, kapruka_slug, partner_site, partner_label, platform, via_browser
+        `SELECT id, name, kapruka_url, kapruka_slug, partner_site, partner_label, platform, via_browser, refresh_requested_at
          FROM partners WHERE id = $1`,
         [id],
       );
@@ -192,6 +195,10 @@ async function makePostgresBackend(connectionString) {
           p.partnerLabel || null, p.platform || null, !!p.viaBrowser, nowIso()],
       );
       return p;
+    },
+
+    async requestPartnerRefresh(id) {
+      await pool.query(`UPDATE partners SET refresh_requested_at = $1 WHERE id = $2`, [nowIso(), id]);
     },
 
     async getIntlGiftPairings(country) {
@@ -380,7 +387,8 @@ async function makePostgresBackend(connectionString) {
 //     partner_label TEXT,
 //     platform      TEXT,
 //     via_browser   BOOLEAN DEFAULT false,
-//     created_at    TEXT NOT NULL
+//     created_at    TEXT NOT NULL,
+//     refresh_requested_at TEXT
 //   );
 //   CREATE TABLE IF NOT EXISTS intl_gift_pairings (
 //     id                BIGSERIAL PRIMARY KEY,
@@ -435,7 +443,7 @@ async function makeSupabaseRestBackend(baseUrl, serviceKey) {
   return {
     async listPartnerRows() {
       const rows = await restFetch(
-        '/partners?select=id,name,kapruka_url,kapruka_slug,partner_site,partner_label,platform,via_browser' +
+        '/partners?select=id,name,kapruka_url,kapruka_slug,partner_site,partner_label,platform,via_browser,refresh_requested_at' +
           '&order=created_at.asc',
       );
       return rows.map(rowToPartner);
@@ -443,7 +451,7 @@ async function makeSupabaseRestBackend(baseUrl, serviceKey) {
 
     async getPartnerRow(id) {
       const rows = await restFetch(
-        '/partners?select=id,name,kapruka_url,kapruka_slug,partner_site,partner_label,platform,via_browser' +
+        '/partners?select=id,name,kapruka_url,kapruka_slug,partner_site,partner_label,platform,via_browser,refresh_requested_at' +
           `&id=eq.${encodeURIComponent(id)}&limit=1`,
       );
       return rows[0] ? rowToPartner(rows[0]) : null;
@@ -465,6 +473,13 @@ async function makeSupabaseRestBackend(baseUrl, serviceKey) {
         }),
       });
       return p;
+    },
+
+    async requestPartnerRefresh(id) {
+      await restFetch(`/partners?id=eq.${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ refresh_requested_at: nowIso() }),
+      });
     },
 
     async getIntlGiftPairings(country) {
@@ -632,15 +647,16 @@ async function makeSqliteBackend() {
     CREATE INDEX IF NOT EXISTS idx_runs_partner ON comparison_runs (partner_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_checks_name ON price_checks (query_name, created_at);
     CREATE TABLE IF NOT EXISTS partners (
-      id            TEXT PRIMARY KEY,
-      name          TEXT NOT NULL,
-      kapruka_url   TEXT,
-      kapruka_slug  TEXT,
-      partner_site  TEXT NOT NULL,
-      partner_label TEXT,
-      platform      TEXT,
-      via_browser   INTEGER DEFAULT 0,
-      created_at    TEXT NOT NULL
+      id                    TEXT PRIMARY KEY,
+      name                  TEXT NOT NULL,
+      kapruka_url           TEXT,
+      kapruka_slug          TEXT,
+      partner_site          TEXT NOT NULL,
+      partner_label         TEXT,
+      platform              TEXT,
+      via_browser           INTEGER DEFAULT 0,
+      created_at            TEXT NOT NULL,
+      refresh_requested_at  TEXT
     );
     CREATE TABLE IF NOT EXISTS intl_gift_pairings (
       id                INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -670,15 +686,16 @@ async function makeSqliteBackend() {
        same_price, only_kapruka, only_partner, payload_json)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
   const selPartners = db.prepare(`
-    SELECT id, name, kapruka_url, kapruka_slug, partner_site, partner_label, platform, via_browser
+    SELECT id, name, kapruka_url, kapruka_slug, partner_site, partner_label, platform, via_browser, refresh_requested_at
     FROM partners ORDER BY created_at ASC`);
   const selPartner = db.prepare(`
-    SELECT id, name, kapruka_url, kapruka_slug, partner_site, partner_label, platform, via_browser
+    SELECT id, name, kapruka_url, kapruka_slug, partner_site, partner_label, platform, via_browser, refresh_requested_at
     FROM partners WHERE id = ?`);
   const insPartner = db.prepare(`
     INSERT INTO partners
       (id, name, kapruka_url, kapruka_slug, partner_site, partner_label, platform, via_browser, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+  const updPartnerRefreshRequest = db.prepare(`UPDATE partners SET refresh_requested_at = ? WHERE id = ?`);
   const selPairings = db.prepare(
     `SELECT kapruka_sku, fnp_url, match_source, match_confidence FROM intl_gift_pairings WHERE country = ?`,
   );
@@ -711,6 +728,10 @@ async function makeSqliteBackend() {
         p.partnerLabel || null, p.platform || null, p.viaBrowser ? 1 : 0, nowIso(),
       );
       return p;
+    },
+
+    async requestPartnerRefresh(id) {
+      updPartnerRefreshRequest.run(nowIso(), id);
     },
 
     async getIntlGiftPairings(country) {
