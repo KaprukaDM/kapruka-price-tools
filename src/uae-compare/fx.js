@@ -4,6 +4,7 @@
 
 const FX_URL = 'https://open.er-api.com/v6/latest/AED';
 const CACHE_TTL_MS = 30 * 60 * 1000; // 30 min
+const LKR_MARKUP = 5; // added on top of every live rate, per business request
 
 let cache = null; // { rate, asOf, fetchedAt }
 
@@ -18,8 +19,9 @@ export async function getAedToLkrRate({ force = false } = {}) {
     const res = await fetch(FX_URL, { signal: controller.signal });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
-    const rate = data?.rates?.LKR;
-    if (!Number.isFinite(rate)) throw new Error('LKR rate missing from FX response');
+    const liveRate = data?.rates?.LKR;
+    if (!Number.isFinite(liveRate)) throw new Error('LKR rate missing from FX response');
+    const rate = liveRate + LKR_MARKUP;
     cache = {
       rate,
       asOf: data.time_last_update_utc || new Date().toISOString(),
