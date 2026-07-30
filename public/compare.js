@@ -121,11 +121,41 @@ function footmeta() {
     `generated ${at.toLocaleString()}` + (DATA.stored ? ' · from stored data' : ' · saved to database');
 }
 
+function statusHtml(lastLine, elapsedSec) {
+  const elapsed = elapsedSec != null ? ` · ${elapsedSec}s elapsed` : '';
+  return (
+    '<div class="spin"></div>' +
+    `<div>${escapeHtml(lastLine || 'Loading…')}${elapsed}</div>` +
+    '<div class="progress-bar"><div class="progress-bar-fill"></div></div>'
+  );
+}
+
+async function pollProgress(partnerId, startedAt) {
+  try {
+    const res = await fetch('/api/compare/progress?partner=' + encodeURIComponent(partnerId));
+    const p = await res.json();
+    const elapsedSec = Math.round((Date.now() - startedAt) / 1000);
+    const lastLine = p.lines && p.lines.length ? p.lines[p.lines.length - 1].trim() : null;
+    $('status').innerHTML = statusHtml(lastLine, elapsedSec);
+  } catch {
+    // Transient poll failure — leave the current status text as-is.
+  }
+}
+
 async function load() {
   const partnerId = $('partner').value;
   $('status').style.display = '';
   $('app').style.display = 'none';
-  $('status').innerHTML = '<span class="spin"></span>Loading…';
+  const startedAt = Date.now();
+  $('status').innerHTML = statusHtml('Loading…', null);
+
+  // A brand-new partner's first scrape can take many minutes (large catalogs,
+  // plus a per-product price-hydration fallback) — poll for real progress so
+  // this doesn't look indistinguishable from a hang. Harmless no-op once the
+  // partner already has stored data, since that request resolves instantly
+  // and this interval gets cleared right away.
+  const progressTimer = setInterval(() => pollProgress(partnerId, startedAt), 1200);
+
   try {
     const url = '/api/compare?partner=' + encodeURIComponent(partnerId);
     const res = await fetch(url);
@@ -148,6 +178,8 @@ async function load() {
     $('app').style.display = '';
   } catch (err) {
     $('status').innerHTML = `Error: ${escapeHtml(err.message)} <button class="ghost" onclick="location.reload()">Retry</button>`;
+  } finally {
+    clearInterval(progressTimer);
   }
 }
 

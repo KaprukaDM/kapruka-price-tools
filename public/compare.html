@@ -32,6 +32,16 @@
     .v-over { color:var(--bad); font-weight:700; }
     .v-under { color:var(--ok); font-weight:700; }
     .v-same { color:var(--mut); font-weight:600; }
+    #status { display:flex; flex-direction:column; align-items:center; gap:10px; text-align:center; }
+    #status .spin { margin: 0 auto; }
+    .progress-bar { width:100%; max-width:360px; height:6px; border-radius:4px;
+                     background:var(--line); overflow:hidden; }
+    .progress-bar-fill { width:40%; height:100%; border-radius:4px; background:var(--purple);
+                          animation: progress-slide 1.3s ease-in-out infinite; }
+    @keyframes progress-slide {
+      0% { transform: translateX(-100%); }
+      100% { transform: translateX(250%); }
+    }
   </style>
 </head>
 <body>
@@ -76,7 +86,11 @@
       <span id="addHint" class="hint"></span>
     </div>
 
-    <div id="status" class="card"><span class="spin"></span>Fetching both catalogues and matching products… (~10s)</div>
+    <div id="status" class="card">
+      <div class="spin"></div>
+      <div>Loading…</div>
+      <div class="progress-bar"><div class="progress-bar-fill"></div></div>
+    </div>
 
     <div id="app" style="display:none">
       <div class="cards" id="cards"></div>

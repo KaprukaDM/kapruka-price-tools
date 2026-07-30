@@ -193,6 +193,24 @@ app.post('/api/partners', async (req, res) => {
   }
 });
 
+// In-memory progress for a first-time partner scrape (see /api/compare/progress
+// below). A brand-new partner with a large catalog can legitimately take many
+// minutes — the Kapruka-side catalog fetch alone can be dozens of pages, and
+// the MCP price-hydration fallback (src/compare/mcpPrices.js) opens each
+// still-missing product's own page in a real headless browser, one at a time.
+// Without this, a long-but-working scrape is indistinguishable from a hang.
+const COMPARE_PROGRESS = new Map(); // partnerId -> { lines: string[], startedAt: number }
+
+app.get('/api/compare/progress', (req, res) => {
+  const partnerId = req.query.partner || '';
+  const state = COMPARE_PROGRESS.get(partnerId);
+  if (!state) {
+    res.json({ running: false, lines: [], elapsedMs: 0 });
+    return;
+  }
+  res.json({ running: true, lines: state.lines, elapsedMs: Date.now() - state.startedAt });
+});
+
 // Partner price reconciliation. Always serves the latest STORED run for the
 // partner (written by the scheduled refresh job, src/tools/refresh-all-
 // partners.js) rather than live-scraping on page view — Kapruka geo-detects
@@ -217,10 +235,20 @@ app.get('/api/compare', async (req, res) => {
       }
     }
 
-    const data = await runComparison({
-      partnerId,
-      log: (msg) => console.log(`[compare:${partner.id}] ${msg}`),
-    });
+    const progress = { lines: [], startedAt: Date.now() };
+    COMPARE_PROGRESS.set(partner.id, progress);
+    const log = (msg) => {
+      console.log(`[compare:${partner.id}] ${msg}`);
+      progress.lines.push(msg);
+      if (progress.lines.length > 30) progress.lines.shift();
+    };
+
+    let data;
+    try {
+      data = await runComparison({ partnerId, log });
+    } finally {
+      COMPARE_PROGRESS.delete(partner.id);
+    }
     if (!data.cached) {
       try {
         data.recordId = await saveComparisonRun(data);
