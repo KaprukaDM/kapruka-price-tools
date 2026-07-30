@@ -1,10 +1,13 @@
-name: International Gifting Price Checker — Deploy to GitHub Pages
+name: Price Tools — Deploy to GitHub Pages
 
-# Publishes public/uae-compare/ (the static dashboard) to GitHub Pages on
-# every push that touches it. The page itself has no server — it reads
-# results straight from Supabase and triggers refresh/pairing-edit workflows
-# via the GitHub API. See public/uae-compare/index.html and the other
-# uae-compare-*.yml workflows.
+# Publishes the whole public/ folder (home index + uae-compare) to GitHub
+# Pages on every push that touches it. Only index.html and public/uae-compare/
+# are fully static (uae-compare reads straight from Supabase and triggers
+# refresh/pairing-edit workflows via the GitHub API). checker.html,
+# compare.html and overpriced.html need the Express API (src/server.js) and
+# only work when loaded from the Render deployment — index.html detects a
+# github.io host and points those tool cards there instead of the relative
+# path used on Render. See public/index.html and public/uae-compare/index.html.
 #
 # One-time setup required: repo Settings -> Pages -> Source: "GitHub Actions".
 
@@ -12,7 +15,7 @@ on:
   push:
     branches: [main]
     paths:
-      - 'public/uae-compare/**'
+      - 'public/**'
       - '.github/workflows/uae-compare-deploy-pages.yml'
   workflow_dispatch:
 
@@ -35,6 +38,6 @@ jobs:
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: public/uae-compare
+          path: public
       - id: deployment
         uses: actions/deploy-pages@v4

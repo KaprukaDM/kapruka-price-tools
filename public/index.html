@@ -38,7 +38,7 @@
     <p class="sub">Pricing tools for the Kapruka marketplace. Pick one to get started.</p>
 
     <div class="menu">
-      <a class="tool" href="checker.html">
+      <a class="tool" id="linkChecker" href="checker.html">
         <div class="ico">🔎</div>
         <h2>Price Checker</h2>
         <p>Enter any product and match its live price across curated Sri Lankan
@@ -47,7 +47,7 @@
         <div class="go">Open Price Checker →</div>
       </a>
 
-      <a class="tool" href="compare.html">
+      <a class="tool" id="linkCompare" href="compare.html">
         <div class="ico">⚖️</div>
         <h2>Partner Price Comparison</h2>
         <p>Reconcile a partner's catalogue on Kapruka against their own website:
@@ -56,7 +56,7 @@
         <div class="go">Open Comparison →</div>
       </a>
 
-      <a class="tool" href="overpriced.html">
+      <a class="tool" id="linkOverpriced" href="overpriced.html">
         <div class="ico">🚩</div>
         <h2>Overpriced Dashboard</h2>
         <p>One consolidated list of every product where our Kapruka price is
@@ -64,15 +64,47 @@
            once. Refreshes automatically once a day, biggest overcharge first.</p>
         <div class="go">Open Overpriced Dashboard →</div>
       </a>
+
+      <a class="tool" href="uae-compare/">
+        <div class="ico">🌍</div>
+        <h2>International Gifting Price Checker</h2>
+        <p>Compares kapruka.com's UAE gifting catalogue against fnp.ae, converted
+           to LKR at the live exchange rate, to flag where Kapruka is
+           underpriced against the market.</p>
+        <div class="go">Open Price Checker →</div>
+      </a>
     </div>
 
     <h1 style="margin-top:38px">Export data</h1>
     <p class="sub">One unified product sheet across both tools — Category, Brand, Product Name, Link, Price —
        deduped to the latest price per product. For spreadsheets or to feed the product-approval API.</p>
     <p>
-      <a class="btn-link" href="/api/export/products.csv">⬇ Unified product sheet (CSV)</a>
-      <a class="btn-link" href="/api/export/products.json" style="margin-left:8px">{ } Same data as JSON (API)</a>
+      <a class="btn-link" id="linkExportCsv" href="/api/export/products.csv">⬇ Unified product sheet (CSV)</a>
+      <a class="btn-link" id="linkExportJson" href="/api/export/products.json" style="margin-left:8px">{ } Same data as JSON (API)</a>
     </p>
   </div>
+
+  <script>
+    // This page (and uae-compare/) is fully static and works standalone on
+    // GitHub Pages. checker.html, compare.html, overpriced.html and the
+    // export links need the Express API (src/server.js), which only runs on
+    // the Render deployment — so on a github.io host, point those at Render
+    // instead of the relative path used when this page is served by Render
+    // itself. See render.yaml and .github/workflows/uae-compare-deploy-pages.yml.
+    if (location.hostname.endsWith('github.io')) {
+      const RENDER_BASE = 'https://kapruka-price-tools-1.onrender.com';
+      ['linkChecker', 'linkCompare', 'linkOverpriced', 'linkExportCsv', 'linkExportJson'].forEach((id) => {
+        const el = document.getElementById(id);
+        if (el) el.href = RENDER_BASE + '/' + el.getAttribute('href').replace(/^\//, '');
+      });
+    }
+
+    // Old bookmarks pointed straight at this repo's Pages root with
+    // ?country=UAE (back when uae-compare/ was the only thing published
+    // here). Keep those working by forwarding into uae-compare/.
+    if (new URLSearchParams(location.search).has('country')) {
+      location.replace('uae-compare/' + location.search);
+    }
+  </script>
 </body>
 </html>
