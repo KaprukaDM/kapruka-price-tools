@@ -45,23 +45,43 @@ const BROWSER_DISABLED = /^(1|true)$/i.test(process.env.DISABLE_BROWSER || '');
 const SCRAPE_PROXY = process.env.SCRAPE_PROXY || '';
 let proxyDispatcher; // lazily-created undici ProxyAgent, reused across requests
 
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// A single page of pagination hitting a 429 used to kill the whole catalog
+// fetch outright (multi-page partners like thinex/Joey Clothing/Shirohana
+// trip Kapruka's rate limit partway through and never finish). Retry a 429 a
+// few times with backoff — honouring Retry-After when Kapruka sends one —
+// before giving up. Every other non-OK status still fails immediately, same
+// as before.
+const RATE_LIMIT_RETRIES = 4;
+
 async function fetchText(url) {
-  const c = new AbortController();
-  const t = setTimeout(() => c.abort(), 30000);
-  const opts = { headers: UA, redirect: 'follow', signal: c.signal };
-  if (SCRAPE_PROXY) {
-    if (!proxyDispatcher) {
-      const { ProxyAgent } = await import('undici');
-      proxyDispatcher = new ProxyAgent(SCRAPE_PROXY);
+  for (let attempt = 0; ; attempt++) {
+    const c = new AbortController();
+    const t = setTimeout(() => c.abort(), 30000);
+    const opts = { headers: UA, redirect: 'follow', signal: c.signal };
+    if (SCRAPE_PROXY) {
+      if (!proxyDispatcher) {
+        const { ProxyAgent } = await import('undici');
+        proxyDispatcher = new ProxyAgent(SCRAPE_PROXY);
+      }
+      opts.dispatcher = proxyDispatcher;
     }
-    opts.dispatcher = proxyDispatcher;
-  }
-  try {
-    const r = await fetch(url, opts);
-    if (!r.ok) throw new Error(`HTTP ${r.status} for ${url}`);
-    return await r.text();
-  } finally {
-    clearTimeout(t);
+    try {
+      const r = await fetch(url, opts);
+      if (r.status === 429 && attempt < RATE_LIMIT_RETRIES) {
+        const retryAfter = Number(r.headers.get('retry-after'));
+        const waitMs = Number.isFinite(retryAfter) && retryAfter > 0
+          ? retryAfter * 1000
+          : 1000 * 2 ** attempt; // 1s, 2s, 4s, 8s
+        await sleep(waitMs);
+        continue;
+      }
+      if (!r.ok) throw new Error(`HTTP ${r.status} for ${url}`);
+      return await r.text();
+    } finally {
+      clearTimeout(t);
+    }
   }
 }
 
@@ -318,6 +338,7 @@ export async function fetchKaprukaCatalog(source, { log = () => {} } = {}) {
   const base = kaprukaBaseUrl(src);
   const byUrl = new Map();
   for (let p = 1; p <= 50; p++) {
+    if (p > 1) await sleep(350); // throttle page requests to avoid tripping Kapruka's rate limit
     const html = await fetchText(`${base}&p=${p}&onlyCatalogueSection=true`);
     const items = parseKaprukaPage(html);
     if (items.length === 0) break; // past the last page
