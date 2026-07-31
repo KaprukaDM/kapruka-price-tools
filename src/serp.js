@@ -30,7 +30,7 @@ const MAX_CANDIDATES = 4;
 // --- Providers -------------------------------------------------------------
 // Each provider returns an array of organic result URLs (strings) for the query.
 
-async function serper(query) {
+async function serper(query, num = 10) {
   // https://serper.dev — POST JSON, returns { organic: [{ link, title, ... }] }
   const res = await fetch('https://google.serper.dev/search', {
     method: 'POST',
@@ -39,7 +39,7 @@ async function serper(query) {
       'Content-Type': 'application/json',
     },
     // gl=lk / hl biases results toward Sri Lanka.
-    body: JSON.stringify({ q: query, gl: 'lk', hl: 'en', num: 10 }),
+    body: JSON.stringify({ q: query, gl: 'lk', hl: 'en', num }),
   });
   if (!res.ok) {
     throw new Error(`Serper error ${res.status}: ${await res.text()}`);
@@ -48,13 +48,13 @@ async function serper(query) {
   return (data.organic || []).map((r) => r.link).filter(Boolean);
 }
 
-async function serpapi(query) {
+async function serpapi(query, num = 10) {
   // https://serpapi.com — GET, returns { organic_results: [{ link, ... }] }
   const url = new URL('https://serpapi.com/search.json');
   url.searchParams.set('q', query);
   url.searchParams.set('gl', 'lk');
   url.searchParams.set('hl', 'en');
-  url.searchParams.set('num', '10');
+  url.searchParams.set('num', String(num));
   url.searchParams.set('api_key', SERP_API_KEY);
   const res = await fetch(url);
   if (!res.ok) {
@@ -115,13 +115,15 @@ export async function getCandidateUrls(productName, domain) {
 }
 
 // Domains/markers excluded from discovery (marketplaces, classifieds, social,
-// and obvious foreign retailers). Sri Lankan sites are kept via the .lk check.
+// and obvious foreign retailers). Now that discovery isn't restricted to
+// .lk domains, this blocklist is the main defense against cross-border
+// marketplaces shipping from outside Sri Lanka rather than local retailers.
 const DISCOVERY_BLOCKLIST = [
   'daraz.', // Daraz
   'ikman.', // classifieds
   'facebook.', 'fb.com', 'fb.me', 'instagram.', 'tiktok.', 'pinterest.', // social
   'bigdeal', 'big-deal', // Big Deals
-  'amazon.', 'ebay.', 'aliexpress.', 'alibaba.', 'walmart.', // foreign marketplaces
+  'amazon.', 'ebay.', 'aliexpress.', 'alibaba.', 'walmart.', 'temu.', // foreign marketplaces
   'google.', 'youtube.', 'wikipedia.', // non-retail
   // Review / blog / news / price-aggregator sites (not shops)
   'smartzone.', 'gsmarena.', 'reddit.', 'quora.', 'medium.',
@@ -144,7 +146,12 @@ export async function getShoppingCandidates(productName, excludeDomains = [], li
   const exclude = new Set(excludeDomains.map((d) => d.replace(/^www\./, '')));
   let urls = [];
   try {
-    urls = await provider(`${cleanQuery(productName)} price Sri Lanka`);
+    // Scan a bigger raw pool than the per-site curated search (20 vs the
+    // default 10) — this is the only source of candidates for a general
+    // search, and most of the raw results get filtered out (blocklist,
+    // non-product pages, duplicate domains), so 10 often yields far fewer
+    // than `limit` usable distinct sites.
+    urls = await provider(`${cleanQuery(productName)} price Sri Lanka`, 20);
   } catch (err) {
     return { sites: [], error: err.message };
   }
@@ -159,8 +166,12 @@ export async function getShoppingCandidates(productName, excludeDomains = [], li
       continue;
     }
     const host = parsed.hostname.replace(/^www\./, '');
-    // Sri Lankan only (drops foreign sites and facebook.com etc.).
-    if (!host.endsWith('.lk')) continue;
+    // Not .lk-only: plenty of genuine Sri Lankan retailers use .com (the
+    // curated lists in config/categories.json already include several, e.g.
+    // brownsdeals.com, cargillsceylon.com, gerardmendis.com). Rely on the
+    // blocklist below plus the "price Sri Lanka"/gl=lk query bias to keep
+    // results relevant; a genuinely foreign site that slips through will
+    // usually get flagged downstream anyway (currency_mismatch).
     if (DISCOVERY_BLOCKLIST.some((b) => host.includes(b))) continue;
     if (exclude.has(host)) continue;
     if (!isLikelyProductUrl(parsed)) continue;
