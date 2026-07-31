@@ -60,6 +60,10 @@ function render(data) {
     return;
   }
   let html = '';
+  if (data.category === 'Other') {
+    html += `<p class="note" style="margin-top:0">No curated store list for this category yet —
+      showing the top Sri Lankan sites found via web search.</p>`;
+  }
   if (curated.length) {
     html += '<h3 style="margin:24px 0 4px">Curated sites</h3>' + buildTable(curated);
   }
@@ -86,9 +90,11 @@ async function loadCategories() {
   const res = await fetch('/api/categories');
   const cats = await res.json();
   const sel = $('category');
-  sel.innerHTML = Object.keys(cats)
-    .map((c) => `<option value="${escapeHtml(c)}">${escapeHtml(c)} (${cats[c].length} sites)</option>`)
-    .join('');
+  sel.innerHTML =
+    Object.keys(cats)
+      .map((c) => `<option value="${escapeHtml(c)}">${escapeHtml(c)} (${cats[c].length} sites)</option>`)
+      .join('') +
+    `<option value="Other">Other (general web search, no fixed category)</option>`;
 }
 
 function statusText(r) {
@@ -138,20 +144,31 @@ async function resolveProductUrl() {
     $('hint').textContent = ' ' + (data.error || 'Could not read that product page.');
     return null;
   }
-  if (data.suggestedCategory) $('category').value = data.suggestedCategory;
+  let categoryNote = '';
+  if (data.suggestedCategory) {
+    $('category').value = data.suggestedCategory;
+  } else {
+    // Kapruka's own category didn't map onto any of our curated categories —
+    // fall back to "Other" (general web search) rather than silently
+    // searching under whatever category happened to be selected before.
+    $('category').value = 'Other';
+    categoryNote = ' No matching category for this product — running a general Sri Lankan web search instead.';
+  }
   $('name').value = data.name || '';
   $('description').value = data.description || '';
-  return data;
+  return { ...data, categoryNote };
 }
 
 // Stream the match over Server-Sent Events so we can show live progress
 // (which/how many sites are done) instead of a silent ~60s wait.
 async function run() {
+  let categoryNote = '';
   if (searchMode === 'url') {
     $('go').disabled = true;
     const product = await resolveProductUrl();
     $('go').disabled = false;
     if (!product) return;
+    categoryNote = product.categoryNote || '';
   }
 
   const category = $('category').value;
@@ -161,7 +178,7 @@ async function run() {
     $('hint').textContent = ' Enter a product name first.';
     return;
   }
-  $('hint').textContent = '';
+  $('hint').textContent = categoryNote;
   $('go').disabled = true;
   if (es) { es.close(); es = null; }
 

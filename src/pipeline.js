@@ -20,6 +20,14 @@ const MATCH_THRESHOLD = 50;
 // Categories with no exact model/variant — match on product name only.
 const NAME_ONLY_CATEGORIES = new Set(['Cakes']);
 
+// Pseudo-category for products that don't fit any curated category (or an
+// unrecognized value from a Kapruka category we couldn't map, see
+// matchCategory() in server.js): skip the curated site list entirely and
+// just run a wider general web search, showing more results than the usual
+// discovery pass since it's the only source of prices here.
+export const OTHER_CATEGORY = 'Other';
+const GENERAL_DISCOVERY_LIMIT = 10;
+
 export async function loadCategories() {
   const raw = await readFile(CATEGORIES_PATH, 'utf-8');
   return JSON.parse(raw);
@@ -221,10 +229,12 @@ function deriveStatus(c) {
  */
 export async function runMatch(category, query, onProgress = () => {}) {
   const categories = await loadCategories();
-  const sites = categories[category];
-  if (!sites) {
-    throw new Error(`Unknown category: ${category}`);
-  }
+  // Any category not in config/categories.json (including the explicit
+  // "Other" choice) falls back to a general search — no curated sites, just
+  // a wider discovery pass across Sri Lankan shops.
+  const isOther = !categories[category];
+  const sites = isOther ? [] : categories[category];
+  const discoveryLimit = isOther ? GENERAL_DISCOVERY_LIMIT : 5;
   // Some categories (e.g. Cakes) have no exact model/variant — match on the
   // product name only, ignoring the description, so matching isn't over-strict.
   const matchQuery = NAME_ONLY_CATEGORIES.has(category)
@@ -253,6 +263,7 @@ export async function runMatch(category, query, onProgress = () => {}) {
   const discoveredPromise = getShoppingCandidates(
     matchQuery.name,
     sites.map((s) => s.domain),
+    discoveryLimit,
   ).then(({ sites: shops }) => {
     onProgress({ type: 'discoveredTotal', count: shops.length });
     return Promise.all(
@@ -270,7 +281,7 @@ export async function runMatch(category, query, onProgress = () => {}) {
   results.sort(byBestValue);
   discovered.sort(byBestValue);
 
-  return { category, query, results, discovered };
+  return { category: isOther ? OTHER_CATEGORY : category, query, results, discovered };
 }
 
 // Usable results first (by match rate, then cheapest), flagged last.
