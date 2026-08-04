@@ -30,6 +30,12 @@ const MAX_CANDIDATES = 4;
 // --- Providers -------------------------------------------------------------
 // Each provider returns an array of organic result URLs (strings) for the query.
 
+// Canonical Google geo-target for the search origin (stronger anchor than
+// gl/hl alone, which only bias ranking — this pins where the search is
+// considered to originate from, cutting down run-to-run result churn).
+// Override with SERP_LOCATION if a more specific target is ever needed.
+const SERP_LOCATION = process.env.SERP_LOCATION || 'Sri Lanka';
+
 async function serper(query, num = 10) {
   // https://serper.dev — POST JSON, returns { organic: [{ link, title, ... }] }
   const res = await fetch('https://google.serper.dev/search', {
@@ -38,8 +44,9 @@ async function serper(query, num = 10) {
       'X-API-KEY': SERP_API_KEY,
       'Content-Type': 'application/json',
     },
-    // gl=lk / hl biases results toward Sri Lanka.
-    body: JSON.stringify({ q: query, gl: 'lk', hl: 'en', num }),
+    // gl=lk / hl biases results toward Sri Lanka; location pins the search
+    // origin itself for more repeatable ordering.
+    body: JSON.stringify({ q: query, gl: 'lk', hl: 'en', location: SERP_LOCATION, num }),
   });
   if (!res.ok) {
     throw new Error(`Serper error ${res.status}: ${await res.text()}`);
@@ -54,6 +61,7 @@ async function serpapi(query, num = 10) {
   url.searchParams.set('q', query);
   url.searchParams.set('gl', 'lk');
   url.searchParams.set('hl', 'en');
+  url.searchParams.set('location', SERP_LOCATION);
   url.searchParams.set('num', String(num));
   url.searchParams.set('api_key', SERP_API_KEY);
   const res = await fetch(url);
@@ -86,7 +94,9 @@ export async function getCandidateUrls(productName, domain) {
   const query = `${cleanQuery(productName)} site:${domain}`;
   let urls = [];
   try {
-    urls = await provider(query);
+    // Scan the top 20 (was 10) — same depth as the general discovery search,
+    // so a product that isn't in a domain's top 10 site: results still surfaces.
+    urls = await provider(query, 20);
   } catch (err) {
     // Surface as empty + reason; pipeline turns this into a per-site flag.
     return { urls: [], error: err.message };
