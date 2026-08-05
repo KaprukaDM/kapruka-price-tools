@@ -12,6 +12,12 @@
 // FX rate. UAE (fnp.ae) is the only country wired up today; see countries.js
 // for how to add more.
 //
+// Kapruka products aren't just matched against the competitor's bulk-crawled
+// catalog — anything that crawl misses gets a direct per-product site search
+// as a fallback (see the `country.searchProducts` adapter, e.g. fnp.ae's
+// /search endpoint), so coverage isn't capped by what a handful of fixed
+// category pages happen to list that day.
+//
 // Once a Kapruka product is matched to a competitor URL — auto-matched by
 // name or manually confirmed — that pairing is cached in the database
 // (src/db.js) and reused on every future refresh. The competitor's catalog is
@@ -94,6 +100,28 @@ export async function runComparison(countryCode, { forceFx = false } = {}) {
 
   const unpaired = kaprukaProducts.filter((k) => !pairings[k.sku]?.fnpUrl);
   const newAutoMatches = unpaired.length ? autoMatch(unpaired, competitorCatalog) : new Map();
+
+  // Products the bulk category crawl didn't surface at all (e.g. gift boxes/
+  // combos that don't map onto one of fnp-scraper.js's fixed category slugs,
+  // or items simply not on a category's first page that day) get a direct
+  // per-product site search instead — much more targeted than the bulk crawl,
+  // so it catches products the crawl's sampling misses entirely.
+  if (country.searchProducts) {
+    const stillUnmatched = unpaired.filter((k) => !newAutoMatches.has(k.sku));
+    await mapWithConcurrency(stillUnmatched, 5, async (k) => {
+      try {
+        const searchResults = await country.searchProducts(k.name);
+        if (!searchResults?.length) return;
+        const match = autoMatch([k], searchResults).get(k.sku);
+        if (!match) return;
+        newAutoMatches.set(k.sku, match);
+        const found = searchResults.find((p) => p.url === match.fnpUrl);
+        if (found) competitorByUrl.set(match.fnpUrl, found);
+      } catch {
+        // A single product's search failing shouldn't block the rest of the refresh.
+      }
+    });
+  }
 
   // Cache whatever the auto-matcher found so future refreshes don't need to
   // re-match these — self-populating over time.

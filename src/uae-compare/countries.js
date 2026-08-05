@@ -7,7 +7,7 @@
 // add an entry here. Everything else — the Kapruka-side scrape, DB-backed
 // pairing cache, auto-matching, and dashboard UI — is already country-agnostic.
 
-import { fetchFnpCatalog, fetchFnpProduct } from './fnp-scraper.js';
+import { fetchFnpCatalog, fetchFnpProduct, searchFnpProducts } from './fnp-scraper.js';
 
 export const COUNTRIES = {
   UAE: {
@@ -16,6 +16,10 @@ export const COUNTRIES = {
     competitorUrlPattern: /^https?:\/\/(www\.)?fnp\.ae\//i,
     fetchCatalog: fetchFnpCatalog,
     fetchProduct: fetchFnpProduct,
+    // Optional: per-product site search, used by engine.js as a fallback for
+    // products the bulk fetchCatalog crawl doesn't surface. Countries without
+    // a search endpoint can omit this.
+    searchProducts: searchFnpProducts,
   },
 };
 

@@ -1,10 +1,12 @@
 // Scrapes fnp.ae category listing pages to build a candidate catalog for
-// auto-matching against Kapruka's UAE products. fnp.ae has no public search
-// API, so instead of searching we crawl the categories that plausibly cover
-// Kapruka's UAE assortment (hampers, combos, flowers, cakes, chocolates,
-// branded gifts) and match by name (see matcher.js).
+// auto-matching against Kapruka's UAE products. This bulk crawl only covers
+// the categories that plausibly cover Kapruka's UAE assortment (hampers,
+// combos, flowers, cakes, chocolates, branded gifts), and only their first
+// page, so it's a coverage sample, not the full site — products that don't
+// land on one of those first pages are matched instead via searchFnpProducts
+// below (see engine.js's per-product search fallback).
 //
-// Each category page server-renders its first page of product cards as
+// Each category/search page server-renders its product cards as
 // <li class="h-product" data-product-id="..." data-url="..."> with the name,
 // price (AED), currency and image as itemprop meta tags underneath — no JS
 // rendering needed.
@@ -99,6 +101,18 @@ export async function fetchFnpCatalog() {
     }),
   );
   return [...seen.values()];
+}
+
+// Searches fnp.ae directly for a specific product name — the fallback used
+// when a Kapruka product doesn't turn up in the fixed category crawl above
+// (e.g. gift boxes/combos that don't map cleanly onto one of the CATEGORIES
+// slugs, or items that simply weren't on a category's first page that day).
+// Returns the same shape as fetchFnpCatalog since it reuses the same card
+// parser — fnp.ae's search results page uses identical markup.
+export async function searchFnpProducts(query) {
+  const url = `https://www.fnp.ae/search?FNP_CURRENT_CATALOG_ID=uae&qs=${encodeURIComponent(query)}`;
+  const html = await fetchHtml(url);
+  return parseCategoryProducts(html);
 }
 
 // Scrapes a single fnp.ae product page — used for manually-pasted pairing
