@@ -147,6 +147,36 @@ async function fetchJsonResilient(url) {
   }
 }
 
+// Same resilience as fetchJsonResilient, for the sites whose catalogue is
+// server-rendered HTML rather than a JSON API.
+async function fetchTextResilient(url, opts) {
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const res = await fetchText(url, opts);
+      return res.ok ? res.text : null;
+    } catch (err) {
+      if (attempt === 2) {
+        console.warn(`  ! catalog page fetch failed, stopping pagination here: ${url} (${err.message})`);
+        return null;
+      }
+    }
+  }
+}
+
+// Standard "GET a page, parse cards, stop on empty" loop shared by every
+// site below that uses plain ?page=N pagination on a category listing page.
+async function paginateHtml({ pageUrl, parseCards, opts, maxPages = 60 }) {
+  const out = [];
+  for (let page = 1; page <= maxPages; page++) {
+    const html = await fetchTextResilient(pageUrl(page), opts);
+    if (!html) break;
+    const cards = parseCards(html);
+    if (cards.length === 0) break;
+    out.push(...cards);
+  }
+  return out;
+}
+
 // Paginate the WooCommerce Store API to pull a site's FULL catalogue (not
 // just what a search query surfaces) — same endpoint as wooStoreApiSearch,
 // just walking every page with no `search` param. Stops on an empty page, a
@@ -647,6 +677,319 @@ function chamacomputersCatalog() {
   };
 }
 
+// mskcomputers.lk: /products?page=N is the whole catalogue unfiltered — no
+// per-category enumeration needed.
+function mskcomputersCatalog() {
+  return () =>
+    paginateHtml({
+      pageUrl: (page) => `https://mskcomputers.lk/products?page=${page}`,
+      parseCards: (html) => {
+        const $ = cheerio.load(html);
+        const out = [];
+        $('.product-grid .card.card-hover').each((_, el) => {
+          const $el = $(el);
+          const $a = $el.find('h3 a').first();
+          const name = $a.text().trim();
+          const url = $a.attr('href');
+          const priceLKR = parsePriceLKR($el.find('.text-lg.font-bold.text-white').first().text());
+          if (!name || !url) return;
+          out.push({ name, url: abs('https://mskcomputers.lk', url), priceLKR });
+        });
+        return out;
+      },
+    });
+}
+
+// abansit.lk: a single "all_products" pagination endpoint with empty filters
+// — no per-category enumeration needed. Needs a warm-up GET (for a session
+// cookie) and a Referer header, or the endpoint 500s.
+function abansitCatalog() {
+  return async () => {
+    const warm = await fetchText('https://abansit.lk/products');
+    const cookie = warm.headers.getSetCookie ? warm.headers.getSetCookie().map((c) => c.split(';')[0]).join('; ') : '';
+    const out = [];
+    for (let page = 1; page <= 200; page++) {
+      const data = await fetchJsonResilient(
+        `https://abansit.lk/welcome/productsPagination/${page}?page_name=all_products&categories=[]&brands=[]&ram=[]&storage=[]&processor=[]&min_price=&max_price=`,
+      );
+      const html = data?.product_table;
+      if (!html) break;
+      const $ = cheerio.load(html);
+      let found = 0;
+      $('a[href^="https://abansit.lk/product-details/"]').each((_, el) => {
+        const $el = $(el);
+        const name = $el.text().trim() || $el.find('img').attr('alt') || '';
+        const url = $el.attr('href');
+        const priceLKR = parsePriceLKR($el.closest('div').find('.price').first().text());
+        if (!name || !url) return;
+        out.push({ name: name.trim(), url, priceLKR });
+        found++;
+      });
+      if (found === 0) break;
+    }
+    return out;
+  };
+}
+
+// sense.lk: /shop with no category param covers everything, per investigation.
+function senseCatalog() {
+  return () =>
+    paginateHtml({
+      pageUrl: (page) => `https://www.sense.lk/shop?page=${page}`,
+      parseCards: (html) => {
+        const $ = cheerio.load(html);
+        const out = [];
+        $('a[href^="https://www.sense.lk/product/"]').each((_, el) => {
+          const $el = $(el);
+          const name = $el.find('p.product-card-title').text().trim();
+          const priceLKR = parsePriceLKR($el.closest('.product-card, div').find('.product-price').first().text());
+          const url = $el.attr('href');
+          if (!name || !url) return;
+          out.push({ name, url, priceLKR });
+        });
+        return out;
+      },
+    });
+}
+
+// Runs paginateHtml() over each of a fixed list of category slugs and
+// concatenates the results — shared by the sites below whose full catalogue
+// isn't exposed via a single "browse everything" page, only per-category
+// listings. The category lists are what the investigation found on each
+// site's nav; not guaranteed 100% exhaustive of every category that exists,
+// but covers the electronics-relevant breadth of each site.
+async function paginateCategories(categories, buildOpts) {
+  const out = [];
+  for (const category of categories) {
+    out.push(...(await paginateHtml(buildOpts(category))));
+  }
+  return out;
+}
+
+const NANOTEK_CATEGORIES = [
+  'laptop', 'desktop-workstations', 'graphics-card', 'motherboards', 'monitors-monitor-arms',
+  'printers', 'television-tv', 'apple', 'storage', 'networking', 'gaming', 'audio', 'keyboard-mouse',
+  'power-supply', 'processor', 'ram', 'casing', 'cooling',
+];
+function nanotekCatalog() {
+  return () =>
+    paginateCategories(NANOTEK_CATEGORIES, (category) => ({
+      pageUrl: (page) => `https://www.nanotek.lk/category/${category}?page=${page}`,
+      parseCards: (html) => {
+        const $ = cheerio.load(html);
+        const out = [];
+        $('li.ty-catPage-productListItem').each((_, el) => {
+          const $el = $(el);
+          const $a = $el.find('a[href^="https://www.nanotek.lk/product/"]').first();
+          const name = $el.find('.ty-productBlock-title h1').text().trim();
+          const priceLKR = parsePriceLKR($el.find('.ty-productBlock-price-retail').first().text());
+          const url = $a.attr('href');
+          if (!name || !url) return;
+          out.push({ name, url, priceLKR });
+        });
+        return out;
+      },
+    }));
+}
+
+const MCENTRE_CATEGORIES = [
+  'laptops', 'monitors-displays', 'printers', 'televisions', 'computer-accessories',
+  'toner-cartridges', 'interactive-displays', 'photocopiers', 'pos-products', 'air-conditioners',
+];
+function mcentreCatalog() {
+  return () =>
+    paginateCategories(MCENTRE_CATEGORIES, (category) => ({
+      pageUrl: (page) => `https://mcentre.lk/store/categories/${category}?page=${page}`,
+      parseCards: (html) => {
+        const $ = cheerio.load(html);
+        const out = [];
+        $('.b-prod-card').each((_, el) => {
+          const $el = $(el);
+          const $a = $el.find('.b-prod-card__title a').first();
+          const name = $a.text().trim();
+          const priceLKR = parsePriceLKR($el.find('.b-prod-card__price-val').first().text());
+          const url = $a.attr('href');
+          if (!name || !url) return;
+          out.push({ name, url: abs('https://mcentre.lk', url), priceLKR });
+        });
+        return out;
+      },
+    }));
+}
+
+const CAMERALK_CATEGORIES = [
+  'mirrorless', 'dslr', 'digital-cameras', 'lenses', 'accessories', 'camcorders', 'binoculars',
+  'drones-areal-imaging', 'photography-accessories', 'lighting-studio', 'instant-film', 'slr-lenses',
+];
+function cameralkCatalog() {
+  return () =>
+    paginateCategories(CAMERALK_CATEGORIES, (category) => ({
+      pageUrl: (page) => `https://www.cameralk.com/browse/${category}?page=${page}`,
+      parseCards: (html) => {
+        const $ = cheerio.load(html);
+        const out = [];
+        $('.product-block__center h2 a[href*="/product/"]').each((_, el) => {
+          const $el = $(el);
+          const gtm = $el.attr('data-gtm-product');
+          let parsed = null;
+          try {
+            parsed = gtm ? JSON.parse(gtm).products : null;
+          } catch {
+            // fall through to text-based name below
+          }
+          const name = parsed?.name || $el.attr('title') || $el.text().trim();
+          const priceLKR = parsed?.price != null ? Math.round(Number(parsed.price)) : null;
+          const url = $el.attr('href')?.split('?')[0];
+          if (!name || !url) return;
+          out.push({ name, url: abs('https://www.cameralk.com', url), priceLKR });
+        });
+        return out;
+      },
+    }));
+}
+
+// singhagiri.lk: category/brand slugs aren't guessable (a wrong guess 302s
+// instead of listing), so discover them from the homepage nav first.
+async function discoverSinghagiriSlugs() {
+  const html = await fetchTextResilient('https://singhagiri.lk/');
+  if (!html) return [];
+  const matches = html.match(/href="https:\/\/singhagiri\.lk\/(brands|products)\/[a-z0-9-]+"/gi) || [];
+  return [...new Set(matches.map((m) => m.match(/https:\/\/singhagiri\.lk\/[a-z0-9-]+\/[a-z0-9-]+/i)[0]))];
+}
+function singhagiriCatalog() {
+  return async () => {
+    const slugUrls = await discoverSinghagiriSlugs();
+    const out = [];
+    for (const base of slugUrls) {
+      out.push(
+        ...(await paginateHtml({
+          pageUrl: (page) => `${base}?page=${page}`,
+          parseCards: (html) => {
+            const $ = cheerio.load(html);
+            const cards = [];
+            $('.product').each((_, el) => {
+              const $el = $(el);
+              const $a = $el.find('h6.product_title a').first();
+              const name = $a.text().trim();
+              const url = $a.attr('href');
+              const priceLKR = parsePriceLKR($el.find('.product_price .price').first().text());
+              if (!name || !url) return;
+              cards.push({ name, url: abs('https://singhagiri.lk', url), priceLKR });
+            });
+            return cards;
+          },
+        })),
+      );
+    }
+    return out;
+  };
+}
+
+const BIGDEALS_CATEGORIES = [
+  'air-conditioners', 'televisions', 'refrigerators', 'washing-machines', 'microwave-ovens',
+  'kitchen-appliances', 'laptops', 'home-theatre', 'small-appliances', 'fans',
+];
+function bigdealsCatalog() {
+  return () =>
+    paginateCategories(BIGDEALS_CATEGORIES, (category) => ({
+      pageUrl: (page) => `https://bigdeals.lk/${category}?page=${page}`,
+      parseCards: (html) => {
+        const $ = cheerio.load(html);
+        const out = [];
+        $('.product-container').each((_, el) => {
+          const $el = $(el);
+          const $a = $el.find('a').first();
+          const name = $el.find('.product-title').first().text().trim();
+          const priceLKR = parsePriceLKR($el.find('.content_price .price.product-price').first().text());
+          const url = $a.attr('href');
+          if (!name || !url) return;
+          out.push({ name, url: abs('https://bigdeals.lk', url), priceLKR });
+        });
+        return out;
+      },
+    }));
+}
+
+// luxuryx.lk: SEO landing pages, each a single Livewire snapshot embedding a
+// price_list array for that whole category — no separate pagination request
+// needed for Apple's small per-category catalogue sizes.
+const LUXURYX_LANDING_PAGES = [
+  'iphone-price-in-sri-lanka', 'ipad-price-in-sri-lanka', 'macbook-price-in-sri-lanka',
+  'airpod-price-in-sri-lanka', 'buy-apple-watch-in-sri-lanka', 'buy-apple-accessories-online',
+];
+function luxuryxCatalog() {
+  return async () => {
+    const out = [];
+    for (const slug of LUXURYX_LANDING_PAGES) {
+      const html = await fetchTextResilient(`https://luxuryx.lk/${slug}`);
+      if (!html) continue;
+      // The page embeds several Livewire components (cart icon, search
+      // widget, etc.), each with its own wire:snapshot — the product listing
+      // itself is specifically named "guest.product-list".
+      const snapMatches = [...html.matchAll(/wire:snapshot="([^"]+)"/g)];
+      let snapshot = null;
+      for (const m of snapMatches) {
+        const decoded = m[1].replace(/&quot;/g, '"').replace(/&#039;/g, "'").replace(/&amp;/g, '&');
+        try {
+          const parsed = JSON.parse(decoded);
+          if (parsed?.memo?.name === 'guest.product-list') {
+            snapshot = parsed;
+            break;
+          }
+        } catch {
+          // try the next snapshot match
+        }
+      }
+      if (!snapshot) continue;
+      // Same Livewire pair-array shape as the search adapter:
+      // [[productObj, {s:"arr"}], [productObj, {s:"arr"}], ...].
+      const pairs = snapshot?.data?.price_list?.[0] || [];
+      for (const pair of pairs) {
+        const p = pair?.[0];
+        if (!p?.product_name || !p?.slug) continue;
+        out.push({
+          name: p.product_name,
+          url: `https://luxuryx.lk/${p.slug}`,
+          priceLKR: parsePriceLKR(p.product_min_price),
+        });
+      }
+    }
+    return out;
+  };
+}
+
+// barclays.lk: cursor-based pagination — each response's "next" link carries
+// the actual next-page URL, there's no page-number param to construct.
+const BARCLAYS_CATEGORY_IDS = ['257', '122', '38', '55'];
+function barclaysCatalog() {
+  return async () => {
+    const out = [];
+    for (const catId of BARCLAYS_CATEGORY_IDS) {
+      let url = `https://barclays.lk/items.asp?Tp=&iTpStatus=1&Cc=${catId}&CatName=`;
+      for (let page = 1; page <= 40 && url; page++) {
+        const html = await fetchTextResilient(url);
+        if (!html) break;
+        const $ = cheerio.load(html);
+        let found = 0;
+        $('.product-item').each((_, el) => {
+          const $el = $(el);
+          const $a = $el.find('a[href^="https://barclays.lk/itemdesc.asp?ic="]').first();
+          const name = $a.text().trim();
+          const priceLKR = parsePriceLKR($el.find('.item-price .price, .price-box .price').first().text());
+          const href = $a.attr('href');
+          if (!name || !href) return;
+          out.push({ name, url: href, priceLKR });
+          found++;
+        });
+        if (found === 0) break;
+        const nextHref = $('.pagination-area a[href*="items.asp"]').last().attr('href');
+        url = nextHref ? abs('https://barclays.lk', nextHref) : null;
+      }
+    }
+    return out;
+  };
+}
+
 export const CATALOG_ADAPTERS = [
   { domain: 'dinapalagroup.lk', name: 'Dinapala Group', fetchCatalog: wooStoreApiCatalog('dinapalagroup.lk') },
   { domain: 'wasi.lk', name: 'Wasi', fetchCatalog: wooStoreApiCatalog('wasi.lk') },
@@ -657,4 +1000,22 @@ export const CATALOG_ADAPTERS = [
   { domain: 'simplytek.lk', name: 'SimplyTek', fetchCatalog: shopifyCatalog('www.simplytek.lk') },
   { domain: 'brownsdeals.com', name: 'Browns Deals', fetchCatalog: shopifyCatalog('brownsdeals.com') },
   { domain: 'chamacomputers.lk', name: 'Chama Computers', fetchCatalog: chamacomputersCatalog() },
+  { domain: 'mskcomputers.lk', name: 'MSK Computers', fetchCatalog: mskcomputersCatalog() },
+  { domain: 'abansit.lk', name: 'Abans IT', fetchCatalog: abansitCatalog() },
+  { domain: 'sense.lk', name: 'Sense', fetchCatalog: senseCatalog() },
+  { domain: 'nanotek.lk', name: 'Nanotek', fetchCatalog: nanotekCatalog() },
+  { domain: 'mcentre.lk', name: 'M Centre', fetchCatalog: mcentreCatalog() },
+  { domain: 'cameralk.com', name: 'CameraLK', fetchCatalog: cameralkCatalog() },
+  { domain: 'singhagiri.lk', name: 'Singhagiri', fetchCatalog: singhagiriCatalog() },
+  { domain: 'bigdeals.lk', name: 'Big Deals', fetchCatalog: bigdealsCatalog() },
+  { domain: 'luxuryx.lk', name: 'LuxuryX', fetchCatalog: luxuryxCatalog() },
+  { domain: 'barclays.lk', name: 'Barclays', fetchCatalog: barclaysCatalog() },
 ];
+
+// buyabans.com (JS-hydrated price, no static source), mysoftlogic.lk
+// (category pages intermittently WAF/CAPTCHA-gated), singersl.com (no
+// genuine "browse everything" page — only brand+category-filtered listings,
+// each requiring its own combination to be enumerated), and redlinetech.lk
+// (its own robots.txt explicitly disallows the ?page= pattern its category
+// listings need) are deliberately left out of the bulk crawl. Their live
+// per-product search adapters above still work fine and remain in use.
