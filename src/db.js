@@ -33,6 +33,13 @@
 //                         found, or the site blocks automated requests). Nothing
 //                         reads this at runtime; it's a worklist for building
 //                         one-off custom scrapers for these sites later.
+//   price_audit_items  - one row per (Kapruka product, competitor site) pair from
+//                         the local product-price audit (src/electronics-audit/).
+//                         Unlike comparison_runs (one partner's full catalogue vs
+//                         Kapruka's), this audits MANY competitor sites at once by
+//                         querying each site's own search endpoint per product, so
+//                         results land here incrementally, one upsert per pair,
+//                         rather than one big payload per run.
 //
 // Each row keeps flat summary columns for easy SQL plus a full JSON payload so
 // nothing is lost. ALL exported functions are async (Postgres/REST are async;
@@ -104,6 +111,8 @@ export const getIntlGiftSnapshot = (country) => backend.getIntlGiftSnapshot(coun
 export const setIntlGiftSnapshot = (country, payload) => backend.setIntlGiftSnapshot(country, payload);
 export const listUnsupportedPartners = () => backend.listUnsupportedPartners();
 export const addUnsupportedPartner = (row) => backend.addUnsupportedPartner(row);
+export const upsertPriceAuditItem = (item) => backend.upsertPriceAuditItem(item);
+export const getPriceAuditItems = (opts) => backend.getPriceAuditItems(opts);
 
 // ---------------------------------------------------------------------------
 // Postgres (Supabase) backend
@@ -182,9 +191,63 @@ async function makePostgresBackend(connectionString) {
       reason        TEXT,
       detail        TEXT
     );
+    CREATE TABLE IF NOT EXISTS price_audit_items (
+      id                 BIGSERIAL PRIMARY KEY,
+      category           TEXT NOT NULL,
+      kapruka_url        TEXT NOT NULL,
+      kapruka_name       TEXT,
+      kapruka_price_lkr  INTEGER,
+      site_domain        TEXT NOT NULL,
+      site_name          TEXT,
+      matched_url        TEXT,
+      matched_name       TEXT,
+      matched_price_lkr  INTEGER,
+      match_confidence   TEXT,
+      shared_codes       INTEGER,
+      name_similarity    INTEGER,
+      diff_lkr           INTEGER,
+      diff_pct           NUMERIC,
+      checked_at         TEXT NOT NULL,
+      UNIQUE (kapruka_url, site_domain)
+    );
+    CREATE INDEX IF NOT EXISTS idx_audit_category ON price_audit_items (category, checked_at);
+    CREATE INDEX IF NOT EXISTS idx_audit_kapruka_url ON price_audit_items (kapruka_url);
   `);
 
   return {
+    async upsertPriceAuditItem(item) {
+      await pool.query(
+        `INSERT INTO price_audit_items
+           (category, kapruka_url, kapruka_name, kapruka_price_lkr, site_domain, site_name,
+            matched_url, matched_name, matched_price_lkr, match_confidence, shared_codes,
+            name_similarity, diff_lkr, diff_pct, checked_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+         ON CONFLICT (kapruka_url, site_domain) DO UPDATE SET
+           category = EXCLUDED.category, kapruka_name = EXCLUDED.kapruka_name,
+           kapruka_price_lkr = EXCLUDED.kapruka_price_lkr, site_name = EXCLUDED.site_name,
+           matched_url = EXCLUDED.matched_url, matched_name = EXCLUDED.matched_name,
+           matched_price_lkr = EXCLUDED.matched_price_lkr, match_confidence = EXCLUDED.match_confidence,
+           shared_codes = EXCLUDED.shared_codes, name_similarity = EXCLUDED.name_similarity,
+           diff_lkr = EXCLUDED.diff_lkr, diff_pct = EXCLUDED.diff_pct, checked_at = EXCLUDED.checked_at`,
+        [
+          item.category, item.kaprukaUrl, item.kaprukaName || null, item.kaprukaPriceLkr ?? null,
+          item.siteDomain, item.siteName || null, item.matchedUrl || null, item.matchedName || null,
+          item.matchedPriceLkr ?? null, item.matchConfidence || null, item.sharedCodes ?? null,
+          item.nameSimilarity ?? null, item.diffLkr ?? null, item.diffPct ?? null, nowIso(),
+        ],
+      );
+    },
+
+    async getPriceAuditItems({ category, limit = 500 } = {}) {
+      const where = category ? 'WHERE category = $2' : '';
+      const params = category ? [limit, category] : [limit];
+      const { rows } = await pool.query(
+        `SELECT * FROM price_audit_items ${where} ORDER BY checked_at DESC LIMIT $1`,
+        params,
+      );
+      return rows;
+    },
+
     async listUnsupportedPartners() {
       const { rows } = await pool.query(
         `SELECT id, created_at, name, kapruka_url, partner_site, reason, detail
@@ -447,6 +510,27 @@ async function makePostgresBackend(connectionString) {
 //     reason        TEXT,
 //     detail        TEXT
 //   );
+//   CREATE TABLE IF NOT EXISTS price_audit_items (
+//     id                 BIGSERIAL PRIMARY KEY,
+//     category           TEXT NOT NULL,
+//     kapruka_url        TEXT NOT NULL,
+//     kapruka_name       TEXT,
+//     kapruka_price_lkr  INTEGER,
+//     site_domain        TEXT NOT NULL,
+//     site_name          TEXT,
+//     matched_url        TEXT,
+//     matched_name       TEXT,
+//     matched_price_lkr  INTEGER,
+//     match_confidence   TEXT,
+//     shared_codes       INTEGER,
+//     name_similarity    INTEGER,
+//     diff_lkr           INTEGER,
+//     diff_pct           NUMERIC,
+//     checked_at         TEXT NOT NULL,
+//     UNIQUE (kapruka_url, site_domain)
+//   );
+//   CREATE INDEX IF NOT EXISTS idx_audit_category ON price_audit_items (category, checked_at);
+//   CREATE INDEX IF NOT EXISTS idx_audit_kapruka_url ON price_audit_items (kapruka_url);
 //   -- The static dashboard (GitHub Pages) reads this table directly with a
 //   -- public anon key, so it needs RLS enabled with a public SELECT policy:
 //   ALTER TABLE intl_gift_snapshots ENABLE ROW LEVEL SECURITY;
@@ -482,6 +566,35 @@ async function makeSupabaseRestBackend(baseUrl, serviceKey) {
   }
 
   return {
+    async upsertPriceAuditItem(item) {
+      await restFetch('/price_audit_items?on_conflict=kapruka_url,site_domain', {
+        method: 'POST',
+        headers: { Prefer: 'resolution=merge-duplicates' },
+        body: JSON.stringify({
+          category: item.category,
+          kapruka_url: item.kaprukaUrl,
+          kapruka_name: item.kaprukaName || null,
+          kapruka_price_lkr: item.kaprukaPriceLkr ?? null,
+          site_domain: item.siteDomain,
+          site_name: item.siteName || null,
+          matched_url: item.matchedUrl || null,
+          matched_name: item.matchedName || null,
+          matched_price_lkr: item.matchedPriceLkr ?? null,
+          match_confidence: item.matchConfidence || null,
+          shared_codes: item.sharedCodes ?? null,
+          name_similarity: item.nameSimilarity ?? null,
+          diff_lkr: item.diffLkr ?? null,
+          diff_pct: item.diffPct ?? null,
+          checked_at: nowIso(),
+        }),
+      });
+    },
+
+    async getPriceAuditItems({ category, limit = 500 } = {}) {
+      const filter = category ? `&category=eq.${encodeURIComponent(category)}` : '';
+      return restFetch(`/price_audit_items?select=*&order=checked_at.desc&limit=${limit}${filter}`);
+    },
+
     async listUnsupportedPartners() {
       return restFetch('/unsupported_partners?select=id,created_at,name,kapruka_url,partner_site,reason,detail&order=id.desc');
     },
@@ -742,6 +855,27 @@ async function makeSqliteBackend() {
       reason        TEXT,
       detail        TEXT
     );
+    CREATE TABLE IF NOT EXISTS price_audit_items (
+      id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+      category           TEXT NOT NULL,
+      kapruka_url        TEXT NOT NULL,
+      kapruka_name       TEXT,
+      kapruka_price_lkr  INTEGER,
+      site_domain        TEXT NOT NULL,
+      site_name          TEXT,
+      matched_url        TEXT,
+      matched_name       TEXT,
+      matched_price_lkr  INTEGER,
+      match_confidence   TEXT,
+      shared_codes       INTEGER,
+      name_similarity    INTEGER,
+      diff_lkr           INTEGER,
+      diff_pct           REAL,
+      checked_at         TEXT NOT NULL,
+      UNIQUE (kapruka_url, site_domain)
+    );
+    CREATE INDEX IF NOT EXISTS idx_audit_category ON price_audit_items (category, checked_at);
+    CREATE INDEX IF NOT EXISTS idx_audit_kapruka_url ON price_audit_items (kapruka_url);
   `);
 
   const insChk = db.prepare(`
@@ -785,8 +919,37 @@ async function makeSqliteBackend() {
   const insUnsupported = db.prepare(`
     INSERT INTO unsupported_partners (created_at, name, kapruka_url, partner_site, reason, detail)
     VALUES (?, ?, ?, ?, ?, ?)`);
+  const upsertAuditItem = db.prepare(`
+    INSERT INTO price_audit_items
+      (category, kapruka_url, kapruka_name, kapruka_price_lkr, site_domain, site_name,
+       matched_url, matched_name, matched_price_lkr, match_confidence, shared_codes,
+       name_similarity, diff_lkr, diff_pct, checked_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT (kapruka_url, site_domain) DO UPDATE SET
+      category = excluded.category, kapruka_name = excluded.kapruka_name,
+      kapruka_price_lkr = excluded.kapruka_price_lkr, site_name = excluded.site_name,
+      matched_url = excluded.matched_url, matched_name = excluded.matched_name,
+      matched_price_lkr = excluded.matched_price_lkr, match_confidence = excluded.match_confidence,
+      shared_codes = excluded.shared_codes, name_similarity = excluded.name_similarity,
+      diff_lkr = excluded.diff_lkr, diff_pct = excluded.diff_pct, checked_at = excluded.checked_at`);
 
   return {
+    async upsertPriceAuditItem(item) {
+      upsertAuditItem.run(
+        item.category, item.kaprukaUrl, item.kaprukaName || null, item.kaprukaPriceLkr ?? null,
+        item.siteDomain, item.siteName || null, item.matchedUrl || null, item.matchedName || null,
+        item.matchedPriceLkr ?? null, item.matchConfidence || null, item.sharedCodes ?? null,
+        item.nameSimilarity ?? null, item.diffLkr ?? null, item.diffPct ?? null, nowIso(),
+      );
+    },
+
+    async getPriceAuditItems({ category, limit = 500 } = {}) {
+      const sql = `SELECT * FROM price_audit_items ${category ? 'WHERE category = ?' : ''}
+                   ORDER BY checked_at DESC LIMIT ?`;
+      const stmt = db.prepare(sql);
+      return category ? stmt.all(category, limit) : stmt.all(limit);
+    },
+
     async listUnsupportedPartners() {
       return selUnsupported.all();
     },

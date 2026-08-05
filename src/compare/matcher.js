@@ -33,8 +33,10 @@ function sharedCodeCount(aCodes, bCodes) {
 }
 
 // Precompute tokens/codes once per product. stopnshop SKUs often embed the model
-// code (e.g. "Philips_BHD340"), so we fold the SKU into both signals.
-function index(products, withSku) {
+// code (e.g. "Philips_BHD340"), so we fold the SKU into both signals. Exported
+// for the same reason as score() above — small per-query candidate sets need
+// the same precomputation as a full catalogue index.
+export function index(products, withSku) {
   return products.map((p) => {
     const text = withSku ? `${p.name} ${p.sku || ''}` : p.name;
     return {
@@ -46,8 +48,12 @@ function index(products, withSku) {
   });
 }
 
-// Score one Kapruka product against one stopnshop product.
-function score(k, s) {
+// Score one Kapruka product against one stopnshop product. Exported so callers
+// that only have a small per-query candidate set (e.g. a competitor site's own
+// search results for one product, rather than that site's full catalogue) can
+// reuse the same code/name/spec-conflict scoring without building a full
+// matchCatalogs() index of both sides.
+export function score(k, s) {
   const codes = sharedCodeCount(k._codes, s._codes);
   const jac = jaccard(k._tokens, s._tokens);
   // A shared model code is strong identity. A pure-name match is weaker, so we
