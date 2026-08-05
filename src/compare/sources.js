@@ -236,13 +236,28 @@ export async function fetchKaprukaProduct(url) {
     offer?.lowPrice ??
     $('meta[property="product:price:amount"]').attr('content') ??
     null;
-  const priceNum = rawPrice != null ? parseInt(String(rawPrice).replace(/[^0-9]/g, ''), 10) : NaN;
-  const price = Number.isFinite(priceNum) && priceNum > 0 ? priceNum : null;
+  // USD amounts have decimals (e.g. "33.29") that a digits-only parseInt would
+  // truncate to 33, so keep the decimal here and round after currency conversion below.
+  const priceNum = rawPrice != null ? parseFloat(String(rawPrice).replace(/[^0-9.]/g, '')) : NaN;
+  let price = Number.isFinite(priceNum) && priceNum > 0 ? priceNum : null;
 
-  const currency =
+  let currency =
     offer?.priceCurrency ||
     $('meta[property="product:price:currency"]').attr('content') ||
     'LKR';
+
+  // Kapruka geo-converts prices for non-Sri-Lankan server IPs (see the note on
+  // SCRAPE_ON_ADD in server.js — this VPS is confirmed to get USD pricing).
+  // Single-product resolves have no LKR-only fallback like the catalogue
+  // scraper's kaprukaLkrPriceMap below, so convert USD at a fixed rate instead
+  // of showing the dollar figure as if it were rupees.
+  const USD_TO_LKR = 270;
+  if (price != null && /^USD$/i.test(currency)) {
+    price = Math.round(price * USD_TO_LKR);
+    currency = 'LKR';
+  } else if (price != null) {
+    price = Math.round(price);
+  }
 
   const image =
     (Array.isArray(product?.image) ? product.image[0] : product?.image) ||
