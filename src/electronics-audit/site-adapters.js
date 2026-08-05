@@ -130,6 +130,63 @@ function wooStoreApiSearch(domain) {
   };
 }
 
+// A transient network hiccup on page 40 of 60 shouldn't lose pages 1-39 —
+// retry once, and if that fails too, stop pagination and return what's been
+// collected so far rather than throwing (an uncaught fetch/timeout error
+// deep in one of these loops previously crashed the whole crawl process).
+async function fetchJsonResilient(url) {
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      return await fetchJson(url);
+    } catch (err) {
+      if (attempt === 2) {
+        console.warn(`  ! catalog page fetch failed, stopping pagination here: ${url} (${err.message})`);
+        return null;
+      }
+    }
+  }
+}
+
+// Paginate the WooCommerce Store API to pull a site's FULL catalogue (not
+// just what a search query surfaces) — same endpoint as wooStoreApiSearch,
+// just walking every page with no `search` param. Stops on an empty page, a
+// failed page (see fetchJsonResilient), or a defensive page-count ceiling (a
+// site with a genuinely huge catalogue shouldn't be able to loop forever on
+// a scraper bug).
+function wooStoreApiCatalog(domain) {
+  return async () => {
+    const out = [];
+    for (let page = 1; page <= 200; page++) {
+      const data = await fetchJsonResilient(
+        `https://${domain}/wp-json/wc/store/v1/products?page=${page}&per_page=100&orderby=id&order=asc`,
+      );
+      if (!Array.isArray(data) || data.length === 0) break;
+      for (const p of data) out.push({ name: decodeEntities(p.name), url: p.permalink, priceLKR: wooPrice(p) });
+      if (data.length < 100) break; // last page
+    }
+    return out;
+  };
+}
+
+// Shopify's public products.json — paginate to pull the full catalogue.
+function shopifyCatalog(domain) {
+  return async () => {
+    const out = [];
+    for (let page = 1; page <= 200; page++) {
+      const data = await fetchJsonResilient(`https://${domain}/products.json?limit=250&page=${page}`);
+      const products = data?.products || [];
+      if (products.length === 0) break;
+      for (const p of products) {
+        const variant = (p.variants || [])[0];
+        const priceLKR = variant ? parsePriceLKR(variant.price) : null;
+        out.push({ name: decodeEntities(p.title), url: abs(`https://${domain}`, `/products/${p.handle}`), priceLKR });
+      }
+      if (products.length < 250) break;
+    }
+    return out;
+  };
+}
+
 // WooCommerce + FiboSearch (dgwt_wcas) AJAX autocomplete — served as
 // text/html content-type but the body is JSON.
 function fiboSearch(domain) {
@@ -554,3 +611,50 @@ export const SITE_ADAPTERS = [
 // by playwright-adapters.js since they need a shared, reusable browser
 // instance rather than a fresh launch per call.
 export const PLAYWRIGHT_SITE_DOMAINS = ['otc.lk', 'directdealz.lk'];
+
+// Full-catalogue crawlers (not per-query search) — only sites whose platform
+// exposes a clean, already-paginated bulk listing endpoint. Covers the
+// WooCommerce Store API and Shopify sites; other platforms (custom Laravel/
+// PHP stores, OpenCart, etc.) would each need their own bespoke pagination
+// scheme reverse-engineered, not yet done for those.
+// Sanity's GROQ query API paginates via array slicing ([start...end]) — same
+// endpoint as the search adapter, just no `match` filter, so it returns
+// everything. No price in this response (see the search adapter's comment);
+// left null here too — cheap for a full-catalogue crawl, since hydrating
+// every one of ~3,500 products' price pages would be expensive, and the
+// local-match step only needs to hydrate the price of an actual match.
+function chamacomputersCatalog() {
+  return async () => {
+    const out = [];
+    const PAGE = 200;
+    for (let start = 0; ; start += PAGE) {
+      const query = `*[_type=="product"][${start}...${start + PAGE}]{name, "category": category->name}`;
+      const data = await fetchJsonResilient(
+        `https://yqd1zell.api.sanity.io/v2021-06-07/data/query/production?query=${encodeURIComponent(query)}`,
+      );
+      const results = (data?.result || []).filter((p) => p.name && p.category);
+      if (results.length === 0) break;
+      for (const p of results) {
+        out.push({
+          name: p.name,
+          url: `https://www.chamacomputers.lk/products/${encodeURIComponent(p.category.toLowerCase())}/${encodeURIComponent(p.name.toLowerCase())}`,
+          priceLKR: null,
+        });
+      }
+      if (results.length < PAGE) break;
+    }
+    return out;
+  };
+}
+
+export const CATALOG_ADAPTERS = [
+  { domain: 'dinapalagroup.lk', name: 'Dinapala Group', fetchCatalog: wooStoreApiCatalog('dinapalagroup.lk') },
+  { domain: 'wasi.lk', name: 'Wasi', fetchCatalog: wooStoreApiCatalog('wasi.lk') },
+  { domain: 'greenware.lk', name: 'Greenware', fetchCatalog: wooStoreApiCatalog('www.greenware.lk') },
+  { domain: 'rangashopping.lk', name: 'Ranga Shopping', fetchCatalog: wooStoreApiCatalog('rangashopping.lk') },
+  { domain: 'celltronics.lk', name: 'Celltronics', fetchCatalog: wooStoreApiCatalog('celltronics.lk') },
+  { domain: 'thinex.lk', name: 'Thinex', fetchCatalog: wooStoreApiCatalog('thinex.lk') },
+  { domain: 'simplytek.lk', name: 'SimplyTek', fetchCatalog: shopifyCatalog('www.simplytek.lk') },
+  { domain: 'brownsdeals.com', name: 'Browns Deals', fetchCatalog: shopifyCatalog('brownsdeals.com') },
+  { domain: 'chamacomputers.lk', name: 'Chama Computers', fetchCatalog: chamacomputersCatalog() },
+];

@@ -40,6 +40,12 @@
 //                         querying each site's own search endpoint per product, so
 //                         results land here incrementally, one upsert per pair,
 //                         rather than one big payload per run.
+//   competitor_products - a competitor site's own FULL catalogue (not just what
+//                         turned up in a per-product search) — crawled once per
+//                         site and cached here so future audits can match against
+//                         this local table instead of live-searching every
+//                         product, same idea as the UAE checker's fnp.ae catalog
+//                         crawl. Bulk-upserted per site (many rows per call).
 //
 // Each row keeps flat summary columns for easy SQL plus a full JSON payload so
 // nothing is lost. ALL exported functions are async (Postgres/REST are async;
@@ -113,6 +119,8 @@ export const listUnsupportedPartners = () => backend.listUnsupportedPartners();
 export const addUnsupportedPartner = (row) => backend.addUnsupportedPartner(row);
 export const upsertPriceAuditItem = (item) => backend.upsertPriceAuditItem(item);
 export const getPriceAuditItems = (opts) => backend.getPriceAuditItems(opts);
+export const upsertCompetitorProducts = (siteDomain, products) => backend.upsertCompetitorProducts(siteDomain, products);
+export const getCompetitorProducts = (siteDomain) => backend.getCompetitorProducts(siteDomain);
 
 // ---------------------------------------------------------------------------
 // Postgres (Supabase) backend
@@ -212,9 +220,51 @@ async function makePostgresBackend(connectionString) {
     );
     CREATE INDEX IF NOT EXISTS idx_audit_category ON price_audit_items (category, checked_at);
     CREATE INDEX IF NOT EXISTS idx_audit_kapruka_url ON price_audit_items (kapruka_url);
+    CREATE TABLE IF NOT EXISTS competitor_products (
+      id            BIGSERIAL PRIMARY KEY,
+      site_domain   TEXT NOT NULL,
+      site_name     TEXT,
+      product_url   TEXT NOT NULL,
+      product_name  TEXT,
+      price_lkr     INTEGER,
+      scraped_at    TEXT NOT NULL,
+      UNIQUE (site_domain, product_url)
+    );
+    CREATE INDEX IF NOT EXISTS idx_competitor_products_site ON competitor_products (site_domain);
   `);
 
   return {
+    async upsertCompetitorProducts(siteDomain, products) {
+      const CHUNK = 500;
+      for (let i = 0; i < products.length; i += CHUNK) {
+        const chunk = products.slice(i, i + CHUNK);
+        const values = [];
+        const params = [];
+        chunk.forEach((p, idx) => {
+          const base = idx * 6;
+          values.push(`($${base + 1},$${base + 2},$${base + 3},$${base + 4},$${base + 5},$${base + 6})`);
+          params.push(siteDomain, p.siteName || null, p.url, p.name || null, p.priceLKR ?? null, nowIso());
+        });
+        await pool.query(
+          `INSERT INTO competitor_products (site_domain, site_name, product_url, product_name, price_lkr, scraped_at)
+           VALUES ${values.join(',')}
+           ON CONFLICT (site_domain, product_url) DO UPDATE SET
+             site_name = EXCLUDED.site_name, product_name = EXCLUDED.product_name,
+             price_lkr = EXCLUDED.price_lkr, scraped_at = EXCLUDED.scraped_at`,
+          params,
+        );
+      }
+    },
+
+    async getCompetitorProducts(siteDomain) {
+      const { rows } = await pool.query(
+        `SELECT site_domain, site_name, product_url, product_name, price_lkr, scraped_at
+         FROM competitor_products WHERE site_domain = $1`,
+        [siteDomain],
+      );
+      return rows;
+    },
+
     async upsertPriceAuditItem(item) {
       await pool.query(
         `INSERT INTO price_audit_items
@@ -531,6 +581,17 @@ async function makePostgresBackend(connectionString) {
 //   );
 //   CREATE INDEX IF NOT EXISTS idx_audit_category ON price_audit_items (category, checked_at);
 //   CREATE INDEX IF NOT EXISTS idx_audit_kapruka_url ON price_audit_items (kapruka_url);
+//   CREATE TABLE IF NOT EXISTS competitor_products (
+//     id            BIGSERIAL PRIMARY KEY,
+//     site_domain   TEXT NOT NULL,
+//     site_name     TEXT,
+//     product_url   TEXT NOT NULL,
+//     product_name  TEXT,
+//     price_lkr     INTEGER,
+//     scraped_at    TEXT NOT NULL,
+//     UNIQUE (site_domain, product_url)
+//   );
+//   CREATE INDEX IF NOT EXISTS idx_competitor_products_site ON competitor_products (site_domain);
 //   -- The static dashboard (GitHub Pages) reads this table directly with a
 //   -- public anon key, so it needs RLS enabled with a public SELECT policy:
 //   ALTER TABLE intl_gift_snapshots ENABLE ROW LEVEL SECURITY;
@@ -566,6 +627,32 @@ async function makeSupabaseRestBackend(baseUrl, serviceKey) {
   }
 
   return {
+    async upsertCompetitorProducts(siteDomain, products) {
+      const CHUNK = 500;
+      for (let i = 0; i < products.length; i += CHUNK) {
+        const chunk = products.slice(i, i + CHUNK).map((p) => ({
+          site_domain: siteDomain,
+          site_name: p.siteName || null,
+          product_url: p.url,
+          product_name: p.name || null,
+          price_lkr: p.priceLKR ?? null,
+          scraped_at: nowIso(),
+        }));
+        await restFetch('/competitor_products?on_conflict=site_domain,product_url', {
+          method: 'POST',
+          headers: { Prefer: 'resolution=merge-duplicates' },
+          body: JSON.stringify(chunk),
+        });
+      }
+    },
+
+    async getCompetitorProducts(siteDomain) {
+      return restFetch(
+        `/competitor_products?select=site_domain,site_name,product_url,product_name,price_lkr,scraped_at` +
+          `&site_domain=eq.${encodeURIComponent(siteDomain)}`,
+      );
+    },
+
     async upsertPriceAuditItem(item) {
       await restFetch('/price_audit_items?on_conflict=kapruka_url,site_domain', {
         method: 'POST',
@@ -876,7 +963,28 @@ async function makeSqliteBackend() {
     );
     CREATE INDEX IF NOT EXISTS idx_audit_category ON price_audit_items (category, checked_at);
     CREATE INDEX IF NOT EXISTS idx_audit_kapruka_url ON price_audit_items (kapruka_url);
+    CREATE TABLE IF NOT EXISTS competitor_products (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      site_domain   TEXT NOT NULL,
+      site_name     TEXT,
+      product_url   TEXT NOT NULL,
+      product_name  TEXT,
+      price_lkr     INTEGER,
+      scraped_at    TEXT NOT NULL,
+      UNIQUE (site_domain, product_url)
+    );
+    CREATE INDEX IF NOT EXISTS idx_competitor_products_site ON competitor_products (site_domain);
   `);
+
+  const upsertCompetitorProduct = db.prepare(`
+    INSERT INTO competitor_products (site_domain, site_name, product_url, product_name, price_lkr, scraped_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT (site_domain, product_url) DO UPDATE SET
+      site_name = excluded.site_name, product_name = excluded.product_name,
+      price_lkr = excluded.price_lkr, scraped_at = excluded.scraped_at`);
+  const selCompetitorProducts = db.prepare(`
+    SELECT site_domain, site_name, product_url, product_name, price_lkr, scraped_at
+    FROM competitor_products WHERE site_domain = ?`);
 
   const insChk = db.prepare(`
     INSERT INTO price_checks (created_at, category, query_name, description, result_count, discovered_count, payload_json)
@@ -934,6 +1042,20 @@ async function makeSqliteBackend() {
       diff_lkr = excluded.diff_lkr, diff_pct = excluded.diff_pct, checked_at = excluded.checked_at`);
 
   return {
+    async upsertCompetitorProducts(siteDomain, products) {
+      const ts = nowIso();
+      const insertMany = db.transaction((rows) => {
+        for (const p of rows) {
+          upsertCompetitorProduct.run(siteDomain, p.siteName || null, p.url, p.name || null, p.priceLKR ?? null, ts);
+        }
+      });
+      insertMany(products);
+    },
+
+    async getCompetitorProducts(siteDomain) {
+      return selCompetitorProducts.all(siteDomain);
+    },
+
     async upsertPriceAuditItem(item) {
       upsertAuditItem.run(
         item.category, item.kaprukaUrl, item.kaprukaName || null, item.kaprukaPriceLkr ?? null,
