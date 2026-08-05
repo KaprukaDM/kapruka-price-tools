@@ -355,7 +355,12 @@ export async function fetchKaprukaCatalog(source, { log = () => {} } = {}) {
   if (!src) throw new Error('Unrecognised Kapruka link/source');
   const base = kaprukaBaseUrl(src);
   const byUrl = new Map();
-  for (let p = 1; p <= 50; p++) {
+  // Safety ceiling only — the loop's real stopping conditions are an empty
+  // page or a page that adds nothing new. 50 was too low for large
+  // categories (Electronics has 3000+ products, ~115 pages at 30/page) and
+  // was silently truncating them instead of ever being hit as a genuine
+  // safety net.
+  for (let p = 1; p <= 300; p++) {
     if (p > 1) await sleep(350); // throttle page requests to avoid tripping Kapruka's rate limit
     const html = await fetchText(`${base}&p=${p}&onlyCatalogueSection=true`);
     const items = parseKaprukaPage(html);
