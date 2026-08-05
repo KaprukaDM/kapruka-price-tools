@@ -11,6 +11,7 @@
 // so only one extra request per product (not per candidate) is paid for that.
 
 import * as cheerio from 'cheerio';
+import { decodeEntities } from '../compare/normalize.js';
 
 const UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
@@ -125,7 +126,7 @@ function wooStoreApiSearch(domain) {
       `https://${domain}/wp-json/wc/store/v1/products?search=${encodeURIComponent(term)}&per_page=10`,
     );
     if (!Array.isArray(data)) return [];
-    return data.map((p) => ({ name: p.name, url: p.permalink, priceLKR: wooPrice(p) }));
+    return data.map((p) => ({ name: decodeEntities(p.name), url: p.permalink, priceLKR: wooPrice(p) }));
   };
 }
 

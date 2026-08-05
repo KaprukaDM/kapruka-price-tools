@@ -17,10 +17,27 @@ import { SITE_ADAPTERS, fetchPriceFromPage } from './site-adapters.js';
 import { PLAYWRIGHT_SITE_ADAPTERS, closeSharedBrowser } from './playwright-adapters.js';
 import { upsertPriceAuditItem } from '../db.js';
 
-const ALL_ADAPTERS = [...SITE_ADAPTERS, ...PLAYWRIGHT_SITE_ADAPTERS];
+// otc.lk and directdealz.lk (Playwright, behind Cloudflare) are excluded by
+// default: a product isn't "done" until every site responds, so ANY single
+// slow/stuck site — and Cloudflare challenges are exactly that, inherently
+// flaky under repeated automated hits — taxes every one of ~1,500 products'
+// wall-clock time, not just its own. Pass --include-playwright to opt in.
+const includePlaywright = process.argv.includes('--include-playwright');
+const baseAdapters = includePlaywright ? [...SITE_ADAPTERS, ...PLAYWRIGHT_SITE_ADAPTERS] : SITE_ADAPTERS;
+
+// Sites confirmed unreachable right now (verified with a direct curl outside
+// this codebase, not an adapter bug) — excluded per-run rather than removed
+// from site-adapters.js, since this is about today's outage, not a permanent
+// gap. Re-check and drop from here whenever a fresh run starts timing out
+// again on a "should be fine" site.
+const DOWN_TODAY = new Set(['greenware.lk']);
+const ALL_ADAPTERS = baseAdapters.filter((s) => !DOWN_TODAY.has(s.domain));
 const CATEGORY = 'Electronics';
 const KAPRUKA_SOURCE = { type: 'catalogue', buy: 'electronics', subcat: null };
-const SITE_CONCURRENCY = 8; // sites queried in parallel per product (different domains, safe)
+const SITE_CONCURRENCY = 5; // sites queried in parallel per product — high product concurrency x
+                             // this multiplies into simultaneous connection counts that appear to
+                             // cause connection contention (a wave of unrelated sites timing out
+                             // together, not any single site being genuinely down)
 
 async function mapWithConcurrency(items, limit, fn) {
   const results = new Array(items.length);
@@ -100,10 +117,24 @@ function scoreCandidate(k, c) {
   return { value: (codes >= 1 ? 1 : 0) + overlap + versionBonus, codes, overlap };
 }
 
+// A product isn't "done" until every site responds, so one consistently slow
+// or Cloudflare-stuck site (each adapter has its own internal fetch timeout,
+// but a multi-step CSRF flow can add up) taxes EVERY product in the run, not
+// just the ones where it matters. Hard-cap each site's search regardless of
+// what it's internally doing.
+const SITE_TIMEOUT_MS = 15000;
+
+function withTimeout(promise, ms) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error(`timed out after ${ms}ms`)), ms)),
+  ]);
+}
+
 async function auditProductOnSite(kIndexed, kProduct, site) {
   let candidates = [];
   try {
-    candidates = await site.search(buildSearchQuery(kProduct.name));
+    candidates = await withTimeout(site.search(buildSearchQuery(kProduct.name)), SITE_TIMEOUT_MS);
   } catch (err) {
     console.warn(`  ! ${site.domain}: ${err.message}`);
     return;
