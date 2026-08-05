@@ -134,10 +134,10 @@ function wooStoreApiSearch(domain) {
 // retry once, and if that fails too, stop pagination and return what's been
 // collected so far rather than throwing (an uncaught fetch/timeout error
 // deep in one of these loops previously crashed the whole crawl process).
-async function fetchJsonResilient(url) {
+async function fetchJsonResilient(url, opts) {
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
-      return await fetchJson(url);
+      return await fetchJson(url, opts);
     } catch (err) {
       if (attempt === 2) {
         console.warn(`  ! catalog page fetch failed, stopping pagination here: ${url} (${err.message})`);
@@ -186,10 +186,18 @@ async function paginateHtml({ pageUrl, parseCards, opts, maxPages = 60 }) {
 function wooStoreApiCatalog(domain) {
   return async () => {
     const out = [];
+    // Some sites (e.g. thinex.lk) 404 on the pretty /wp-json/... permalink
+    // but still serve the REST API via the ?rest_route= query-string form —
+    // detect once on page 1, then stick with whichever form works.
+    let useRestRouteParam = false;
     for (let page = 1; page <= 200; page++) {
-      const data = await fetchJsonResilient(
-        `https://${domain}/wp-json/wc/store/v1/products?page=${page}&per_page=100&orderby=id&order=asc`,
-      );
+      const prettyUrl = `https://${domain}/wp-json/wc/store/v1/products?page=${page}&per_page=100&orderby=id&order=asc`;
+      const restRouteUrl = `https://${domain}/?rest_route=/wc/store/v1/products&page=${page}&per_page=100&orderby=id&order=asc`;
+      let data = await fetchJsonResilient(useRestRouteParam ? restRouteUrl : prettyUrl);
+      if (!Array.isArray(data) && page === 1 && !useRestRouteParam) {
+        data = await fetchJsonResilient(restRouteUrl);
+        if (Array.isArray(data)) useRestRouteParam = true;
+      }
       if (!Array.isArray(data) || data.length === 0) break;
       for (const p of data) out.push({ name: decodeEntities(p.name), url: p.permalink, priceLKR: wooPrice(p) });
       if (data.length < 100) break; // last page
@@ -706,11 +714,12 @@ function mskcomputersCatalog() {
 function abansitCatalog() {
   return async () => {
     const warm = await fetchText('https://abansit.lk/products');
-    const cookie = warm.headers.getSetCookie ? warm.headers.getSetCookie().map((c) => c.split(';')[0]).join('; ') : '';
+    const cookie = cookieHeader(warm.headers);
     const out = [];
     for (let page = 1; page <= 200; page++) {
       const data = await fetchJsonResilient(
         `https://abansit.lk/welcome/productsPagination/${page}?page_name=all_products&categories=[]&brands=[]&ram=[]&storage=[]&processor=[]&min_price=&max_price=`,
+        { headers: { Cookie: cookie, Referer: 'https://abansit.lk/products', 'X-Requested-With': 'XMLHttpRequest' } },
       );
       const html = data?.product_table;
       if (!html) break;
@@ -739,10 +748,17 @@ function senseCatalog() {
       parseCards: (html) => {
         const $ = cheerio.load(html);
         const out = [];
-        $('a[href^="https://www.sense.lk/product/"]').each((_, el) => {
+        // Each card has two anchors to the same product URL: one wrapping the
+        // image (empty text) and one inside p.product-card-title (has the
+        // name). p.product-card-title is an ANCESTOR of the anchor, not a
+        // descendant, so scope to that specific anchor rather than .find()-ing
+        // downward from it.
+        $('p.product-card-title a[href^="https://www.sense.lk/product/"]').each((_, el) => {
           const $el = $(el);
-          const name = $el.find('p.product-card-title').text().trim();
-          const priceLKR = parsePriceLKR($el.closest('.product-card, div').find('.product-price').first().text());
+          const name = $el.text().trim();
+          const priceLKR = parsePriceLKR(
+            $el.closest('[class*="col-lg-"], [class*="col-md-"]').find('.product-price').first().text(),
+          );
           const url = $el.attr('href');
           if (!name || !url) return;
           out.push({ name, url, priceLKR });
@@ -973,7 +989,10 @@ function barclaysCatalog() {
         let found = 0;
         $('.product-item').each((_, el) => {
           const $el = $(el);
-          const $a = $el.find('a[href^="https://barclays.lk/itemdesc.asp?ic="]').first();
+          // Each card has two anchors to the same product URL: one wrapping
+          // the thumbnail image (empty text) and one in .item-title with the
+          // actual product name — scope to the latter specifically.
+          const $a = $el.find('.item-title a[href^="https://barclays.lk/itemdesc.asp?ic="]').first();
           const name = $a.text().trim();
           const priceLKR = parsePriceLKR($el.find('.item-price .price, .price-box .price').first().text());
           const href = $a.attr('href');

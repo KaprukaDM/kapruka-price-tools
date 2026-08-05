@@ -67,12 +67,20 @@ async function selectBackend() {
   if (DATABASE_URL) return { backend: await makePostgresBackend(DATABASE_URL), kind: 'postgres' };
   if (SUPABASE_URL && SUPABASE_SERVICE_KEY) {
     const rest = await makeSupabaseRestBackend(SUPABASE_URL, SUPABASE_SERVICE_KEY);
-    try {
-      await rest.recentComparisonRuns(1);
-      return { backend: rest, kind: 'supabase-rest' };
-    } catch (err) {
-      console.warn(`! Supabase REST unreachable (${err.message}); falling back to local SQLite.`);
+    // A single transient network hiccup shouldn't silently strand a whole
+    // crawl's data in a separate local SQLite file that other processes
+    // reading via Supabase would never see — retry once before falling back.
+    let lastErr;
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        await rest.recentComparisonRuns(1);
+        return { backend: rest, kind: 'supabase-rest' };
+      } catch (err) {
+        lastErr = err;
+        if (attempt < 2) await new Promise((r) => setTimeout(r, 1000));
+      }
     }
+    console.warn(`! Supabase REST unreachable (${lastErr.message}); falling back to local SQLite.`);
   }
   return { backend: await makeSqliteBackend(), kind: 'sqlite' };
 }
@@ -235,9 +243,14 @@ async function makePostgresBackend(connectionString) {
 
   return {
     async upsertCompetitorProducts(siteDomain, products) {
+      // Dedupe by product_url first — a multi-row INSERT ... ON CONFLICT DO
+      // UPDATE errors if the same (site_domain, product_url) pair appears
+      // twice in one statement, which happens when a product is listed on
+      // more than one category page.
+      const deduped = [...new Map(products.map((p) => [p.url, p])).values()];
       const CHUNK = 500;
-      for (let i = 0; i < products.length; i += CHUNK) {
-        const chunk = products.slice(i, i + CHUNK);
+      for (let i = 0; i < deduped.length; i += CHUNK) {
+        const chunk = deduped.slice(i, i + CHUNK);
         const values = [];
         const params = [];
         chunk.forEach((p, idx) => {
@@ -628,9 +641,14 @@ async function makeSupabaseRestBackend(baseUrl, serviceKey) {
 
   return {
     async upsertCompetitorProducts(siteDomain, products) {
+      // Dedupe by product_url first — Postgres's ON CONFLICT DO UPDATE errors
+      // out ("command cannot affect row a second time") if the same
+      // (site_domain, product_url) pair appears twice in one upsert batch,
+      // which happens when a product is listed on more than one category page.
+      const deduped = [...new Map(products.map((p) => [p.url, p])).values()];
       const CHUNK = 500;
-      for (let i = 0; i < products.length; i += CHUNK) {
-        const chunk = products.slice(i, i + CHUNK).map((p) => ({
+      for (let i = 0; i < deduped.length; i += CHUNK) {
+        const chunk = deduped.slice(i, i + CHUNK).map((p) => ({
           site_domain: siteDomain,
           site_name: p.siteName || null,
           product_url: p.url,
@@ -647,10 +665,21 @@ async function makeSupabaseRestBackend(baseUrl, serviceKey) {
     },
 
     async getCompetitorProducts(siteDomain) {
-      return restFetch(
-        `/competitor_products?select=site_domain,site_name,product_url,product_name,price_lkr,scraped_at` +
-          `&site_domain=eq.${encodeURIComponent(siteDomain)}`,
-      );
+      // PostgREST caps unbounded selects at the project's default row limit
+      // (commonly 1000) — silently, with no error, so a naive single fetch
+      // truncates any site with a larger catalogue. Page with limit/offset
+      // until a page comes back short.
+      const PAGE = 1000;
+      const out = [];
+      for (let offset = 0; ; offset += PAGE) {
+        const page = await restFetch(
+          `/competitor_products?select=site_domain,site_name,product_url,product_name,price_lkr,scraped_at` +
+            `&site_domain=eq.${encodeURIComponent(siteDomain)}&limit=${PAGE}&offset=${offset}`,
+        );
+        out.push(...page);
+        if (page.length < PAGE) break;
+      }
+      return out;
     },
 
     async upsertPriceAuditItem(item) {
@@ -678,8 +707,22 @@ async function makeSupabaseRestBackend(baseUrl, serviceKey) {
     },
 
     async getPriceAuditItems({ category, limit = 500 } = {}) {
+      // PostgREST caps any single response at the project's default row limit
+      // (commonly 1000) regardless of a higher `limit` query param — silently,
+      // with no error. Page in <=1000-row chunks until `limit` is reached or
+      // a short page signals the end.
       const filter = category ? `&category=eq.${encodeURIComponent(category)}` : '';
-      return restFetch(`/price_audit_items?select=*&order=checked_at.desc&limit=${limit}${filter}`);
+      const PAGE = 1000;
+      const out = [];
+      for (let offset = 0; offset < limit; offset += PAGE) {
+        const pageSize = Math.min(PAGE, limit - offset);
+        const page = await restFetch(
+          `/price_audit_items?select=*&order=checked_at.desc&limit=${pageSize}&offset=${offset}${filter}`,
+        );
+        out.push(...page);
+        if (page.length < pageSize) break;
+      }
+      return out;
     },
 
     async listUnsupportedPartners() {
@@ -1043,13 +1086,20 @@ async function makeSqliteBackend() {
 
   return {
     async upsertCompetitorProducts(siteDomain, products) {
+      // node:sqlite's DatabaseSync has no .transaction() helper (that's a
+      // better-sqlite3-only convenience method) — wrap with raw BEGIN/COMMIT
+      // instead, which DatabaseSync does support via .exec().
       const ts = nowIso();
-      const insertMany = db.transaction((rows) => {
-        for (const p of rows) {
+      db.exec('BEGIN');
+      try {
+        for (const p of products) {
           upsertCompetitorProduct.run(siteDomain, p.siteName || null, p.url, p.name || null, p.priceLKR ?? null, ts);
         }
-      });
-      insertMany(products);
+        db.exec('COMMIT');
+      } catch (err) {
+        db.exec('ROLLBACK');
+        throw err;
+      }
     },
 
     async getCompetitorProducts(siteDomain) {

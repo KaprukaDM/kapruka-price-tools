@@ -55,7 +55,7 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 // few times with backoff — honouring Retry-After when Kapruka sends one —
 // before giving up. Every other non-OK status still fails immediately, same
 // as before.
-const RATE_LIMIT_RETRIES = 4;
+const RATE_LIMIT_RETRIES = 7;
 
 async function fetchText(url) {
   for (let attempt = 0; ; attempt++) {
@@ -75,7 +75,7 @@ async function fetchText(url) {
         const retryAfter = Number(r.headers.get('retry-after'));
         const waitMs = Number.isFinite(retryAfter) && retryAfter > 0
           ? retryAfter * 1000
-          : 1000 * 2 ** attempt; // 1s, 2s, 4s, 8s
+          : Math.min(1000 * 2 ** attempt, 30000); // 1s, 2s, 4s, 8s, 16s, 30s, 30s
         await sleep(waitMs);
         continue;
       }
@@ -361,7 +361,7 @@ export async function fetchKaprukaCatalog(source, { log = () => {} } = {}) {
   // was silently truncating them instead of ever being hit as a genuine
   // safety net.
   for (let p = 1; p <= 300; p++) {
-    if (p > 1) await sleep(350); // throttle page requests to avoid tripping Kapruka's rate limit
+    if (p > 1) await sleep(600); // throttle page requests to avoid tripping Kapruka's rate limit
     const html = await fetchText(`${base}&p=${p}&onlyCatalogueSection=true`);
     const items = parseKaprukaPage(html);
     if (items.length === 0) break; // past the last page
