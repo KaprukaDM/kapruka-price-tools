@@ -20,12 +20,14 @@ function cleanQuery(s) {
   return String(s || '')
     .replace(/\([^)]*\)/g, ' ') // remove "(gmc)" etc.
     .replace(/[^\w\s.\-+&]/g, ' ') // drop odd punctuation
-    // Drop stray "-" tokens, e.g. the " - " separator in "Kettle - SF-3328EK".
-    // A space-padded hyphen reads as Google's NOT operator, which Serper's
-    // free tier rejects outright ("Query pattern not allowed for free
-    // accounts"). Hyphens inside a model number like "SF-3328EK" have no
-    // surrounding whitespace, so they're untouched.
-    .replace(/(^|\s)-+(?=\s|$)/g, ' ')
+    // Drop any "-" that has whitespace (or start/end of string) on EITHER
+    // side, e.g. the " - " separator in "Kettle - SF-3328EK", or a sloppily-
+    // spaced SKU like "SF- 3328EK". A hyphen adjacent to whitespace reads as
+    // Google's NOT operator, which Serper's free tier rejects outright
+    // ("Query pattern not allowed for free accounts"). Only a hyphen with NO
+    // surrounding whitespace on either side, like a clean model number
+    // "SF-3328EK", is left untouched.
+    .replace(/(?<=^|\s)-+|-+(?=\s|$)/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 }

@@ -15,6 +15,7 @@
 
 import * as cheerio from 'cheerio';
 import { decodeEntities } from './normalize.js';
+import { convertToLkr } from './fx.js';
 
 // Some product names are mojibake: real UTF-8 punctuation got mis-decoded
 // (sometimes twice), leaving clusters like [A-hat|a-hat]+euro+quote. The lead
@@ -247,13 +248,14 @@ export async function fetchKaprukaProduct(url) {
     'LKR';
 
   // Kapruka geo-converts prices for non-Sri-Lankan server IPs (see the note on
-  // SCRAPE_ON_ADD in server.js — this VPS is confirmed to get USD pricing).
-  // Single-product resolves have no LKR-only fallback like the catalogue
-  // scraper's kaprukaLkrPriceMap below, so convert USD at a fixed rate instead
-  // of showing the dollar figure as if it were rupees.
-  const USD_TO_LKR = 270;
-  if (price != null && /^USD$/i.test(currency)) {
-    price = Math.round(price * USD_TO_LKR);
+  // SCRAPE_ON_ADD in server.js — this VPS is confirmed to get bad geo-pricing).
+  // Which currency it picks isn't fixed to USD — it can also come back as AED,
+  // GBP, etc. depending on how the IP resolves. Single-product resolves have
+  // no LKR-only fallback like the catalogue scraper's kaprukaLkrPriceMap
+  // below, so convert whatever currency it is instead of displaying the
+  // foreign number as if it were rupees.
+  if (price != null && currency && !/^LKR$/i.test(currency)) {
+    price = await convertToLkr(price, currency);
     currency = 'LKR';
   } else if (price != null) {
     price = Math.round(price);
