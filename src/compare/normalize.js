@@ -117,7 +117,14 @@ function specNormalize(s) {
 export function extractSpecs(s) {
   const specs = {};
   const norm = specNormalize(s);
-  const re = /(\d+(?:\.\d+)?)\s*(w|kw|kg|l|ml|mah|wh)\b/g;
+  // "g" (grams) matters — chocolates/groceries are almost always weighed in
+  // bare grams ("130g"), not kg — without it, two products with genuinely
+  // different weights had NOTHING to disagree on, and (worse) two identical
+  // products had nothing to positively agree on either, since specsConflict
+  // and audit-scoring's hasAgreeingSpec only see units this regex captures.
+  // \b after the unit means "128gb" can't accidentally register as a "g"
+  // match (no word boundary between the g and the following b).
+  const re = /(\d+(?:\.\d+)?)\s*(w|kw|kg|g|l|ml|mah|wh)\b/g;
   let m;
   while ((m = re.exec(norm))) {
     const unit = m[2] === 'kw' ? 'w' : m[2];

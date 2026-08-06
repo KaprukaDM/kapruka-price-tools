@@ -15,6 +15,12 @@ export const MIN_INTERSECTION = 2;
 // 0.15) since there's no SKU to lean on for confidence.
 export const FALLBACK_MIN_OVERLAP = 0.65;
 
+// Applies only when NEITHER side has any recognized spec (see scoreCandidate)
+// — token containment is the sole safeguard then, so a short generic name
+// ("Kitchen Rack", 2 tokens) needs a higher bar than the general MIN_INTERSECTION
+// to actually mean something.
+export const SPEC_LESS_MIN_INTERSECTION = 4;
+
 export function overlapCoefficient(a, b) {
   if (a.size === 0 || b.size === 0) return { overlap: 0, intersection: 0 };
   let inter = 0;
@@ -109,14 +115,45 @@ export function scoreCandidate(k, c) {
   if (codes >= 1) {
     if (overlap < CODE_MATCH_MIN_OVERLAP) return null;
   } else {
-    // No code on either side — only accept with strong name overlap, a
-    // positively agreeing spec (e.g. both say 128GB, not just no conflict),
-    // every Kapruka-side distinctive token present verbatim on the
-    // competitor side (see unmatchedDistinctiveToken() above), and no
-    // one-sided qualifier word (16 must not silently pass as 16 Pro).
-    if (overlap < FALLBACK_MIN_OVERLAP || !hasAgreeingSpec(k._specs, c._specs)) return null;
+    // No code on either side — only accept with strong name overlap, every
+    // Kapruka-side distinctive token present verbatim on the competitor side
+    // (see unmatchedDistinctiveToken() above), and no one-sided qualifier
+    // word (16 must not silently pass as 16 Pro). When EITHER side has a
+    // recognized spec (128GB, 1000W, 130g — extractSpecs' unit list),
+    // additionally require the two sides to positively agree on at least
+    // one, not just fail to conflict — e.g. a shared "256GB" figure that's
+    // actually two different RAM tiers. If NEITHER side has any recognized
+    // spec at all (common for confectionery/gift items with no measurable
+    // dimension), this extra bar doesn't apply — token containment alone
+    // carries the weight, since requiring "agreement" on nothing meant an
+    // exact-name match with no spec anywhere was rejected outright.
+    const eitherHasSpecs = Object.keys(k._specs).length > 0 || Object.keys(c._specs).length > 0;
+    if (overlap < FALLBACK_MIN_OVERLAP) return null;
+    if (eitherHasSpecs && !hasAgreeingSpec(k._specs, c._specs)) return null;
+    // With no spec to lean on at all, token containment is the ONLY thing
+    // stopping a false positive — and a bare 2-token Kapruka name ("Kitchen
+    // Rack", "Toothbrush Holder") is trivially "contained" in nearly any
+    // same-category listing, since there's nothing distinctive to fail to
+    // contain. "Kitchen Rack" -> "Wall Mounted Kitchen And Bathroom Metal
+    // Shelf Rack" at a 6.5x price difference is exactly that failure mode —
+    // the competitor's EXTRA tokens ("wall mounted", "metal", "bathroom")
+    // describe a different, unverified product. A genuinely IDENTICAL short
+    // name ("Shopping Bag Holder" == "Shopping Bag Holder") is fine at any
+    // length though — there's no unverified extra content to worry about,
+    // so only apply the higher bar when the competitor's side carries tokens
+    // beyond what Kapruka's name already vouches for.
+    const exactSameTokens = k._tokens.size === c._tokens.size && intersection === k._tokens.size;
+    if (!eitherHasSpecs && !exactSameTokens && intersection < SPEC_LESS_MIN_INTERSECTION) return null;
     if (unmatchedDistinctiveToken(k._tokens, c._tokens)) return null;
     if (qualifierMismatch(k._tokens, c._tokens)) return null;
+    // A standalone 1-2 digit count ("3 Burner" vs "4 Burner", "JBL Xtreme 4"
+    // vs "5") used to only cost -0.5 on the ranking score, which doesn't
+    // reject anything — it only affects which of several ACCEPTED candidates
+    // wins "best" on a given site. If a mismatched one is the only candidate
+    // that clears the other bars, the penalty alone let it through anyway.
+    const kv = versionNumbers(k.name);
+    const cv = versionNumbers(c.name);
+    if (kv.size && cv.size && ![...kv].some((v) => cv.has(v))) return null;
   }
 
   const kVersions = versionNumbers(k.name);
