@@ -105,35 +105,48 @@ export function matchCatalogs(kapruka, partner) {
   const kIndexed = index(kapruka, false);
   const pIndexed = index(partner, true);
 
-  const matched = [];
-  const usedPartner = new Set();
-
+  // Every (Kapruka product, partner product) pair that clears score()'s bar
+  // is a *candidate*, not a match yet. Picking each Kapruka product's best
+  // candidate independently (the old approach) let the same partner product
+  // get claimed by several different Kapruka products — e.g. every "Slim Fit
+  // Shirt" on Kapruka all landing on the one generic "Slim Fit Shirt" listing
+  // on the partner site. Matching must be one-to-one: rank every candidate
+  // pair by score globally, then assign greedily, skipping a pair the moment
+  // either side has already been claimed by a stronger-scoring pair.
+  const candidates = [];
   for (const k of kIndexed) {
-    let best = null;
     for (const p of pIndexed) {
       const sc = score(k, p);
-      if (sc && (!best || sc.value > best.sc.value)) best = { p, sc };
+      if (sc) candidates.push({ k, p, sc });
     }
-    if (best) {
-      usedPartner.add(best.p.id);
-      const price = priceComparison(k, best.p);
-      matched.push({
-        name: k.name,
-        kaprukaUrl: k.url,
-        kaprukaPrice: k.price,
-        partnerName: best.p.name,
-        partnerUrl: best.p.url,
-        partnerSku: best.p.sku,
-        partnerBrand: best.p.brand || '',
-        partnerCategory: best.p.category || '',
-        partnerPrice: best.p.price,
-        partnerRegularPrice: best.p.regularPrice,
-        confidence: best.sc.codes >= 1 && best.sc.jaccard >= HIGH_CONFIDENCE_MIN_JACCARD ? 'high' : 'medium',
-        sharedCodes: best.sc.codes,
-        nameSimilarity: Math.round(best.sc.jaccard * 100),
-        ...price,
-      });
-    }
+  }
+  candidates.sort((a, b) => b.sc.value - a.sc.value);
+
+  const matched = [];
+  const usedKapruka = new Set();
+  const usedPartner = new Set();
+
+  for (const { k, p, sc } of candidates) {
+    if (usedKapruka.has(k) || usedPartner.has(p)) continue;
+    usedKapruka.add(k);
+    usedPartner.add(p);
+    const price = priceComparison(k, p);
+    matched.push({
+      name: k.name,
+      kaprukaUrl: k.url,
+      kaprukaPrice: k.price,
+      partnerName: p.name,
+      partnerUrl: p.url,
+      partnerSku: p.sku,
+      partnerBrand: p.brand || '',
+      partnerCategory: p.category || '',
+      partnerPrice: p.price,
+      partnerRegularPrice: p.regularPrice,
+      confidence: sc.codes >= 1 && sc.jaccard >= HIGH_CONFIDENCE_MIN_JACCARD ? 'high' : 'medium',
+      sharedCodes: sc.codes,
+      nameSimilarity: Math.round(sc.jaccard * 100),
+      ...price,
+    });
   }
 
   const matchedKaprukaUrls = new Set(matched.map((m) => m.kaprukaUrl));
@@ -141,7 +154,7 @@ export function matchCatalogs(kapruka, partner) {
     .filter((k) => !matchedKaprukaUrls.has(k.url))
     .map((k) => ({ name: k.name, price: k.price, url: k.url }));
   const onlyPartner = pIndexed
-    .filter((p) => !usedPartner.has(p.id))
+    .filter((p) => !usedPartner.has(p))
     .map((p) => ({ name: p.name, sku: p.sku, price: p.price, url: p.url, brand: p.brand || '', category: p.category || '' }));
 
   return { matched, onlyKapruka, onlyPartner };
