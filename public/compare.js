@@ -29,6 +29,59 @@ function link(url, text) {
   return url ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener">${escapeHtml(text)}</a>` : escapeHtml(text);
 }
 
+const MATCHED_COLUMNS = [
+  { key: 'name', label: 'Product' },
+  { key: 'kaprukaPrice', label: 'Kapruka', num: true },
+  { key: 'partnerPrice', label: null, num: true }, // label filled in per-partner at render time
+  { key: 'diff', label: 'Diff', num: true },
+  { key: 'pct', label: '%', num: true },
+  { key: 'verdict', label: 'Verdict' },
+];
+// null key = the default verdict-priority order matchedRows() already sorts by.
+let MATCHED_SORT = { key: null, dir: 'desc' };
+
+function sortMatchedRows(rows) {
+  if (!MATCHED_SORT.key) return rows;
+  const col = MATCHED_COLUMNS.find((c) => c.key === MATCHED_SORT.key);
+  const mul = MATCHED_SORT.dir === 'asc' ? 1 : -1;
+  return [...rows].sort((a, b) => {
+    const av = col.key === 'verdict' ? (VERDICT[a.verdict] || VERDICT.price_missing).label : a[col.key];
+    const bv = col.key === 'verdict' ? (VERDICT[b.verdict] || VERDICT.price_missing).label : b[col.key];
+    if (col.num) {
+      if (av == null && bv == null) return 0;
+      if (av == null) return 1;
+      if (bv == null) return -1;
+      return (av - bv) * mul;
+    }
+    const as = (av ?? '').toString().toLowerCase();
+    const bs = (bv ?? '').toString().toLowerCase();
+    return as < bs ? -mul : as > bs ? mul : 0;
+  });
+}
+
+function matchedTheadHtml() {
+  const cells = MATCHED_COLUMNS.map((c) => {
+    const active = MATCHED_SORT.key === c.key;
+    const arrow = active ? (MATCHED_SORT.dir === 'asc' ? ' ▲' : ' ▼') : '';
+    const label = c.label ?? escapeHtml(PARTNER_LABEL);
+    return `<th class="sortable${c.num ? ' num' : ''}" data-key="${c.key}">${label}${arrow}</th>`;
+  }).join('');
+  return `<tr>${cells}</tr>`;
+}
+
+function wireMatchedSort() {
+  $('table').querySelectorAll('th.sortable').forEach((th) => {
+    th.addEventListener('click', () => {
+      const key = th.dataset.key;
+      const col = MATCHED_COLUMNS.find((c) => c.key === key);
+      if (MATCHED_SORT.key === key) MATCHED_SORT.dir = MATCHED_SORT.dir === 'asc' ? 'desc' : 'asc';
+      else MATCHED_SORT = { key, dir: col.num ? 'desc' : 'asc' };
+      PAGE = 1;
+      render();
+    });
+  });
+}
+
 const VERDICT = {
   kapruka_higher: { label: 'Kapruka overpriced', cls: 'v-over', row: 'over' },
   kapruka_lower: { label: 'Kapruka cheaper', cls: 'v-under', row: 'under' },
@@ -70,8 +123,10 @@ function buildTabs(s, partnerName) {
 
 function matchedRows(rows) {
   const order = { kapruka_higher: 0, price_missing: 1, kapruka_lower: 2, same: 3 };
-  return [...rows]
-    .sort((a, b) => (order[a.verdict] - order[b.verdict]) || (Math.abs(b.diff || 0) - Math.abs(a.diff || 0)))
+  const sorted = MATCHED_SORT.key
+    ? sortMatchedRows(rows)
+    : [...rows].sort((a, b) => (order[a.verdict] - order[b.verdict]) || (Math.abs(b.diff || 0) - Math.abs(a.diff || 0)));
+  return sorted
     .map((m) => {
       const v = VERDICT[m.verdict] || VERDICT.price_missing;
       const pct = m.pct == null ? '' : `${m.pct > 0 ? '+' : ''}${m.pct.toFixed(1)}%`;
@@ -116,9 +171,7 @@ function render() {
     totalPages = Math.max(1, Math.ceil(shown / PAGE_SIZE));
     PAGE = Math.min(PAGE, totalPages);
     const pageRows = rows.slice((PAGE - 1) * PAGE_SIZE, PAGE * PAGE_SIZE);
-    html = `<div class="table-wrap"><table><thead><tr>
-        <th>Product</th><th class="num">Kapruka</th><th class="num">${escapeHtml(PARTNER_LABEL)}</th>
-        <th class="num">Diff</th><th class="num">%</th><th>Verdict</th></tr></thead>
+    html = `<div class="table-wrap"><table><thead>${matchedTheadHtml()}</thead>
       <tbody>${matchedRows(pageRows)}</tbody></table></div>`;
   } else if (TAB === 'onlyKapruka') {
     const rows = DATA.onlyKapruka.filter((r) => match(r.name));
@@ -139,6 +192,7 @@ function render() {
   }
   $('table').innerHTML = shown ? html + pagerHtml(totalPages, shown) : '<p class="empty">No products match your filter.</p>';
   wirePager(totalPages);
+  if (TAB === 'matched' && shown) wireMatchedSort();
 }
 
 function footmeta() {

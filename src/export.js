@@ -284,6 +284,7 @@ const OVERPRICED_COLUMNS = [
   { key: 'diff', label: 'Overcharge (Rs.)' },
   { key: 'pct_out', label: 'Overcharge %' },
   { key: 'confidence', label: 'Match confidence' },
+  { key: 'nameSimilarity', label: 'Name similarity %' },
   { key: 'kaprukaUrl', label: 'Kapruka URL' },
   { key: 'partnerUrl', label: 'Partner URL' },
   { key: 'generatedAt', label: 'Updated at' },

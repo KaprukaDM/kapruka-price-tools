@@ -18,6 +18,12 @@ const NAME_ONLY_JACCARD = 0.55;
 // (e.g. a Meetion "C510" keyboard vs a Sony "C510" earbud). Real matches almost
 // always share more than this; pure code-collisions score below it.
 const CODE_MATCH_MIN_JACCARD = 0.12;
+// A code match clearing only CODE_MATCH_MIN_JACCARD (as low as 12%) is still
+// accepted as a match, but isn't strong enough evidence to label "high"
+// confidence on its own — a shared code plus a mostly-different name is worth
+// a human glance. Only label "high" once the name overlap is convincingly
+// above the bare acceptance floor too.
+const HIGH_CONFIDENCE_MIN_JACCARD = 0.3;
 
 function jaccard(a, b) {
   if (a.size === 0 || b.size === 0) return 0;
@@ -122,7 +128,7 @@ export function matchCatalogs(kapruka, partner) {
         partnerCategory: best.p.category || '',
         partnerPrice: best.p.price,
         partnerRegularPrice: best.p.regularPrice,
-        confidence: best.sc.codes >= 1 ? 'high' : 'medium',
+        confidence: best.sc.codes >= 1 && best.sc.jaccard >= HIGH_CONFIDENCE_MIN_JACCARD ? 'high' : 'medium',
         sharedCodes: best.sc.codes,
         nameSimilarity: Math.round(best.sc.jaccard * 100),
         ...price,
