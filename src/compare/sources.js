@@ -429,6 +429,18 @@ function minorUnitDivide(value, minorUnit) {
   return minorUnit ? n / 10 ** minorUnit : n;
 }
 
+// Pull the first plausible number out of a price string, ignoring whatever
+// currency symbol precedes it (Rs., LKR, the Sinhala රු, etc.) -- used by the
+// WooCommerce HTML fallback below, which reads prices straight off rendered
+// markup rather than a currency-tagged API field.
+function parsePriceLKR(text) {
+  if (text == null) return null;
+  const m = String(text).match(/[\d,]+(?:\.\d+)?/);
+  if (!m) return null;
+  const n = parseFloat(m[0].replace(/,/g, ''));
+  return Number.isFinite(n) && n > 0 ? Math.round(n) : null;
+}
+
 // WooCommerce Store API: /wp-json/wc/store/v1/products?per_page=100&page=N.
 // Prices are integer strings scaled by currency_minor_unit.
 //
@@ -537,6 +549,85 @@ async function fetchShopifyCatalog(origin, log, fetchJson = fetchJsonSafe) {
   return out;
 }
 
+// Fallback for WooCommerce sites whose Store API (/wp-json/wc/store/v1/...)
+// is disabled, blocked, or absent -- scrape the public shop listing pages
+// directly instead. WooCommerce's *price* markup (.price / .woocommerce-
+// Price-amount) is rendered by the plugin's own PHP templates, not the theme,
+// so it survives across wildly different themes even when the surrounding
+// grid markup (ul.products vs theme-specific divs) doesn't. Strategy: find
+// every /product/<slug>/ permalink on the page, walk up from each link to the
+// nearest ancestor that also contains a .price element (and not so many
+// product links that we've walked past the card into the whole grid), and
+// read the title/price from there. `shopUrl` must be the exact listing page
+// (e.g. "https://site.com/shop/"), not just the origin -- these sites don't
+// follow one consistent path.
+function parseWooHtmlPage(html, origin) {
+  const $ = cheerio.load(html);
+  const seen = new Set();
+  const out = [];
+  $('a[href*="/product/"]').each((_, el) => {
+    const $a = $(el);
+    let href = $a.attr('href');
+    if (!href) return;
+    href = href.split('?')[0].split('#')[0];
+    if (!href.endsWith('/')) href += '/';
+    if (!href.startsWith('http')) href = new URL(href, origin).toString();
+    if (seen.has(href)) return;
+
+    let $card = $a;
+    let found = null;
+    for (let i = 0; i < 8; i++) {
+      $card = $card.parent();
+      if ($card.length === 0) break;
+      const linkCount = $card.find('a[href*="/product/"]').length;
+      if ($card.find('.price').first().length && linkCount <= 3) { found = $card; break; }
+      if (linkCount > 3) break; // walked past the card into the whole grid
+    }
+    if (!found) return;
+
+    const priceEl = found.find('.price').first();
+    const saleAmt = priceEl.find('ins .woocommerce-Price-amount, ins .amount').first();
+    const amt = saleAmt.length ? saleAmt : priceEl.find('.woocommerce-Price-amount, .amount').first();
+    const price = parsePriceLKR((amt.length ? amt : priceEl).text());
+    if (!price) return;
+
+    const title = fixMojibake(decodeEntities(
+      found.find('h1,h2,h3,h4,.woocommerce-loop-product__title,.wd-entities-title,.product-title,.product_title')
+        .first().text() || $a.attr('aria-label') || $a.attr('title') || $a.text(),
+    )).replace(/\s+/g, ' ').trim();
+    if (!title) return;
+
+    seen.add(href);
+    out.push({ id: `woohtml-${href}`, name: title, price, url: href });
+  });
+  return out;
+}
+
+async function fetchWooHtmlCatalog(shopUrl, log, fetchTextFn = fetchText) {
+  const origin = toOrigin(shopUrl);
+  const base = shopUrl.replace(/\/?$/, '/');
+  const byUrl = new Map();
+  for (let page = 1; page <= 60; page++) {
+    const url = page === 1 ? base : `${base}page/${page}/`;
+    let html;
+    try {
+      html = await fetchTextFn(url);
+    } catch {
+      break; // page N/A (404 past the last page) -- stop, not a real failure
+    }
+    const products = parseWooHtmlPage(html, origin);
+    if (products.length === 0) break;
+    let added = 0;
+    for (const p of products) {
+      if (!byUrl.has(p.url)) { byUrl.set(p.url, p); added++; }
+    }
+    log(`  partner (woo-html) page ${page}: ${products.length} cards (${added} new), total ${byUrl.size}`);
+    if (added === 0) break; // pagination wrapped or plateaued
+    if (page > 1) await sleep(500); // be polite -- this is a full page render, not a lightweight API call
+  }
+  return [...byUrl.values()];
+}
+
 /**
  * Fetch a partner's full catalogue from their own site, auto-detecting the
  * platform. Returns the standard product shape. Throws if the platform isn't
@@ -550,6 +641,10 @@ export async function fetchPartnerCatalog(site, { log = () => {}, platform = 'au
   const origin = toOrigin(site);
   const fetchJson = viaBrowser ? fetchJsonViaBrowser : fetchJsonSafe;
 
+  if (platform === 'woocommerce-html') {
+    const products = await fetchWooHtmlCatalog(site, log);
+    return { products, platform: 'woocommerce-html' };
+  }
   if (platform === 'woocommerce' || platform === 'auto') {
     const woo = await fetchWooCatalog(origin, log, fetchJson);
     if (woo.length) return { products: woo, platform: 'woocommerce' };
