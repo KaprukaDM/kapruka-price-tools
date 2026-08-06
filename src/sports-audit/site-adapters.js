@@ -2,6 +2,7 @@
 // against Kapruka's Sports category (kapruka.com/online/sports).
 // Same architecture as ../electronics-audit/site-adapters.js.
 
+import * as cheerio from 'cheerio';
 import { decodeEntities } from '../compare/normalize.js';
 
 const UA =
@@ -70,6 +71,20 @@ async function fetchJsonResilient(url, opts) {
   }
 }
 
+async function fetchTextResilient(url, opts) {
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const res = await fetchText(url, opts);
+      return res.ok ? res.text : null;
+    } catch (err) {
+      if (attempt === 2) {
+        console.warn(`  ! catalog page fetch failed, stopping pagination here: ${url} (${err.message})`);
+        return null;
+      }
+    }
+  }
+}
+
 function wooStoreApiCatalog(domain) {
   return async () => {
     const out = [];
@@ -108,6 +123,48 @@ function shopifyCatalog(domain) {
   };
 }
 
+// tentmaster.lk: WooCommerce, but this install registers the Store API
+// namespace as "wc/store" (no "/v1/") — the usual /wc/store/v1/products path
+// 404s here.
+function tentmasterCatalog() {
+  return async () => {
+    const out = [];
+    for (let page = 1; page <= 50; page++) {
+      const data = await fetchJsonResilient(`https://www.tentmaster.lk/wp-json/wc/store/products?page=${page}&per_page=100`);
+      if (!Array.isArray(data) || data.length === 0) break;
+      for (const p of data) out.push({ name: decodeEntities(p.name), url: p.permalink, priceLKR: wooPrice(p) });
+      if (data.length < 100) break;
+    }
+    return out;
+  };
+}
+
+// mysports.lk: Botble CMS (Laravel). /product lists the FULL catalogue
+// (not per-category), paginated ?page=N.
+function mysportsCatalog() {
+  return async () => {
+    const out = [];
+    for (let page = 1; page <= 70; page++) {
+      const html = await fetchTextResilient(`https://mysports.lk/product?page=${page}`);
+      if (!html) break;
+      const $ = cheerio.load(html);
+      let found = 0;
+      $('.product').each((_, el) => {
+        const $el = $(el);
+        const $a = $el.find('.product_title a').first();
+        const name = $a.text().trim();
+        const url = $a.attr('href');
+        const priceLKR = parsePriceLKR($el.find('.product_price .price').first().text());
+        if (!name || !url) return;
+        out.push({ name, url: abs('https://mysports.lk', url), priceLKR });
+        found++;
+      });
+      if (found === 0) break;
+    }
+    return out;
+  };
+}
+
 // --- Confirmed-working catalogue adapters -----------------------------------
 export const CATALOG_ADAPTERS = [
   // Shopify
@@ -127,10 +184,14 @@ export const CATALOG_ADAPTERS = [
   { domain: 'dsifootcandy.lk', name: 'DSI Footcandy', fetchCatalog: wooStoreApiCatalog('dsifootcandy.lk') },
   { domain: 'avi.lk', name: 'AVI', fetchCatalog: wooStoreApiCatalog('avi.lk') },
   { domain: 'thecricketshoplk.com', name: 'The Cricket Shop', fetchCatalog: wooStoreApiCatalog('thecricketshoplk.com') },
+  { domain: 'tentmaster.lk', name: 'Tent Master', fetchCatalog: tentmasterCatalog() },
+  { domain: 'mysports.lk', name: 'MySports', fetchCatalog: mysportsCatalog() },
 ];
 
-// mysports.lk, tentmaster.lk (WooCommerce Store REST API not enabled — would
-// need bespoke HTML scraping), trinitysports.lk, sportszone.lk,
-// sugathcycle.lk, bigdeals.lk, ranjanlanka.lk, odel.lk, singersl.com,
-// mysoftlogic.lk, myarpico.com (custom-built, need bespoke adapters),
-// decathlon.lk (SSL/DNS issue on fetch) are not yet wired up.
+// trinitysports.lk (near-empty catalogue right now, ~4 live products —
+// mechanism confirmed workable, low priority to wire up until it grows),
+// sportszone.lk (custom PHP, works but most listings have no price at all —
+// call-to-order model), sugathcycle.lk, bigdeals.lk, ranjanlanka.lk,
+// odel.lk, singersl.com, mysoftlogic.lk, myarpico.com (custom-built, need
+// bespoke adapters), decathlon.lk (SSL/DNS issue on fetch) are not yet
+// wired up.

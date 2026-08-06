@@ -177,6 +177,76 @@ function wishqueChocolateCatalog() {
   };
 }
 
+// srigift.com: custom ASP.NET site — products load via a plain POST JSON
+// AJAX endpoint (the shell HTML has no product data at all), 10/page.
+function srigiftChocolateCatalog() {
+  return async () => {
+    const out = [];
+    for (let page = 1; page <= 50; page++) {
+      const data = await fetchJsonResilient(
+        `https://srigift.com/ajax/SelectItemPageItems?category=chocolates&subcategory=all-areas&search=&page=${page}&isHomePage=`,
+        { method: 'POST' },
+      );
+      if (!Array.isArray(data) || data.length === 0) break;
+      for (const p of data) {
+        if (!p.FullName || !p.ItemPageURL) continue;
+        out.push({ name: p.FullName, url: abs('https://srigift.com', p.ItemPageURL), priceLKR: parsePriceLKR(String(p.UnitPrice)) });
+      }
+      if (data.length < 10) break;
+    }
+    return out;
+  };
+}
+
+// lankangift.com: OpenCart, server-rendered. limit=999 forces the whole
+// category onto one page regardless of size.
+function lankangiftChocolateCatalog() {
+  return async () => {
+    const html = await fetchTextResilient('https://lankangift.com/index.php?route=product/category&path=277&limit=999');
+    if (!html) return [];
+    const $ = cheerio.load(html);
+    const out = [];
+    $('div.product-layout.product-list').each((_, el) => {
+      const $el = $(el);
+      const $a = $el.find('h2.product-name > a').first();
+      const name = $a.text().trim();
+      const href = $a.attr('href');
+      const priceLKR = parsePriceLKR($el.find('.price-box .regular-price .price, .price-box .special-price .price').first().text());
+      if (!name || !href) return;
+      out.push({ name, url: href, priceLKR });
+    });
+    return out;
+  };
+}
+
+// lassana.com: React SPA, no server-rendered HTML at all — everything comes
+// from api.lassana.com's JSON API. Chocolates & Cookies (categoryId=9) has
+// two subcategories that both need enumerating; 10 products/page, empty
+// array signals the last page.
+const LASSANA_CHOCOLATE_SUBCATEGORIES = [47, 122]; // La Treats Chocolates, Gerard Mendis Chocolatier
+function lassanaChocolateCatalog() {
+  return async () => {
+    const out = [];
+    for (const subCategoryId of LASSANA_CHOCOLATE_SUBCATEGORIES) {
+      for (let pageNo = 1; pageNo <= 50; pageNo++) {
+        const data = await fetchJsonResilient(
+          `https://api.lassana.com/api/v2/product/active/findByCategory?categoryId=9&subCategoryId=${subCategoryId}&subCategory2Id=0&subCategory3Id=0&pageNo=${pageNo}`,
+        );
+        const products = data?.products || [];
+        if (products.length === 0) break;
+        for (const p of products) {
+          if (!p.productName || !p.id) continue;
+          // discountedPrice is 0 (not null) when nothing's on sale, so ?? alone
+          // would wrongly pick it over the real sellingPriceLk.
+          const priceLKR = parsePriceLKR(String(p.discountedPrice || p.sellingPriceLk));
+          out.push({ name: p.productName, url: `https://lassana.com/product/${p.id}`, priceLKR });
+        }
+      }
+    }
+    return out;
+  };
+}
+
 // --- Confirmed-working catalogue adapters -----------------------------------
 export const CATALOG_ADAPTERS = [
   // WooCommerce
@@ -189,6 +259,9 @@ export const CATALOG_ADAPTERS = [
   // Custom-built
   { domain: 'glomark.lk', name: 'Glomark', fetchCatalog: glomarkChocolateCatalog() },
   { domain: 'wishque.com', name: 'Wishque', fetchCatalog: wishqueChocolateCatalog() },
+  { domain: 'srigift.com', name: 'SriGift', fetchCatalog: srigiftChocolateCatalog() },
+  { domain: 'lankangift.com', name: 'Lankan Gift', fetchCatalog: lankangiftChocolateCatalog() },
+  { domain: 'lassana.com', name: 'Lassana Chocolates', fetchCatalog: lassanaChocolateCatalog() },
 ];
 
 // srigift.com, lankangift.com, lassana.com, myravana.lk, lakwimana.com,
