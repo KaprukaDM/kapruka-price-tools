@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="theme-color" content="#402970" />
   <link rel="icon" href="https://www.kapruka.com/static/icons/favicon.ico" />
-  <title>Kapruka · Partner Overpriced Price Dashboard</title>
+  <title>Kapruka · All Products Overpriced Dashboard</title>
   <link rel="stylesheet" href="theme.css" />
   <style>
     .cards { display:flex; flex-wrap:wrap; gap:12px; margin: 6px 0 22px; }
@@ -23,7 +23,9 @@
     .meta { font-size:12px; color:var(--mut); margin: 10px 0 0; }
     .store-pill { display:inline-block; background:var(--tint); border:1px solid var(--line);
                   color:var(--purple-dk); border-radius:999px; padding:2px 10px; font-size:12px; font-weight:600; }
+    .other-pill { display:block; font-size:12px; margin-top:3px; }
     .over-amt { color:var(--bad); font-weight:700; }
+    .none { color:var(--mut); }
     th.sortable { cursor:pointer; user-select:none; white-space:nowrap; }
     th.sortable:hover { color: var(--purple-dk, #402970); }
   </style>
@@ -34,17 +36,18 @@
       <img class="logo-mark" src="https://www.kapruka.com/static/icons/apple-touch-icon-180x180.png?v2"
            alt="Kapruka" onerror="this.style.display='none'" />
       <span class="logo">kapruka<span class="dot">.</span></span>
-      <span class="pill">Partner Overpriced Price Dashboard</span>
+      <span class="pill">All Products Overpriced Dashboard</span>
       <span class="tag"><a href="index.html">← Menu</a></span>
     </div>
   </header>
 
   <div class="wrap">
-    <h1>Overpriced products — configured partner stores</h1>
-    <p class="sub">Every product where <strong>our Kapruka price is higher than the partner's own website</strong>,
-       across all <em>configured partner</em> stores (the Partner Price Comparison tool's reconciliation runs), in
-       one list. Refreshed automatically once a day. For a broader view across every scraped competitor site —
-       not just configured partners — see the <a href="all-products-overpriced.html">All Products Overpriced Dashboard</a>.</p>
+    <h1>Overpriced products — every source combined</h1>
+    <p class="sub">Every product where <strong>our Kapruka price is higher than the cheapest price we've found
+       anywhere</strong> — combining configured partner stores (Partner Price Comparison) and the 5-category
+       scraped-catalogue audit (Electronics/Cosmetics/Home &amp; Lifestyle/Sports/Chocolates). For each product,
+       the partner's price is always shown first if it has one, alongside every other site that's cheaper. See the
+       <a href="partner-overpriced.html">Partner Overpriced Price Dashboard</a> for partners only.</p>
 
     <div id="status" class="card"><span class="spin"></span>Loading the latest overpriced products…</div>
 
@@ -53,11 +56,10 @@
 
       <div class="toolbar">
         <select id="category"><option value="">All categories</option></select>
-        <select id="store"><option value="">All stores</option></select>
         <div class="right">
           <input type="search" id="search" placeholder="Filter by product name…" />
-          <a class="ghost btn-link" id="exportCsv" href="/api/export/overpriced.csv">⬇ Export CSV</a>
-          <button class="ghost" id="refresh">↻ Refresh now</button>
+          <a class="ghost btn-link" id="exportCsv" href="/api/export/overpriced-all.csv">⬇ Export CSV</a>
+          <button class="ghost" id="refresh">↻ Reload</button>
         </div>
       </div>
 
@@ -66,6 +68,6 @@
     </div>
   </div>
 
-  <script src="partner-overpriced.js"></script>
+  <script src="all-products-overpriced.js"></script>
 </body>
 </html>

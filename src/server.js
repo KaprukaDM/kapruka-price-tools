@@ -29,6 +29,8 @@ import {
   exportProductsCsv,
   exportOverpricedCsv,
   overpricedReport,
+  allProductsOverpricedReport,
+  exportAllProductsOverpricedCsv,
   productRows,
 } from './export.js';
 import { uaeCompareApiRouter } from './uae-compare/routes.js';
@@ -439,6 +441,27 @@ app.post('/api/overpriced/refresh', async (_req, res) => {
 app.get('/api/export/overpriced.csv', async (_req, res) => {
   try {
     sendCsv(res, 'overpriced.csv', await exportOverpricedCsv());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---- All Products Overpriced dashboard (partners + the 5-category audit
+// crawl combined) — see allProductsOverpricedReport() in export.js. Always
+// computed live from current data (price_audit_items/competitor_products
+// refresh on their own schedule via the audit scripts, comparison_runs via
+// the daily partner refresh below), so there's no separate cache to bust.
+app.get('/api/overpriced/all', async (_req, res) => {
+  try {
+    res.json(await allProductsOverpricedReport());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/export/overpriced-all.csv', async (_req, res) => {
+  try {
+    sendCsv(res, 'overpriced-all.csv', await exportAllProductsOverpricedCsv());
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

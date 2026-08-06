@@ -5,7 +5,7 @@
 // A UTF-8 BOM is prepended so Excel renders Sri Lankan/Unicode product names
 // correctly instead of mojibake.
 
-import { allPriceCheckRows, allComparisonRows } from './db.js';
+import { allPriceCheckRows, allComparisonRows, getPriceAuditItems } from './db.js';
 
 function csvCell(v) {
   if (v == null) return '';
@@ -333,6 +333,133 @@ export async function exportOverpricedCsv() {
     pct_out: i.pct != null ? Math.round(i.pct * 10) / 10 : '',
   }));
   return buildCsv(OVERPRICED_COLUMNS, rows);
+}
+
+// ---- All Products Overpriced dashboard --------------------------------------
+// Same idea as overpricedReport(), but across EVERY product we have price data
+// for, not just ones sold through a configured partner storefront. Merges two
+// sources keyed by kaprukaUrl (both use the same /kid/<code> URL scheme, so a
+// product genuinely covered by both lines up under one entry):
+//   1. price_audit_items - the 5-category audit crawl (Electronics/Cosmetics/
+//      Home & Lifestyle/Sports/Chocolates), one row per (Kapruka product,
+//      competitor site) match.
+//   2. comparison_runs - the configured-partner reconciliation tool. Per the
+//      dashboard's design, a partner match is always surfaced as its own
+//      field even when it isn't the single cheapest option, so "is this
+//      product carried by one of our partners, and at what price" stays
+//      answerable at a glance; every other site cheaper than Kapruka is
+//      listed alongside it.
+export async function allProductsOverpricedReport() {
+  const products = new Map(); // kaprukaUrl -> { category, name, kaprukaPrice, partner, otherSites }
+
+  function getOrCreate(url, category, name, price) {
+    let p = products.get(url);
+    if (!p) {
+      p = { kaprukaUrl: url, category: category || 'Other', name: name || '', kaprukaPrice: price ?? null, partner: null, otherSites: [] };
+      products.set(url, p);
+    } else {
+      if (!p.name && name) p.name = name;
+      if (p.kaprukaPrice == null && price != null) p.kaprukaPrice = price;
+      if (category && p.category === 'Other') p.category = category;
+    }
+    return p;
+  }
+
+  const auditRows = await getPriceAuditItems({ limit: 20000 });
+  for (const r of auditRows) {
+    if (!r.kapruka_url || !r.matched_url || r.matched_price_lkr == null) continue;
+    const p = getOrCreate(r.kapruka_url, r.category, r.kapruka_name, r.kapruka_price_lkr);
+    p.otherSites.push({
+      name: r.site_name || r.site_domain,
+      domain: r.site_domain,
+      url: r.matched_url,
+      price: r.matched_price_lkr,
+    });
+  }
+
+  for (const { payload } of (await latestRunPerPartner()).values()) {
+    const partnerName = payload.partner?.name || payload.partner?.partnerLabel || 'partner';
+    for (const m of payload.matched || []) {
+      if (!m.kaprukaUrl || !m.partnerUrl || m.partnerPrice == null) continue;
+      const p = getOrCreate(m.kaprukaUrl, categoryFromKaprukaUrl(m.kaprukaUrl), m.name, m.kaprukaPrice);
+      // First (or cheapest, if more than one partner somehow carries the same
+      // product) partner match wins — each Kapruka product is normally only
+      // carried by a single configured partner storefront.
+      if (!p.partner || m.partnerPrice < p.partner.price) {
+        p.partner = { name: partnerName, url: m.partnerUrl, price: m.partnerPrice };
+      }
+    }
+  }
+
+  const items = [];
+  for (const p of products.values()) {
+    if (p.kaprukaPrice == null) continue;
+    const candidates = [];
+    if (p.partner) candidates.push({ type: 'partner', ...p.partner });
+    for (const s of p.otherSites) candidates.push({ type: 'other', ...s });
+    if (!candidates.length) continue;
+
+    const best = candidates.reduce((a, b) => (b.price < a.price ? b : a));
+    if (p.kaprukaPrice <= best.price) continue; // not overpriced
+
+    const diff = p.kaprukaPrice - best.price;
+    const otherSitesCheaper = candidates
+      .filter((c) => c.type === 'other' && c.price < p.kaprukaPrice)
+      .sort((a, b) => a.price - b.price);
+
+    items.push({
+      category: p.category,
+      name: p.name,
+      kaprukaUrl: p.kaprukaUrl,
+      kaprukaPrice: p.kaprukaPrice,
+      partner: p.partner, // always surfaced when the product has one, regardless of whether it's the cheapest
+      partnerPrice: p.partner?.price ?? null, // flat convenience copy for table sorting
+      otherSites: otherSitesCheaper,
+      bestSource: best.type,
+      bestName: best.name,
+      bestUrl: best.url,
+      bestPrice: best.price,
+      diff,
+      pct: (diff / best.price) * 100,
+    });
+  }
+
+  items.sort((a, b) => b.diff - a.diff);
+  return {
+    count: items.length,
+    totalOvercharge: items.reduce((sum, i) => sum + i.diff, 0),
+    items,
+  };
+}
+
+const ALL_OVERPRICED_COLUMNS = [
+  { key: 'category', label: 'Category' },
+  { key: 'name', label: 'Product' },
+  { key: 'kaprukaPrice', label: 'Kapruka price' },
+  { key: 'partnerName', label: 'Partner' },
+  { key: 'partnerPrice', label: 'Partner price' },
+  { key: 'cheaperElsewhere', label: 'Cheaper elsewhere' },
+  { key: 'bestPrice', label: 'Best price found' },
+  { key: 'diff', label: 'Overcharge (Rs.)' },
+  { key: 'pct_out', label: 'Overcharge %' },
+  { key: 'kaprukaUrl', label: 'Kapruka URL' },
+];
+
+export async function exportAllProductsOverpricedCsv() {
+  const { items } = await allProductsOverpricedReport();
+  const rows = items.map((i) => ({
+    category: i.category,
+    name: i.name,
+    kaprukaPrice: i.kaprukaPrice,
+    partnerName: i.partner?.name ?? '',
+    partnerPrice: i.partner?.price ?? '',
+    cheaperElsewhere: i.otherSites.map((s) => `${s.name} Rs.${s.price}`).join('; '),
+    bestPrice: i.bestPrice,
+    diff: i.diff,
+    pct_out: Math.round(i.pct * 10) / 10,
+    kaprukaUrl: i.kaprukaUrl,
+  }));
+  return buildCsv(ALL_OVERPRICED_COLUMNS, rows);
 }
 
 // ---- Price Comparison: one row per matched Kapruka<->partner product pair ----

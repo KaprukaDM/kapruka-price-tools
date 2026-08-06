@@ -56,13 +56,24 @@
         <div class="go">Open Comparison →</div>
       </a>
 
-      <a class="tool" id="linkOverpriced" href="overpriced.html">
+      <a class="tool" id="linkOverpriced" href="partner-overpriced.html">
         <div class="ico">🚩</div>
-        <h2>Overpriced Dashboard</h2>
+        <h2>Partner Overpriced Price Dashboard</h2>
         <p>One consolidated list of every product where our Kapruka price is
-           higher than the partner's own website — across <em>all</em> stores at
-           once. Refreshes automatically once a day, biggest overcharge first.</p>
-        <div class="go">Open Overpriced Dashboard →</div>
+           higher than a <em>configured partner's</em> own website — across
+           every partner store at once. Refreshes automatically once a day,
+           biggest overcharge first.</p>
+        <div class="go">Open Partner Overpriced Dashboard →</div>
+      </a>
+
+      <a class="tool" id="linkOverpricedAll" href="all-products-overpriced.html">
+        <div class="ico">📛</div>
+        <h2>All Products Overpriced Dashboard</h2>
+        <p>The same idea across <em>every</em> product we have price data
+           for — not just configured partners. For each product, shows the
+           partner's price (if it has one) plus every other scraped
+           competitor site that's cheaper than Kapruka.</p>
+        <div class="go">Open All Products Overpriced Dashboard →</div>
       </a>
 
       <a class="tool" href="uae-compare/">
@@ -86,14 +97,15 @@
 
   <script>
     // This page (and uae-compare/) is fully static and works standalone on
-    // GitHub Pages. checker.html, compare.html, overpriced.html and the
-    // export links need the Express API (src/server.js), which only runs on
+    // GitHub Pages. checker.html, compare.html, partner-overpriced.html,
+    // all-products-overpriced.html and the export links need the Express API
+    // (src/server.js), which only runs on
     // the Render deployment — so on a github.io host, point those at Render
     // instead of the relative path used when this page is served by Render
     // itself. See render.yaml and .github/workflows/uae-compare-deploy-pages.yml.
     if (location.hostname.endsWith('github.io')) {
       const RENDER_BASE = 'https://kapruka-price-tools-1.onrender.com';
-      ['linkChecker', 'linkCompare', 'linkOverpriced', 'linkExportCsv', 'linkExportJson'].forEach((id) => {
+      ['linkChecker', 'linkCompare', 'linkOverpriced', 'linkOverpricedAll', 'linkExportCsv', 'linkExportJson'].forEach((id) => {
         const el = document.getElementById(id);
         if (el) el.href = RENDER_BASE + '/' + el.getAttribute('href').replace(/^\//, '');
       });
