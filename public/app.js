@@ -51,15 +51,31 @@ function buildTable(list) {
     </tr></thead><tbody>${rows}</tbody></table>`;
 }
 
+// Set by run() when a Kapruka product URL was resolved, so render() can show
+// the Kapruka price itself as a reference alongside the matched competitor
+// prices. Cleared whenever a plain name/description search runs instead.
+let kaprukaRef = null;
+
+function kaprukaRefBlock() {
+  if (!kaprukaRef) return '';
+  const priceHtml = kaprukaRef.price != null ? fmtPrice(kaprukaRef) : 'price not found';
+  return `<div class="card" style="margin-bottom:16px">
+    <div class="ctx">Kapruka price</div>
+    <div><strong><span class="price">${priceHtml}</span></strong>
+      — <a href="${escapeHtml(kaprukaRef.url)}" target="_blank" rel="noopener">${escapeHtml(kaprukaRef.name || 'view on Kapruka')}</a>
+    </div>
+  </div>`;
+}
+
 function render(data) {
   const out = $('out');
   const dbResults = data.results || [];
   const discovered = data.discovered || [];
   if (dbResults.length === 0 && discovered.length === 0) {
-    out.innerHTML = '<p class="empty">No results.</p>';
+    out.innerHTML = kaprukaRefBlock() + '<p class="empty">No results.</p>';
     return;
   }
-  let html = '';
+  let html = kaprukaRefBlock();
   if (data.source === 'database') {
     html += '<h3 style="margin:24px 0 4px">Matched from our database</h3>' + buildTable(dbResults);
     html += `<p class="note" style="margin-top:14px">
@@ -142,11 +158,13 @@ async function resolveProductUrl() {
 // Stream the match over Server-Sent Events so we can show live progress
 // (which/how many sites are done) instead of a silent ~60s wait.
 async function run() {
+  kaprukaRef = null;
   if (searchMode === 'url') {
     $('go').disabled = true;
     const product = await resolveProductUrl();
     $('go').disabled = false;
     if (!product) return;
+    kaprukaRef = product;
   }
 
   const name = $('name').value.trim();

@@ -17,6 +17,21 @@ const CATEGORIES_PATH = join(__dirname, '..', 'config', 'categories.json');
 // Below this match rate we don't trust the result as "the same product".
 const MATCH_THRESHOLD = 50;
 
+// Hard cap per site so one slow/hanging page (e.g. a Playwright render that
+// never settles, or a scrape target that just doesn't respond) can't stall
+// the whole request — every site resolves (with a timeout flag) within this
+// window, so the SSE progress bar always finishes instead of getting stuck
+// at "N of M sites" indefinitely.
+const SITE_TIMEOUT_MS = 30000;
+
+function withTimeout(promise, ms, onTimeout) {
+  let timer;
+  const timeout = new Promise((resolve) => {
+    timer = setTimeout(() => resolve(onTimeout()), ms);
+  });
+  return Promise.race([promise.finally(() => clearTimeout(timer)), timeout]);
+}
+
 // Categories with no exact model/variant — match on product name only.
 const NAME_ONLY_CATEGORIES = new Set(['Cakes']);
 
@@ -186,6 +201,28 @@ function base(site) {
   return { site: site.name, domain: site.domain };
 }
 
+// Fallback shape for a site that blew past SITE_TIMEOUT_MS — kept in the same
+// shape as a normal result so downstream rendering/sorting doesn't need to
+// special-case it, just flagged so it's visibly distinguishable from a real
+// "no price found" result.
+function timedOutResult(site, source = 'curated') {
+  return {
+    ...base(site),
+    title: null,
+    url: null,
+    image: null,
+    matchRate: 0,
+    price: null,
+    currency: null,
+    priceContext: '',
+    reasoning: '',
+    note: `Timed out after ${SITE_TIMEOUT_MS / 1000}s`,
+    flags: ['timeout'],
+    status: 'error',
+    source,
+  };
+}
+
 function prettyName(domain) {
   const core = domain.replace(/^www\./, '').split('.')[0];
   return core.charAt(0).toUpperCase() + core.slice(1);
@@ -249,7 +286,7 @@ export async function runMatch(category, query, onProgress = () => {}) {
   // 1) Curated category sites (custom scrapers where available).
   const curatedPromise = Promise.all(
     sites.map((site) =>
-      processSite(matchQuery, site)
+      withTimeout(processSite(matchQuery, site), SITE_TIMEOUT_MS, () => timedOutResult(site))
         .then((r) => ({ ...r, source: 'curated' }))
         .then((r) => {
           onProgress({ type: 'site', phase: 'curated', label: site.name, done: ++curatedDone, total: sites.length, result: r });
@@ -267,12 +304,14 @@ export async function runMatch(category, query, onProgress = () => {}) {
   ).then(({ sites: shops }) => {
     onProgress({ type: 'discoveredTotal', count: shops.length });
     return Promise.all(
-      shops.map((s) =>
-        processDiscovered(matchQuery, requestedStorage, s).then((r) => {
-          onProgress({ type: 'site', phase: 'discovered', label: r.site || r.domain, done: ++discoveredDone, total: shops.length, result: r });
-          return r;
-        }),
-      ),
+      shops.map((s) => {
+        const site = { name: prettyName(s.domain), domain: s.domain };
+        return withTimeout(processDiscovered(matchQuery, requestedStorage, s), SITE_TIMEOUT_MS, () => timedOutResult(site, 'web'))
+          .then((r) => {
+            onProgress({ type: 'site', phase: 'discovered', label: r.site || r.domain, done: ++discoveredDone, total: shops.length, result: r });
+            return r;
+          });
+      }),
     );
   });
 
