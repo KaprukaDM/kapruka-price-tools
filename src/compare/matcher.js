@@ -17,15 +17,22 @@ import { tokenize, extractModelCodes, codesMatch, extractSpecs, specsConflict, n
 // every other tool): also require the stated quantity ("3 Pcs", "Pack of 2")
 // to agree. A name with no quantity word defaults to 1, since these are
 // almost always sold individually unless the listing says otherwise.
-const ADULT_CATEGORY_KEYWORDS = [
-  'vibrator', 'dildo', 'anal', 'vaginal', 'vagina', 'penis', 'condom',
-  'masturbat', 'bdsm', 'butt plug', 'buttplug', 'cock ring', 'sex toy',
-  'sextoy', 'fleshlight', 'lubricant', 'g spot', 'gspot', 'clitoris',
-  'ejaculat', 'dilator', 'nipple clamp', 'love doll', 'bondage',
+// Word-boundary regexes, not bare .includes() -- a naive substring check
+// falsely fired on "fighting spot" (contains "g spot") and on unrelated
+// products that legitimately use a generic word like "vibrator" (a concrete
+// vibrator) or "lubricant" (engine de-ruster). Kept fairly specific: broad
+// single words like bare "lubricant" are dropped since ordinary hardware/
+// automotive listings use them constantly.
+const ADULT_CATEGORY_PATTERNS = [
+  /\bvibrators?\b/, /\bdildos?\b/, /\banal\b/, /\bvaginal?\b/, /\bpenis\b/,
+  /\bcondoms?\b/, /\bmasturbat\w*\b/, /\bbdsm\b/, /\bbutt[\s-]?plugs?\b/,
+  /\bcock[\s-]?ring\b/, /\bsex[\s-]?toys?\b/, /\bfleshlight\b/,
+  /\bg[\s-]?spot\b/, /\bclitoris\b/, /\bejaculat\w*\b/, /\bdilators?\b/,
+  /\bnipple[\s-]?clamps?\b/, /\blove[\s-]?doll\b/, /\bbondage\b/,
 ];
 function isAdultToyName(name) {
   const n = String(name || '').toLowerCase();
-  return ADULT_CATEGORY_KEYWORDS.some((kw) => n.includes(kw));
+  return ADULT_CATEGORY_PATTERNS.some((re) => re.test(n));
 }
 function extractQty(name) {
   const m = normalizeName(name).match(/\b(\d+)\s*(?:pcs?|pieces?|pack|set)\b/);
