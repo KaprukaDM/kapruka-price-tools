@@ -7,7 +7,30 @@
 // Matching uses a shared strong model code (high confidence) and/or descriptive
 // token overlap (Jaccard). See normalize.js for how codes/tokens are derived.
 
-import { tokenize, extractModelCodes, codesMatch, extractSpecs, specsConflict } from './normalize.js';
+import { tokenize, extractModelCodes, codesMatch, extractSpecs, specsConflict, normalizeName } from './normalize.js';
+
+// Adult-wellness listings lean so heavily on generic shared vocabulary
+// (vibrator, silicone, anal, sex toys...) that plain name-overlap routinely
+// conflates genuinely different items -- e.g. a 3-piece graduated-size set
+// vs. a single "Medium" item that shares every other word. Scoped to this
+// category specifically (rather than changing shared spec-matching used by
+// every other tool): also require the stated quantity ("3 Pcs", "Pack of 2")
+// to agree. A name with no quantity word defaults to 1, since these are
+// almost always sold individually unless the listing says otherwise.
+const ADULT_CATEGORY_KEYWORDS = [
+  'vibrator', 'dildo', 'anal', 'vaginal', 'vagina', 'penis', 'condom',
+  'masturbat', 'bdsm', 'butt plug', 'buttplug', 'cock ring', 'sex toy',
+  'sextoy', 'fleshlight', 'lubricant', 'g spot', 'gspot', 'clitoris',
+  'ejaculat', 'dilator', 'nipple clamp', 'love doll', 'bondage',
+];
+function isAdultToyName(name) {
+  const n = String(name || '').toLowerCase();
+  return ADULT_CATEGORY_KEYWORDS.some((kw) => n.includes(kw));
+}
+function extractQty(name) {
+  const m = normalizeName(name).match(/\b(\d+)\s*(?:pcs?|pieces?|pack|set)\b/);
+  return m ? parseInt(m[1], 10) : 1;
+}
 
 // Prices within this fraction of each other are treated as "same".
 const SAME_PRICE_TOLERANCE = 0.01;
@@ -68,6 +91,9 @@ export function score(k, s) {
   const codeMatch = codes >= 1 && jac >= CODE_MATCH_MIN_JACCARD;
   const nameMatch = jac >= NAME_ONLY_JACCARD && !specsConflict(k._specs, s._specs);
   if (!codeMatch && !nameMatch) return null;
+  if ((isAdultToyName(k.name) || isAdultToyName(s.name)) && extractQty(k.name) !== extractQty(s.name)) {
+    return null;
+  }
   // Code matches rank above pure-name matches; ties broken by token overlap.
   return { value: (codes >= 1 ? 1 : 0) + jac, codes, jaccard: jac };
 }
