@@ -63,6 +63,17 @@ export const SPEC_TOKEN =
 // share the same CPU, so these are NOT product identity.
 const CPU_TOKEN = /^\d{3,5}(u|h|hx|hs|hk|p|k|y|e|t|g[1-9])$/;
 
+// GPU model tokens: a known graphics-card family prefix immediately followed
+// by its model number, e.g. rtx4060, rtx4070ti, gtx1660, rx6600, arc770,
+// mx550. The prefix+digits join rule below (originally built for codes like
+// "NF 9269") also fuses "RTX 4060" into "rtx4060", which then looked
+// code-like enough to pass as a strong model code — but a GPU is a component
+// shared across MANY different laptops (and standalone graphics cards), not
+// identity for the laptop itself. Without this, "Asus ROG G615J ... RTX
+// 4060" matched a completely different Lenovo laptop, and even a bare "RTX
+// 4060" graphics card listing, purely because both mention the same GPU.
+const GPU_TOKEN = /^(rtx|gtx|rx|arc|mx)\d{3,4}(ti|super)?$/;
+
 // Strong model codes: alphanumeric tokens with >=1 letter AND >=2 digits and
 // length >=4 (bhd340, mg3710, eg200, dcm25n, br1948r, vkg32ee685, ogs709), minus
 // spec and CPU tokens. Keeps real model numbers, drops specs like 2100w / 256gb /
@@ -83,7 +94,7 @@ export function extractModelCodes(s) {
     STOPWORDS.has(prefix) ? whole : prefix + digits,
   );
   for (const t of joined.split(' ')) {
-    if (t.length < 4 || SPEC_TOKEN.test(t) || CPU_TOKEN.test(t)) continue;
+    if (t.length < 4 || SPEC_TOKEN.test(t) || CPU_TOKEN.test(t) || GPU_TOKEN.test(t)) continue;
     const letters = (t.match(/[a-z]/g) || []).length;
     const digits = (t.match(/[0-9]/g) || []).length;
     if (letters >= 1 && digits >= 2) out.add(t);

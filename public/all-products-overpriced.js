@@ -101,7 +101,10 @@ function categoryOptions() {
 function otherSitesHtml(item) {
   if (!item.otherSites.length) return '<span class="none">—</span>';
   return item.otherSites
-    .map((s) => `<span class="other-pill store-pill">${escapeHtml(s.name)} · ${lkr(s.price)}</span>`)
+    .map(
+      (s) =>
+        `<a class="other-pill store-pill" href="${escapeHtml(s.url)}" target="_blank" rel="noopener">${escapeHtml(s.name)} · ${lkr(s.price)}</a>`,
+    )
     .join('');
 }
 
@@ -135,7 +138,7 @@ function render() {
         <td class="num price">${lkr(m.kaprukaPrice)}</td>
         <td>${partnerCell}</td>
         <td>${otherSitesHtml(m)}</td>
-        <td class="num price">${lkr(m.bestPrice)}<div class="ctx">${escapeHtml(m.bestName || '')}</div></td>
+        <td class="num price">${link(m.bestUrl, lkr(m.bestPrice))}<div class="ctx">${escapeHtml(m.bestName || '')}</div></td>
         <td class="num over-amt">+${lkr(m.diff)}</td>
         <td class="num over-amt">${pct}</td>
       </tr>`;
