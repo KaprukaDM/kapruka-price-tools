@@ -498,17 +498,24 @@ async function fetchShopifyCatalog(origin, log, fetchJson = fetchJsonSafe) {
     if (!products || products.length === 0) break;
     for (const p of products) {
       const variants = (p.variants || [])
-        .map((v) => ({ price: parseFloat(v.price), sku: v.sku, available: v.available !== false }))
+        .map((v) => ({
+          price: parseFloat(v.price),
+          regularPrice: parseFloat(v.compare_at_price),
+          sku: v.sku,
+          available: v.available !== false,
+        }))
         .filter((v) => Number.isFinite(v.price) && v.price > 0);
       if (variants.length === 0) continue;
-      const avail = variants.filter((v) => v.available);
-      const pick = (avail.length ? avail : variants).reduce((a, b) => (b.price < a.price ? b : a));
-      const regulars = (p.variants || [])
-        .map((v) => parseFloat(v.compare_at_price))
-        .filter((n) => Number.isFinite(n) && n > 0);
+      // Prefer the first variant marked available (Shopify's default/first-
+      // shown option) over the globally cheapest one. Some listings mix wildly
+      // different price tiers under one product -- e.g. this book's variants
+      // are "Perfect" Rs.9,400 / "Paperback" Rs.2,200 / "Imperfect" Rs.1,000 --
+      // and picking the minimum grabbed a damaged-copy price instead of the
+      // standard listing, making a fair-priced product look 10x overpriced.
+      const pick = variants.find((v) => v.available) || variants[0];
       const price = currency === 'LKR' ? Math.round(pick.price) : await convertToLkr(pick.price, currency);
-      const regularPrice = regulars.length
-        ? (currency === 'LKR' ? Math.round(Math.max(...regulars)) : await convertToLkr(Math.max(...regulars), currency))
+      const regularPrice = Number.isFinite(pick.regularPrice) && pick.regularPrice > 0
+        ? (currency === 'LKR' ? Math.round(pick.regularPrice) : await convertToLkr(pick.regularPrice, currency))
         : null;
       out.push({
         id: `shopify-${p.id}`,
