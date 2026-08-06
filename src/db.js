@@ -130,6 +130,12 @@ export const getPriceAuditItems = (opts) => backend.getPriceAuditItems(opts);
 export const deletePriceAuditItemsByCategory = (category) => backend.deletePriceAuditItemsByCategory(category);
 export const upsertCompetitorProducts = (siteDomain, products, category) => backend.upsertCompetitorProducts(siteDomain, products, category);
 export const getCompetitorProducts = (siteDomain) => backend.getCompetitorProducts(siteDomain);
+// Cross-site substring search over the full competitor_products catalogue —
+// used by the Price Checker to find candidates for a typed name/description
+// without having to page through and score all ~70k+ cached rows locally.
+// `tokens` are ANDed (every token must appear somewhere in product_name).
+export const searchCompetitorProductsByTokens = (tokens, limit = 500) =>
+  backend.searchCompetitorProductsByTokens(tokens, limit);
 
 // ---------------------------------------------------------------------------
 // Postgres (Supabase) backend
@@ -277,6 +283,18 @@ async function makePostgresBackend(connectionString) {
         `SELECT site_domain, site_name, product_url, product_name, price_lkr, scraped_at
          FROM competitor_products WHERE site_domain = $1`,
         [siteDomain],
+      );
+      return rows;
+    },
+
+    async searchCompetitorProductsByTokens(tokens, limit = 500) {
+      if (!tokens.length) return [];
+      const conds = tokens.map((_, i) => `product_name ILIKE $${i + 1}`).join(' AND ');
+      const params = tokens.map((t) => `%${t}%`);
+      const { rows } = await pool.query(
+        `SELECT site_domain, site_name, product_url, product_name, price_lkr
+         FROM competitor_products WHERE ${conds} LIMIT $${tokens.length + 1}`,
+        [...params, limit],
       );
       return rows;
     },
@@ -693,6 +711,18 @@ async function makeSupabaseRestBackend(baseUrl, serviceKey) {
         if (page.length < PAGE) break;
       }
       return out;
+    },
+
+    async searchCompetitorProductsByTokens(tokens, limit = 500) {
+      if (!tokens.length) return [];
+      // PostgREST ANDs repeated filters on the same column (each ?product_name=
+      // ilike.*token* occurrence is a separate clause) — no wildcard escaping
+      // needed since the tokens come from tokenize(), which is already
+      // alnum-only.
+      const filters = tokens.map((t) => `product_name=ilike.*${encodeURIComponent(t)}*`).join('&');
+      return restFetch(
+        `/competitor_products?select=site_domain,site_name,product_url,product_name,price_lkr&${filters}&limit=${limit}`,
+      );
     },
 
     async upsertPriceAuditItem(item) {
@@ -1127,6 +1157,18 @@ async function makeSqliteBackend() {
 
     async getCompetitorProducts(siteDomain) {
       return selCompetitorProducts.all(siteDomain);
+    },
+
+    async searchCompetitorProductsByTokens(tokens, limit = 500) {
+      if (!tokens.length) return [];
+      const conds = tokens.map(() => 'product_name LIKE ?').join(' AND ');
+      const params = tokens.map((t) => `%${t}%`);
+      return db
+        .prepare(
+          `SELECT site_domain, site_name, product_url, product_name, price_lkr
+           FROM competitor_products WHERE ${conds} LIMIT ?`,
+        )
+        .all(...params, limit);
     },
 
     async upsertPriceAuditItem(item) {

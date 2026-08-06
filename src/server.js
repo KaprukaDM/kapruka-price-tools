@@ -3,7 +3,8 @@ import express from 'express';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
-import { loadCategories, runMatch, addCategorySites } from './pipeline.js';
+import { loadCategories, runMatch, addCategorySites, OTHER_CATEGORY } from './pipeline.js';
+import { searchDatabase } from './checker/db-search.js';
 import { runComparison } from './compare/run.js';
 import { listPartners, addPartner, siteLabel, getPartner, requestRefresh } from './compare/partners.js';
 import {
@@ -75,17 +76,32 @@ app.post('/api/categories', async (req, res) => {
   }
 });
 
+// Try the database first (price_audit_items + competitor_products +
+// comparison_runs — see checker/db-search.js), falling back to a live web
+// search (pipeline.js/runMatch, general discovery — no curated category)
+// only when nothing in the database clears the match bar. `onProgress` (if
+// given) only fires for the live-search fallback path, since the DB search
+// itself is a single fast pass with nothing to stream incrementally.
+async function runCheckerSearch(query, onProgress = () => {}) {
+  const db = await searchDatabase(query);
+  if (db.hasMatch) {
+    return { category: 'Database', query, results: db.results, discovered: [], source: 'database' };
+  }
+  const out = await runMatch(OTHER_CATEGORY, query, onProgress);
+  return { ...out, source: 'web' };
+}
+
 // Run a price-checker match. Every query is persisted to the database.
 app.post('/api/match', async (req, res) => {
-  const { category, name, description } = req.body || {};
-  if (!category || !name) {
-    return res.status(400).json({ error: 'category and name are required' });
+  const { name, description } = req.body || {};
+  if (!name) {
+    return res.status(400).json({ error: 'name is required' });
   }
   try {
     const query = { name, description: description || '' };
-    const out = await runMatch(category, query);
+    const out = await runCheckerSearch(query);
     try {
-      out.recordId = await savePriceCheck({ category, query, result: out });
+      out.recordId = await savePriceCheck({ category: out.category, query, result: out });
     } catch (e) {
       console.warn('! failed to persist price check:', e.message);
     }
@@ -99,9 +115,9 @@ app.post('/api/match', async (req, res) => {
 // live progress as each site finishes. Params come via the query string because
 // EventSource only does GET.
 app.get('/api/match/stream', async (req, res) => {
-  const { category, name, description } = req.query;
-  if (!category || !name) {
-    return res.status(400).json({ error: 'category and name are required' });
+  const { name, description } = req.query;
+  if (!name) {
+    return res.status(400).json({ error: 'name is required' });
   }
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
@@ -111,9 +127,15 @@ app.get('/api/match/stream', async (req, res) => {
 
   try {
     const query = { name, description: description || '' };
-    const out = await runMatch(category, query, (ev) => send('progress', ev));
+    send('progress', { type: 'db-search-start' });
+    const out = await runCheckerSearch(query, (ev) => send('progress', ev));
+    if (out.source === 'database') {
+      out.results.forEach((r, i) =>
+        send('progress', { type: 'site', phase: 'curated', label: r.site, done: i + 1, total: out.results.length, result: r }),
+      );
+    }
     try {
-      out.recordId = await savePriceCheck({ category, query, result: out });
+      out.recordId = await savePriceCheck({ category: out.category, query, result: out });
     } catch (e) {
       console.warn('! failed to persist price check:', e.message);
     }
@@ -125,28 +147,10 @@ app.get('/api/match/stream', async (req, res) => {
   }
 });
 
-// Map Kapruka's own category string (e.g. "ELECTRONICS", "MOBILE PHONES") onto
-// one of our price-checker category keys, so a pasted product link can pre-select
-// the right category. Returns null if nothing fits (the UI then keeps the
-// user's current selection).
-function matchCategory(kaprukaCat, keys) {
-  if (!kaprukaCat) return null;
-  const c = String(kaprukaCat).toLowerCase();
-  for (const k of keys) if (k.toLowerCase() === c) return k;
-  for (const k of keys) if (c.includes(k.toLowerCase()) || k.toLowerCase().includes(c)) return k;
-  if (/phone|mobile|smartphone/.test(c)) return keys.find((k) => /mobile/i.test(k)) || null;
-  if (/electronic|tv|audio|speaker|laptop|computer|camera/.test(c)) {
-    return keys.find((k) => /electronic/i.test(k)) || null;
-  }
-  if (/grocery|food|beverage/.test(c)) return keys.find((k) => /grocery/i.test(k)) || null;
-  if (/cosmetic|beauty|skin|fragrance|perfume/.test(c)) return keys.find((k) => /cosmetic/i.test(k)) || null;
-  if (/cake|bakery/.test(c)) return keys.find((k) => /cake/i.test(k)) || null;
-  return null;
-}
-
-// Resolve a pasted Kapruka product URL into a query source: scrape the product's
-// name, description and Kapruka price, and suggest a matching category. The
-// browser then runs the normal match with these values.
+// Resolve a pasted Kapruka product URL into a query source: scrape the
+// product's name, description and Kapruka price. The browser then runs the
+// normal match (database search, falling back to live web search) with
+// these values, exactly as if the user had typed them in themselves.
 app.post('/api/kapruka/resolve', async (req, res) => {
   const { url } = req.body || {};
   if (!url) return res.status(400).json({ error: 'A Kapruka product URL is required.' });
@@ -157,8 +161,6 @@ app.post('/api/kapruka/resolve', async (req, res) => {
         error: 'Could not read a product from that link. Paste a Kapruka product page (kapruka.com/buyonline/...).',
       });
     }
-    const categories = await loadCategories();
-    product.suggestedCategory = matchCategory(product.category, Object.keys(categories));
     res.json(product);
   } catch (err) {
     res.status(400).json({ error: err.message });

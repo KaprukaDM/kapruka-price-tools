@@ -53,30 +53,31 @@ function buildTable(list) {
 
 function render(data) {
   const out = $('out');
-  const curated = data.results || [];
+  const dbResults = data.results || [];
   const discovered = data.discovered || [];
-  if (curated.length === 0 && discovered.length === 0) {
+  if (dbResults.length === 0 && discovered.length === 0) {
     out.innerHTML = '<p class="empty">No results.</p>';
     return;
   }
   let html = '';
-  if (data.category === 'Other') {
-    html += `<p class="note" style="margin-top:0">No curated store list for this category yet —
-      showing the top Sri Lankan sites found via web search.</p>`;
+  if (data.source === 'database') {
+    html += '<h3 style="margin:24px 0 4px">Matched from our database</h3>' + buildTable(dbResults);
+    html += `<p class="note" style="margin-top:14px">
+      Prices come from our own scraped/matched catalogue, not a live fetch — refreshed periodically, not
+      guaranteed to be this second's price. Click through to verify before acting on it.
+    </p>`;
+  } else {
+    html += `<p class="note" style="margin-top:0">No confident match in our database yet —
+      showing results from a live web search instead.</p>`;
+    if (discovered.length) {
+      html += '<h3 style="margin:24px 0 4px">Top Sri Lankan shops (from web search)</h3>' + buildTable(discovered);
+    }
+    html += `<p class="note" style="margin-top:14px">
+      Flagged rows still link to the source page so you can verify manually.
+      Web-search results exclude Daraz, Big Deals, ikman, Facebook and foreign sites.
+      Prices are pulled live; a non-LKR currency means the site geo-rendered for a different region.
+    </p>`;
   }
-  if (curated.length) {
-    html += '<h3 style="margin:24px 0 4px">Curated sites</h3>' + buildTable(curated);
-  }
-  if (discovered.length) {
-    html +=
-      '<h3 style="margin:28px 0 4px">Top Sri Lankan shops (from web search)</h3>' +
-      buildTable(discovered);
-  }
-  html += `<p class="note" style="margin-top:14px">
-    Flagged rows still link to the source page so you can verify manually.
-    Web-search results exclude Daraz, Big Deals, ikman, Facebook and foreign sites.
-    Prices are pulled live; a non-LKR currency means the site geo-rendered for a different region.
-  </p>`;
   out.innerHTML = html;
 }
 
@@ -84,17 +85,6 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]),
   );
-}
-
-async function loadCategories() {
-  const res = await fetch('/api/categories');
-  const cats = await res.json();
-  const sel = $('category');
-  sel.innerHTML =
-    Object.keys(cats)
-      .map((c) => `<option value="${escapeHtml(c)}">${escapeHtml(c)} (${cats[c].length} sites)</option>`)
-      .join('') +
-    `<option value="Other">Other (general web search, no fixed category)</option>`;
 }
 
 function statusText(r) {
@@ -125,9 +115,9 @@ function setSearchMode(mode) {
   $('hint').textContent = '';
 }
 
-// In URL mode, resolve the pasted Kapruka product link into a name/description/
-// category first (via /api/kapruka/resolve), then hand off to the normal
-// streaming match exactly as if the user had typed those fields in themselves.
+// In URL mode, resolve the pasted Kapruka product link into a name/description
+// first (via /api/kapruka/resolve), then hand off to the normal streaming
+// match exactly as if the user had typed those fields in themselves.
 async function resolveProductUrl() {
   const url = $('productUrl').value.trim();
   if (!url) {
@@ -144,41 +134,28 @@ async function resolveProductUrl() {
     $('hint').textContent = ' ' + (data.error || 'Could not read that product page.');
     return null;
   }
-  let categoryNote = '';
-  if (data.suggestedCategory) {
-    $('category').value = data.suggestedCategory;
-  } else {
-    // Kapruka's own category didn't map onto any of our curated categories —
-    // fall back to "Other" (general web search) rather than silently
-    // searching under whatever category happened to be selected before.
-    $('category').value = 'Other';
-    categoryNote = ' No matching category for this product — running a general Sri Lankan web search instead.';
-  }
   $('name').value = data.name || '';
   $('description').value = data.description || '';
-  return { ...data, categoryNote };
+  return data;
 }
 
 // Stream the match over Server-Sent Events so we can show live progress
 // (which/how many sites are done) instead of a silent ~60s wait.
 async function run() {
-  let categoryNote = '';
   if (searchMode === 'url') {
     $('go').disabled = true;
     const product = await resolveProductUrl();
     $('go').disabled = false;
     if (!product) return;
-    categoryNote = product.categoryNote || '';
   }
 
-  const category = $('category').value;
   const name = $('name').value.trim();
   const description = $('description').value.trim();
   if (!name) {
     $('hint').textContent = ' Enter a product name first.';
     return;
   }
-  $('hint').textContent = categoryNote;
+  $('hint').textContent = '';
   $('go').disabled = true;
   if (es) { es.close(); es = null; }
 
@@ -186,10 +163,16 @@ async function run() {
   let curatedDone = 0;
   let discoveredTotal = null;
   let discoveredDone = 0;
+  let checkingDb = true;
   const partial = [];
   $('out').innerHTML = progressShell();
 
   const update = () => {
+    if (checkingDb) {
+      $('pbarFill').style.width = '8%';
+      $('pcount').textContent = 'Checking our database…';
+      return;
+    }
     const known = curatedTotal + (discoveredTotal || 0);
     const done = curatedDone + discoveredDone;
     const pct = known ? Math.round((done / known) * 100) : 4;
@@ -203,15 +186,19 @@ async function run() {
       )
       .join('');
   };
+  update();
 
-  const qs = `category=${encodeURIComponent(category)}&name=${encodeURIComponent(name)}&description=${encodeURIComponent(description)}`;
+  const qs = `name=${encodeURIComponent(name)}&description=${encodeURIComponent(description)}`;
   es = new EventSource('/api/match/stream?' + qs);
 
   es.addEventListener('progress', (e) => {
     const ev = JSON.parse(e.data);
-    if (ev.type === 'start') curatedTotal = ev.curatedTotal;
+    if (ev.type === 'db-search-start') checkingDb = true;
+    else if (ev.type === 'db-search-empty') checkingDb = false;
+    else if (ev.type === 'start') { checkingDb = false; curatedTotal = ev.curatedTotal; }
     else if (ev.type === 'discoveredTotal') discoveredTotal = ev.count;
     else if (ev.type === 'site') {
+      checkingDb = false;
       if (ev.phase === 'curated') curatedDone = ev.done;
       else discoveredDone = ev.done;
       if (ev.result) partial.push(ev.result);
@@ -248,43 +235,3 @@ async function run() {
 $('go').addEventListener('click', run);
 $('modeSearch').addEventListener('click', () => setSearchMode('search'));
 $('modeUrl').addEventListener('click', () => setSearchMode('url'));
-loadCategories();
-
-$('toggleAddCategory').addEventListener('click', () => {
-  const form = $('addCategoryForm');
-  form.style.display = form.style.display === 'none' ? '' : 'none';
-});
-$('closeAddCategory').addEventListener('click', () => {
-  $('addCategoryForm').style.display = 'none';
-});
-
-$('saveCategory').addEventListener('click', async () => {
-  const name = $('newCategoryName').value.trim();
-  const links = Array.from(document.querySelectorAll('.competitor-link'))
-    .map((el) => el.value.trim())
-    .filter(Boolean);
-  if (!name || links.length === 0) {
-    $('categoryHint').textContent = ' Enter a category name and at least one competitor link.';
-    return;
-  }
-  $('saveCategory').disabled = true;
-  try {
-    const res = await fetch('/api/categories', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, links }),
-    });
-    const data = await res.json();
-    if (!res.ok) {
-      $('categoryHint').textContent = ' ' + (data.error || 'Could not save that category.');
-      return;
-    }
-    $('categoryHint').textContent = ` Saved — ${data.added.length} site(s) added to "${data.category}".`;
-    $('newCategoryName').value = '';
-    document.querySelectorAll('.competitor-link').forEach((el) => (el.value = ''));
-    await loadCategories();
-    $('category').value = data.category;
-  } finally {
-    $('saveCategory').disabled = false;
-  }
-});

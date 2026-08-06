@@ -21,7 +21,7 @@
 
   <div class="wrap">
     <h1>Find the best price</h1>
-    <p class="sub">Pick a category, describe the product, and we'll match live prices across curated stores and the top Sri Lankan shops — each with a confidence rate.</p>
+    <p class="sub">Type a product name (or paste a Kapruka product link) and we'll match it against our database of scraped competitor prices — falling back to a live web search when nothing's in the database yet.</p>
 
     <div class="card">
       <div class="tabs" role="tablist" style="margin-bottom:16px">
@@ -30,16 +30,12 @@
       </div>
 
       <div id="searchFields" class="grid">
-        <div>
-          <label for="category">Category</label>
-          <select id="category"></select>
-        </div>
-        <div>
+        <div class="full">
           <label for="name">Product name</label>
           <input id="name" placeholder="e.g. iPhone 15 256GB" />
         </div>
         <div class="full">
-          <label for="description">Description (optional, improves accuracy)</label>
+          <label for="description">Description (optional)</label>
           <textarea id="description" placeholder="e.g. Apple iPhone 15, Black, with Apple Care"></textarea>
         </div>
       </div>
@@ -57,23 +53,6 @@
     </div>
 
     <div id="out"></div>
-  </div>
-
-  <div class="floating-panel" id="categoryPanel">
-    <button type="button" class="ghost" id="toggleAddCategory">➕ Add a category</button>
-    <div id="addCategoryForm" class="floating-form" style="display:none">
-      <button type="button" class="panel-close" id="closeAddCategory" aria-label="Close">×</button>
-      <label for="newCategoryName">Category name</label>
-      <input id="newCategoryName" placeholder="e.g. Home Appliances" />
-      <label style="margin-top:14px">Competitor links (up to 5)</label>
-      <input class="competitor-link" placeholder="https://competitor1.lk" style="margin-bottom:8px" />
-      <input class="competitor-link" placeholder="https://competitor2.lk" style="margin-bottom:8px" />
-      <input class="competitor-link" placeholder="https://competitor3.lk" style="margin-bottom:8px" />
-      <input class="competitor-link" placeholder="https://competitor4.lk" style="margin-bottom:8px" />
-      <input class="competitor-link" placeholder="https://competitor5.lk" />
-      <button id="saveCategory">Save category</button>
-      <span id="categoryHint" class="hint"></span>
-    </div>
   </div>
 
   <script src="app.js"></script>
