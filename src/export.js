@@ -206,6 +206,40 @@ export async function exportProductsCsv() {
 // by the biggest rupee overcharge first. Used by /api/overpriced and the
 // Overpriced dashboard page.
 
+// Kapruka product URLs carry their catalogue category as a code in the
+// /kid/<code> segment — either bare ("elec00a5982") or prefixed with
+// "ef_pc_" ("ef_pc_groc0v1868p00005"). comparison_runs never stored a
+// category column (that's the newer price_audit_items audit tables'
+// column), so this is the only way to recover one for the Overpriced
+// Dashboard's data. Prefixes observed in stored data map to a friendly
+// label; anything else still gets a readable capitalized fallback rather
+// than lumping into an opaque "Other".
+const CATEGORY_PREFIX_MAP = {
+  elec: 'Electronics',
+  clot: 'Clothing',
+  book: 'Books',
+  cosm: 'Cosmetics',
+  home: 'Home & Lifestyle',
+  kids: 'Kids',
+  groc: 'Groceries',
+  perf: 'Perfume & Fragrance',
+  scho: 'School & Office',
+  spor: 'Sports',
+  auto: 'Automotive',
+  jewe: 'Jewellery',
+  adul: 'Adult',
+  moth: 'Mother & Baby',
+  phar: 'Pharmacy',
+  flow: 'Flowers',
+};
+
+function categoryFromKaprukaUrl(url) {
+  const m = String(url || '').match(/\/kid\/(?:ef_pc_)?([a-z]+)/i);
+  if (!m) return 'Other';
+  const prefix = m[1].toLowerCase();
+  return CATEGORY_PREFIX_MAP[prefix] || prefix.charAt(0).toUpperCase() + prefix.slice(1);
+}
+
 // Latest stored comparison run per partner (newest by row id wins).
 async function latestRunPerPartner() {
   const latest = new Map(); // partnerId -> { created_at, payload }
@@ -249,6 +283,7 @@ export async function overpricedReport() {
         partnerId: p.id ?? '',
         partner: p.name ?? '',
         partnerLabel: p.partnerLabel || p.partnerSite || '',
+        category: categoryFromKaprukaUrl(m.kaprukaUrl),
         name: m.name ?? '',
         kaprukaPrice: m.kaprukaPrice ?? null,
         partnerPrice: m.partnerPrice ?? null,
@@ -277,6 +312,7 @@ export async function overpricedReport() {
 }
 
 const OVERPRICED_COLUMNS = [
+  { key: 'category', label: 'Category' },
   { key: 'partner', label: 'Store' },
   { key: 'name', label: 'Product' },
   { key: 'kaprukaPrice', label: 'Kapruka price' },

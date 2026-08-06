@@ -4,6 +4,7 @@ let PAGE = 1;
 const PAGE_SIZE = 50;
 
 const COLUMNS = [
+  { key: 'category', label: 'Category' },
   { key: 'partner', label: 'Store' },
   { key: 'name', label: 'Product' },
   { key: 'kaprukaPrice', label: 'Kapruka', num: true },
@@ -86,22 +87,59 @@ function statCards(d) {
     card(lkr(Math.round(d.totalOvercharge)), 'Total overcharge', 'bad');
 }
 
-function storeOptions(d) {
+function countBy(items, key) {
+  const map = new Map();
+  for (const it of items) {
+    const k = it[key];
+    if (!k) continue;
+    map.set(k, (map.get(k) || 0) + 1);
+  }
+  return map;
+}
+
+// Category options always reflect the full dataset (not narrowed by the
+// store filter) — category is the primary filter, store is secondary/
+// cascading off it. See storeOptions() below.
+function categoryOptions() {
+  const sel = $('category');
+  const current = sel.value;
+  const counts = countBy(DATA.items, 'category');
+  const cats = [...counts.keys()].sort((a, b) => counts.get(b) - counts.get(a));
+  sel.innerHTML = '<option value="">All categories</option>' +
+    cats.map((c) => `<option value="${escapeHtml(c)}">${escapeHtml(c)} · ${counts.get(c)}</option>`).join('');
+  sel.value = counts.has(current) ? current : '';
+}
+
+// Store options are scoped to whatever category is currently selected, so
+// picking a category first narrows the store list to only stores that
+// actually have overpriced items in that category.
+function storeOptions() {
   const sel = $('store');
   const current = sel.value;
+  const category = $('category').value;
+  const items = category ? DATA.items.filter((m) => m.category === category) : DATA.items;
+  const byPartner = new Map(); // partnerId -> { name, count }
+  for (const m of items) {
+    if (!m.partnerId) continue;
+    const cur = byPartner.get(m.partnerId) || { name: m.partner, count: 0 };
+    cur.count++;
+    byPartner.set(m.partnerId, cur);
+  }
+  const ids = [...byPartner.keys()].sort((a, b) => byPartner.get(b).count - byPartner.get(a).count);
   sel.innerHTML = '<option value="">All stores</option>' +
-    d.partners
-      .filter((p) => p.overpriced > 0)
-      .map((p) => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)} · ${p.overpriced}</option>`)
-      .join('');
-  sel.value = current;
+    ids.map((id) => `<option value="${escapeHtml(id)}">${escapeHtml(byPartner.get(id).name)} · ${byPartner.get(id).count}</option>`).join('');
+  sel.value = byPartner.has(current) ? current : '';
 }
 
 function render() {
   const q = $('search').value.trim().toLowerCase();
   const store = $('store').value;
+  const category = $('category').value;
   let rows = DATA.items.filter(
-    (m) => (!store || m.partnerId === store) && (!q || m.name.toLowerCase().includes(q)),
+    (m) =>
+      (!category || m.category === category) &&
+      (!store || m.partnerId === store) &&
+      (!q || m.name.toLowerCase().includes(q)),
   );
 
   if (!rows.length) {
@@ -122,6 +160,7 @@ function render() {
         ? '<span class="badge b-hi">high</span>'
         : '<span class="badge b-md">review</span>';
       return `<tr class="over">
+        <td>${escapeHtml(m.category)}</td>
         <td><span class="store-pill">${escapeHtml(m.partner)}</span></td>
         <td>${link(m.kaprukaUrl, m.name)}
           <div class="ctx">matched: ${link(m.partnerUrl, m.partnerLabel)} · ${conf} · name sim ${m.nameSimilarity ?? '—'}%</div></td>
@@ -152,7 +191,8 @@ function footmeta() {
 
 function paint() {
   statCards(DATA);
-  storeOptions(DATA);
+  categoryOptions();
+  storeOptions();
   render();
   footmeta();
   $('status').style.display = 'none';
@@ -191,6 +231,7 @@ async function refreshNow() {
 }
 
 $('search').addEventListener('input', () => { PAGE = 1; render(); });
+$('category').addEventListener('change', () => { PAGE = 1; storeOptions(); render(); });
 $('store').addEventListener('change', () => { PAGE = 1; render(); });
 $('refresh').addEventListener('click', refreshNow);
 
