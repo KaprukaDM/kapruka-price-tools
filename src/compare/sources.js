@@ -473,10 +473,25 @@ async function fetchWooCatalog(origin, log, fetchJson = fetchJsonSafe) {
   return out;
 }
 
+// Shopify's public /products.json carries no currency field at all — prices
+// are just bare numbers in whatever currency the store's checkout is set to.
+// Most Sri Lankan stores run LKR, but some (e.g. ekko.style) run USD, and a
+// bare number was previously stored as if it were rupees — turning a $66
+// shirt into "Rs. 66", which then reads as wildly "overpriced" on Kapruka's
+// side. /cart.json is a stable, unauthenticated Shopify endpoint that always
+// reports the store's real currency, even for an empty cart.
+async function shopifyStoreCurrency(origin, fetchJson) {
+  const cart = await fetchJson(`${origin}/cart.json`);
+  const cur = String(cart?.currency || '').toUpperCase();
+  return cur || 'LKR';
+}
+
 // Shopify: /products.json?limit=250&page=N. Prices are major-unit strings; we
 // take the cheapest available variant and its SKU.
 async function fetchShopifyCatalog(origin, log, fetchJson = fetchJsonSafe) {
   const out = [];
+  const currency = await shopifyStoreCurrency(origin, fetchJson).catch(() => 'LKR');
+  if (currency !== 'LKR') log(`  partner (shopify) store currency: ${currency} — converting prices to LKR`);
   for (let page = 1; page <= 100; page++) {
     const data = await fetchJson(`${origin}/products.json?limit=250&page=${page}`);
     const products = data && Array.isArray(data.products) ? data.products : null;
@@ -491,6 +506,10 @@ async function fetchShopifyCatalog(origin, log, fetchJson = fetchJsonSafe) {
       const regulars = (p.variants || [])
         .map((v) => parseFloat(v.compare_at_price))
         .filter((n) => Number.isFinite(n) && n > 0);
+      const price = currency === 'LKR' ? Math.round(pick.price) : await convertToLkr(pick.price, currency);
+      const regularPrice = regulars.length
+        ? (currency === 'LKR' ? Math.round(Math.max(...regulars)) : await convertToLkr(Math.max(...regulars), currency))
+        : null;
       out.push({
         id: `shopify-${p.id}`,
         name: decodeEntities(p.title || '').trim(),
@@ -499,8 +518,8 @@ async function fetchShopifyCatalog(origin, log, fetchJson = fetchJsonSafe) {
         // name on Shopify, so treat it as a best-effort brand signal).
         brand: (p.vendor || '').trim(),
         category: (p.product_type || '').trim(),
-        price: pick.price,
-        regularPrice: regulars.length ? Math.max(...regulars) : null,
+        price,
+        regularPrice,
         url: `${origin}/products/${p.handle}`,
         inStock: avail.length > 0,
       });
