@@ -55,7 +55,7 @@ export function tokenize(s) {
 // look code-like but are NOT identity: two unrelated products often share
 // "1000w", "20l", "256gb" (a MacBook and an iPhone both have 256gb), "13th" gen,
 // or a "650va" UPS rating. Excluded from model codes.
-const SPEC_TOKEN =
+export const SPEC_TOKEN =
   /^\d+(?:\.\d+)?(w|kw|kwh|wh|mah|kg|g|mg|l|ml|v|va|hz|ghz|mhz|gb|tb|mb|kb|mp|cm|mm|k|p|th|in|inch)$/;
 
 // CPU/processor model tokens: a run of digits followed by a known mobile-CPU
@@ -91,19 +91,66 @@ export function extractModelCodes(s) {
   return out;
 }
 
+// normalizeName() strips "." to a space, which silently corrupts decimal
+// capacities before extractSpecs ever sees them: "4.5L" -> "4 5l" -> the unit
+// regex below reads that as a bare "5l", losing the "4." entirely. Two
+// genuinely different capacities (e.g. "1.2L" and "2.2L") then both collapse
+// to the same trailing-digit value ("2l") and register as agreeing —
+// exactly backwards for a check whose whole job is telling different specs
+// apart. Protect digit.digit sequences through the strip so "4.5l" survives
+// as "4.5l", then run the normal punctuation strip around it.
+function specNormalize(s) {
+  return decodeEntities(s)
+    .split('|')[0]
+    .toLowerCase()
+    .replace(/(\d)\.(\d)/g, '$1decimalpoint$2') // protect the decimal point through the strip below (lowercase: this runs after toLowerCase(), and only lowercase letters survive the next step)
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/decimalpoint/g, '.')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 // Numeric specs (wattage, capacity) pulled from a name, grouped by unit:
 //   "Bajaj ... 1000W Mixer 1.5L" -> { w: Set{1000}, l: Set{1.5} }
 // Used to reject fuzzy name matches whose specs clearly disagree (a 1000W and a
 // 750W appliance are different products even if their names overlap a lot).
 export function extractSpecs(s) {
   const specs = {};
+  const norm = specNormalize(s);
   const re = /(\d+(?:\.\d+)?)\s*(w|kw|kg|l|ml|mah|wh)\b/g;
-  const norm = normalizeName(s);
   let m;
   while ((m = re.exec(norm))) {
     const unit = m[2] === 'kw' ? 'w' : m[2];
     const val = m[2] === 'kw' ? parseFloat(m[1]) * 1000 : parseFloat(m[1]);
     (specs[unit] ||= new Set()).add(val);
+  }
+  // Storage/RAM capacity ("128GB", "6GB RAM") — same "gb" unit but different
+  // dimensions, so track them separately: a bare "Xgb" is storage, "Xgb ram"
+  // (ram immediately follows) is RAM. Phones/tablets are frequently named
+  // purely by spec with no SKU code at all ("Galaxy Tab S9 FE 5G 6GB
+  // 128GB") — tracking this lets a code-less name still positively confirm
+  // it's the same variant (see audit-scoring.js's fallback path) instead of
+  // just failing to reject a different one.
+  const gbMatches = [...norm.matchAll(/(\d+)gb(\s+ram)?/g)];
+  const anyLabeled = gbMatches.some((m) => m[2]);
+  if (anyLabeled) {
+    // At least one side spells out "ram" — trust the label per match.
+    for (const m of gbMatches) {
+      const key = m[2] ? 'ram_gb' : 'storage_gb';
+      (specs[key] ||= new Set()).add(parseFloat(m[1]));
+    }
+  } else if (gbMatches.length >= 2) {
+    // Nothing labeled at all ("8GB 256GB") — every site tonight that omits
+    // "RAM"/"ROM" still lists RAM before storage, so use that position.
+    // Without this, "8GB 256GB" (8GB RAM) and "12GB 256GB" (12GB RAM) both
+    // land in one shared bucket and "agree" on the 256 they both happen to
+    // have — silently masking a real 8GB-vs-12GB RAM difference.
+    (specs.ram_gb ||= new Set()).add(parseFloat(gbMatches[0][1]));
+    for (let i = 1; i < gbMatches.length; i++) {
+      (specs.storage_gb ||= new Set()).add(parseFloat(gbMatches[i][1]));
+    }
+  } else if (gbMatches.length === 1) {
+    (specs.storage_gb ||= new Set()).add(parseFloat(gbMatches[0][1]));
   }
   return specs;
 }

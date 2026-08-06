@@ -127,7 +127,8 @@ export const listUnsupportedPartners = () => backend.listUnsupportedPartners();
 export const addUnsupportedPartner = (row) => backend.addUnsupportedPartner(row);
 export const upsertPriceAuditItem = (item) => backend.upsertPriceAuditItem(item);
 export const getPriceAuditItems = (opts) => backend.getPriceAuditItems(opts);
-export const upsertCompetitorProducts = (siteDomain, products) => backend.upsertCompetitorProducts(siteDomain, products);
+export const deletePriceAuditItemsByCategory = (category) => backend.deletePriceAuditItemsByCategory(category);
+export const upsertCompetitorProducts = (siteDomain, products, category) => backend.upsertCompetitorProducts(siteDomain, products, category);
 export const getCompetitorProducts = (siteDomain) => backend.getCompetitorProducts(siteDomain);
 
 // ---------------------------------------------------------------------------
@@ -236,13 +237,15 @@ async function makePostgresBackend(connectionString) {
       product_name  TEXT,
       price_lkr     INTEGER,
       scraped_at    TEXT NOT NULL,
+      category      TEXT,
       UNIQUE (site_domain, product_url)
     );
     CREATE INDEX IF NOT EXISTS idx_competitor_products_site ON competitor_products (site_domain);
+    CREATE INDEX IF NOT EXISTS idx_competitor_products_category ON competitor_products (category);
   `);
 
   return {
-    async upsertCompetitorProducts(siteDomain, products) {
+    async upsertCompetitorProducts(siteDomain, products, category = null) {
       // Dedupe by product_url first — a multi-row INSERT ... ON CONFLICT DO
       // UPDATE errors if the same (site_domain, product_url) pair appears
       // twice in one statement, which happens when a product is listed on
@@ -254,16 +257,16 @@ async function makePostgresBackend(connectionString) {
         const values = [];
         const params = [];
         chunk.forEach((p, idx) => {
-          const base = idx * 6;
-          values.push(`($${base + 1},$${base + 2},$${base + 3},$${base + 4},$${base + 5},$${base + 6})`);
-          params.push(siteDomain, p.siteName || null, p.url, p.name || null, p.priceLKR ?? null, nowIso());
+          const base = idx * 7;
+          values.push(`($${base + 1},$${base + 2},$${base + 3},$${base + 4},$${base + 5},$${base + 6},$${base + 7})`);
+          params.push(siteDomain, p.siteName || null, p.url, p.name || null, p.priceLKR ?? null, nowIso(), category);
         });
         await pool.query(
-          `INSERT INTO competitor_products (site_domain, site_name, product_url, product_name, price_lkr, scraped_at)
+          `INSERT INTO competitor_products (site_domain, site_name, product_url, product_name, price_lkr, scraped_at, category)
            VALUES ${values.join(',')}
            ON CONFLICT (site_domain, product_url) DO UPDATE SET
              site_name = EXCLUDED.site_name, product_name = EXCLUDED.product_name,
-             price_lkr = EXCLUDED.price_lkr, scraped_at = EXCLUDED.scraped_at`,
+             price_lkr = EXCLUDED.price_lkr, scraped_at = EXCLUDED.scraped_at, category = EXCLUDED.category`,
           params,
         );
       }
@@ -309,6 +312,15 @@ async function makePostgresBackend(connectionString) {
         params,
       );
       return rows;
+    },
+
+    // upsertPriceAuditItem only adds/updates — a product that matched last
+    // run but no longer qualifies under stricter criteria (or a site that's
+    // stopped carrying it) is never removed on its own, leaving stale rows
+    // behind. Each match-local.js run calls this first so every run reports
+    // exactly what it found, not a running union with past runs.
+    async deletePriceAuditItemsByCategory(category) {
+      await pool.query(`DELETE FROM price_audit_items WHERE category = $1`, [category]);
     },
 
     async listUnsupportedPartners() {
@@ -640,7 +652,7 @@ async function makeSupabaseRestBackend(baseUrl, serviceKey) {
   }
 
   return {
-    async upsertCompetitorProducts(siteDomain, products) {
+    async upsertCompetitorProducts(siteDomain, products, category = null) {
       // Dedupe by product_url first — Postgres's ON CONFLICT DO UPDATE errors
       // out ("command cannot affect row a second time") if the same
       // (site_domain, product_url) pair appears twice in one upsert batch,
@@ -655,6 +667,7 @@ async function makeSupabaseRestBackend(baseUrl, serviceKey) {
           product_name: p.name || null,
           price_lkr: p.priceLKR ?? null,
           scraped_at: nowIso(),
+          category,
         }));
         await restFetch('/competitor_products?on_conflict=site_domain,product_url', {
           method: 'POST',
@@ -723,6 +736,15 @@ async function makeSupabaseRestBackend(baseUrl, serviceKey) {
         if (page.length < pageSize) break;
       }
       return out;
+    },
+
+    // upsertPriceAuditItem only adds/updates — a product that matched last
+    // run but no longer qualifies under stricter criteria (or a site that's
+    // stopped carrying it) is never removed on its own, leaving stale rows
+    // behind. Each match-local.js run calls this first so every run reports
+    // exactly what it found, not a running union with past runs.
+    async deletePriceAuditItemsByCategory(category) {
+      await restFetch(`/price_audit_items?category=eq.${encodeURIComponent(category)}`, { method: 'DELETE' });
     },
 
     async listUnsupportedPartners() {
@@ -1014,19 +1036,20 @@ async function makeSqliteBackend() {
       product_name  TEXT,
       price_lkr     INTEGER,
       scraped_at    TEXT NOT NULL,
+      category      TEXT,
       UNIQUE (site_domain, product_url)
     );
     CREATE INDEX IF NOT EXISTS idx_competitor_products_site ON competitor_products (site_domain);
   `);
 
   const upsertCompetitorProduct = db.prepare(`
-    INSERT INTO competitor_products (site_domain, site_name, product_url, product_name, price_lkr, scraped_at)
-    VALUES (?, ?, ?, ?, ?, ?)
+    INSERT INTO competitor_products (site_domain, site_name, product_url, product_name, price_lkr, scraped_at, category)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT (site_domain, product_url) DO UPDATE SET
       site_name = excluded.site_name, product_name = excluded.product_name,
-      price_lkr = excluded.price_lkr, scraped_at = excluded.scraped_at`);
+      price_lkr = excluded.price_lkr, scraped_at = excluded.scraped_at, category = excluded.category`);
   const selCompetitorProducts = db.prepare(`
-    SELECT site_domain, site_name, product_url, product_name, price_lkr, scraped_at
+    SELECT site_domain, site_name, product_url, product_name, price_lkr, scraped_at, category
     FROM competitor_products WHERE site_domain = ?`);
 
   const insChk = db.prepare(`
@@ -1085,7 +1108,7 @@ async function makeSqliteBackend() {
       diff_lkr = excluded.diff_lkr, diff_pct = excluded.diff_pct, checked_at = excluded.checked_at`);
 
   return {
-    async upsertCompetitorProducts(siteDomain, products) {
+    async upsertCompetitorProducts(siteDomain, products, category = null) {
       // node:sqlite's DatabaseSync has no .transaction() helper (that's a
       // better-sqlite3-only convenience method) — wrap with raw BEGIN/COMMIT
       // instead, which DatabaseSync does support via .exec().
@@ -1093,7 +1116,7 @@ async function makeSqliteBackend() {
       db.exec('BEGIN');
       try {
         for (const p of products) {
-          upsertCompetitorProduct.run(siteDomain, p.siteName || null, p.url, p.name || null, p.priceLKR ?? null, ts);
+          upsertCompetitorProduct.run(siteDomain, p.siteName || null, p.url, p.name || null, p.priceLKR ?? null, ts, category);
         }
         db.exec('COMMIT');
       } catch (err) {
@@ -1120,6 +1143,15 @@ async function makeSqliteBackend() {
                    ORDER BY checked_at DESC LIMIT ?`;
       const stmt = db.prepare(sql);
       return category ? stmt.all(category, limit) : stmt.all(limit);
+    },
+
+    // upsertPriceAuditItem only adds/updates — a product that matched last
+    // run but no longer qualifies under stricter criteria (or a site that's
+    // stopped carrying it) is never removed on its own, leaving stale rows
+    // behind. Each match-local.js run calls this first so every run reports
+    // exactly what it found, not a running union with past runs.
+    async deletePriceAuditItemsByCategory(category) {
+      db.prepare('DELETE FROM price_audit_items WHERE category = ?').run(category);
     },
 
     async listUnsupportedPartners() {

@@ -12,7 +12,8 @@
 import 'dotenv/config';
 import { fetchKaprukaCatalog } from '../compare/sources.js';
 import { index } from '../compare/matcher.js';
-import { tokenize, codesMatch, specsConflict } from '../compare/normalize.js';
+import { tokenize } from '../compare/normalize.js';
+import { scoreCandidate } from '../compare/audit-scoring.js';
 import { SITE_ADAPTERS, fetchPriceFromPage } from './site-adapters.js';
 import { PLAYWRIGHT_SITE_ADAPTERS, closeSharedBrowser } from './playwright-adapters.js';
 import { upsertPriceAuditItem } from '../db.js';
@@ -77,55 +78,20 @@ function buildSearchQuery(name) {
 // extra tokens, so it's the right measure for this asymmetric case — with a
 // minimum absolute intersection count as a guard against short, generic
 // candidates trivially "containing" themselves in anything.
-const OVERLAP_THRESHOLD = 0.6;
-const CODE_MATCH_MIN_OVERLAP = 0.15;
-const MIN_INTERSECTION = 2;
-
-function overlapCoefficient(a, b) {
-  if (a.size === 0 || b.size === 0) return { overlap: 0, intersection: 0 };
-  let inter = 0;
-  for (const t of a) if (b.has(t)) inter++;
-  return { overlap: inter / Math.min(a.size, b.size), intersection: inter };
-}
-
-function sharedCodeCount(aCodes, bCodes) {
-  let n = 0;
-  for (const a of aCodes) for (const b of bCodes) if (codesMatch(a, b)) { n++; break; }
-  return n;
-}
-
-// tokenize() drops 1-2 digit tokens as noise (correctly, in general — but a
-// bare "4"/"5" is often a product GENERATION number, e.g. "JBL Xtreme 4" vs
-// "JBL Xtreme 5" tokenize identically once that digit is gone). A small
-// ranking tiebreaker, not a rejection gate, so it only resolves ties between
-// otherwise-equal candidates rather than rejecting a real match that simply
-// has no version number.
-function versionNumbers(name) {
-  return new Set((String(name || '').match(/\b\d{1,2}\b/g) || []));
-}
-
-// Exact-model-only: a match is only accepted when the two names share a real
-// model code (e.g. "SF1726RF-400L", "UA-43U8000FKX"). The earlier version
-// also accepted pure name-overlap matches with no shared code ("medium"
-// confidence) — that's how a Kapruka "Samsung 43 UA-43U8000FKX" ended up
-// matched to a *different* real Samsung model ("43 DU7500") on some sites:
-// same brand/category/size, high name overlap, wrong specific product. For a
-// price audit, a wrong "match" is worse than no match — better to report
-// fewer, verified-same-SKU prices than a broader set salted with adjacent
-// models.
-function scoreCandidate(k, c) {
-  const codes = sharedCodeCount(k._codes, c._codes);
-  if (codes < 1) return null;
-  const { overlap, intersection } = overlapCoefficient(k._tokens, c._tokens);
-  if (overlap < CODE_MATCH_MIN_OVERLAP || intersection < MIN_INTERSECTION || specsConflict(k._specs, c._specs)) {
-    return null;
-  }
-  const kVersions = versionNumbers(k.name);
-  const cVersions = versionNumbers(c.name);
-  const versionAgrees = [...kVersions].some((v) => cVersions.has(v));
-  const versionBonus = kVersions.size && cVersions.size ? (versionAgrees ? 0.05 : -0.5) : 0;
-  return { value: 1 + overlap + versionBonus, codes, overlap };
-}
+// Model-code-first, with a narrow spec-agreement fallback for products with
+// no SKU-style code at all — see ../compare/audit-scoring.js.
+//
+// History: an earlier version of this fallback accepted pure name-overlap
+// matches with no shared code and no requirement that any spec agree,
+// "medium" confidence — that's how a Kapruka "Samsung 43 UA-43U8000FKX" ended
+// up matched to a *different* real Samsung model ("43 DU7500") on some sites:
+// same brand/category/size, high name overlap, wrong specific product, and
+// neither name had a capturable spec (screen inches weren't tracked), so
+// nothing caught it. audit-scoring.js's current fallback closes exactly that
+// gap: it requires the two sides to *positively agree* on a real spec value
+// (storage/RAM/wattage/etc — not just "no conflict"), so two products with no
+// comparable spec at all are rejected rather than waved through on name
+// overlap alone. For a price audit, a wrong "match" is worse than no match.
 
 // A product isn't "done" until every site responds, so one consistently slow
 // or Cloudflare-stuck site (each adapter has its own internal fetch timeout,

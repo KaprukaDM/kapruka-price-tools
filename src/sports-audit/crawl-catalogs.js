@@ -32,6 +32,7 @@ async function main() {
       await upsertCompetitorProducts(
         site.domain,
         products.map((p) => ({ ...p, siteName: site.name })),
+        'Sports',
       );
       totalProducts += products.length;
     } catch (err) {

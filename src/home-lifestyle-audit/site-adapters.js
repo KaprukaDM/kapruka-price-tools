@@ -129,6 +129,7 @@ export const CATALOG_ADAPTERS = [
   { domain: 'seasonslinen.com', name: 'Seasons Linen', fetchCatalog: wooStoreApiCatalog('seasonslinen.com') },
   { domain: 'thebedsheetfactory.com', name: 'The Bedsheet Factory', fetchCatalog: wooStoreApiCatalog('thebedsheetfactory.com') },
   { domain: 'plantme.lk', name: 'PlantMe', fetchCatalog: wooStoreApiCatalog('plantme.lk') },
+  { domain: 'megadeals.lk', name: 'Mega Deals', fetchCatalog: wooStoreApiCatalog('megadeals.lk') },
 ];
 
 // damro.lk, myarpico.com, catchme.lk, keellssuper.com, bamagate.com,

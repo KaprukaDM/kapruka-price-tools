@@ -13,11 +13,11 @@
 import 'dotenv/config';
 import { fetchKaprukaCatalog } from '../compare/sources.js';
 import { index } from '../compare/matcher.js';
-import { codesMatch, specsConflict } from '../compare/normalize.js';
+import { scoreCandidate } from '../compare/audit-scoring.js';
 import { CATALOG_ADAPTERS as HOME_ADAPTERS } from './site-adapters.js';
 import { CATALOG_ADAPTERS as ELECTRONICS_ADAPTERS } from '../electronics-audit/site-adapters.js';
 import { CATALOG_ADAPTERS as COSMETICS_ADAPTERS } from '../cosmetics-audit/site-adapters.js';
-import { getCompetitorProducts, upsertPriceAuditItem } from '../db.js';
+import { getCompetitorProducts, upsertPriceAuditItem, deletePriceAuditItemsByCategory } from '../db.js';
 
 const CATEGORY = 'Home & Lifestyle';
 const KAPRUKA_SOURCE = { type: 'catalogue', buy: 'home_lifestyle', subcat: null };
@@ -34,40 +34,6 @@ const ALL_SITES = [
   ...COSMETICS_ADAPTERS.filter((s) => REUSED_DOMAINS.has(s.domain)).map((s) => ({ domain: s.domain, name: s.name })),
 ];
 
-const OVERLAP_THRESHOLD = 0.6;
-const CODE_MATCH_MIN_OVERLAP = 0.15;
-const MIN_INTERSECTION = 2;
-
-function overlapCoefficient(a, b) {
-  if (a.size === 0 || b.size === 0) return { overlap: 0, intersection: 0 };
-  let inter = 0;
-  for (const t of a) if (b.has(t)) inter++;
-  return { overlap: inter / Math.min(a.size, b.size), intersection: inter };
-}
-
-function sharedCodeCount(aCodes, bCodes) {
-  let n = 0;
-  for (const a of aCodes) for (const b of bCodes) if (codesMatch(a, b)) { n++; break; }
-  return n;
-}
-
-function versionNumbers(name) {
-  return new Set((String(name || '').match(/\b\d{1,2}\b/g) || []));
-}
-
-function scoreCandidate(k, c) {
-  const codes = sharedCodeCount(k._codes, c._codes);
-  if (codes < 1) return null;
-  const { overlap, intersection } = overlapCoefficient(k._tokens, c._tokens);
-  if (overlap < CODE_MATCH_MIN_OVERLAP || intersection < MIN_INTERSECTION || specsConflict(k._specs, c._specs)) {
-    return null;
-  }
-  const kVersions = versionNumbers(k.name);
-  const cVersions = versionNumbers(c.name);
-  const versionAgrees = [...kVersions].some((v) => cVersions.has(v));
-  const versionBonus = kVersions.size && cVersions.size ? (versionAgrees ? 0.05 : -0.5) : 0;
-  return { value: 1 + overlap + versionBonus, codes, overlap };
-}
 
 async function main() {
   const limitArg = process.argv.find((a) => a.startsWith('--limit='));
@@ -101,6 +67,12 @@ async function main() {
     console.log('No cached catalogues available. Run crawl-catalogs.js first.');
     return;
   }
+
+  // upsert alone never removes a row that no longer qualifies (stricter
+  // criteria, a site dropping the product) — clear this category's old
+  // results first so the run reports exactly what it finds, not a stale
+  // union with a previous run's matches.
+  await deletePriceAuditItemsByCategory(CATEGORY);
 
   let matchCount = 0;
   let done = 0;
@@ -142,7 +114,7 @@ async function main() {
           matchedUrl: best.c.url,
           matchedName: best.c.name,
           matchedPriceLkr: matchedPriceLKR,
-          matchConfidence: 'high',
+          matchConfidence: best.sc.codes >= 1 ? 'high' : 'medium',
           sharedCodes: best.sc.codes,
           nameSimilarity: Math.round(best.sc.overlap * 100),
           diffLkr,
