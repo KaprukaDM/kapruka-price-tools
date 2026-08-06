@@ -528,7 +528,7 @@ async function fetchShopifyCatalog(origin, log, fetchJson = fetchJsonSafe) {
         price,
         regularPrice,
         url: `${origin}/products/${p.handle}`,
-        inStock: avail.length > 0,
+        inStock: variants.some((v) => v.available),
       });
     }
     log(`  partner (shopify) page ${page}: +${products.length}, total ${out.length}`);
