@@ -431,10 +431,25 @@ function minorUnitDivide(value, minorUnit) {
 
 // WooCommerce Store API: /wp-json/wc/store/v1/products?per_page=100&page=N.
 // Prices are integer strings scaled by currency_minor_unit.
+//
+// Some sites (e.g. thinex.lk) 404 on the pretty /wp-json/... permalink (their
+// server rewrite rules don't cover it) but still serve the same data via the
+// query-param form. Probe the pretty URL first; if page 1 comes back non-array,
+// retry via ?rest_route= and stick with it for the rest of pagination. Without
+// this fallback the pretty URL's 404 silently looks like "empty catalogue"
+// (fetchJsonSafe returns null on error) rather than a real failure — nothing
+// throws, so a force-refresh happily overwrites good stored data with zero.
 async function fetchWooCatalog(origin, log, fetchJson = fetchJsonSafe) {
   const out = [];
+  let useRestRoute = false;
   for (let page = 1; page <= 100; page++) {
-    const arr = await fetchJson(`${origin}/wp-json/wc/store/v1/products?per_page=100&page=${page}`);
+    const prettyUrl = `${origin}/wp-json/wc/store/v1/products?per_page=100&page=${page}`;
+    const restRouteUrl = `${origin}/?rest_route=/wc/store/v1/products&per_page=100&page=${page}`;
+    let arr = await fetchJson(useRestRoute ? restRouteUrl : prettyUrl);
+    if (!Array.isArray(arr) && page === 1 && !useRestRoute) {
+      arr = await fetchJson(restRouteUrl);
+      if (Array.isArray(arr)) useRestRoute = true;
+    }
     if (!Array.isArray(arr) || arr.length === 0) break;
     for (const p of arr) {
       const pr = p.prices || {};
