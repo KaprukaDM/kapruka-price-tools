@@ -67,8 +67,41 @@ function kaprukaRefBlock() {
   </div>`;
 }
 
+// Browse mode: the typed query was too short/generic to identify one
+// specific product (e.g. "iphone"), so the database returned every
+// reasonably-matching product instead of one. Render each as its own
+// mini-section with its own site-comparison table underneath.
+function buildBrowseSections(products) {
+  return products
+    .map((p) => {
+      const kaprukaLine = p.kaprukaPrice != null
+        ? `<span class="price">Rs. ${Number(p.kaprukaPrice).toLocaleString('en-LK')}</span> on Kapruka`
+        : 'price not listed on Kapruka';
+      return `<div class="card" style="margin-bottom:14px">
+        <h4 style="margin:0 0 4px">${p.url ? `<a href="${escapeHtml(p.url)}" target="_blank" rel="noopener">${escapeHtml(p.name)}</a>` : escapeHtml(p.name)}</h4>
+        <div class="ctx" style="margin-bottom:10px">${kaprukaLine}</div>
+        ${p.results.length ? buildTable(p.results) : '<p class="empty" style="margin:0">No competitor matches cached for this product.</p>'}
+      </div>`;
+    })
+    .join('');
+}
+
 function render(data) {
   const out = $('out');
+  if (data.mode === 'browse') {
+    const products = data.products || [];
+    if (!products.length) {
+      out.innerHTML = '<p class="empty">No results.</p>';
+      return;
+    }
+    let html = `<h3 style="margin:24px 0 4px">Matched ${products.length} product${products.length === 1 ? '' : 's'} from our database</h3>
+      <p class="note" style="margin-top:0">Your search matched more than one product — showing each separately.
+        Type a more specific name (e.g. include the model/storage) for a single side-by-side comparison instead.</p>`;
+    html += buildBrowseSections(products);
+    out.innerHTML = html;
+    return;
+  }
+
   const dbResults = data.results || [];
   const discovered = data.discovered || [];
   if (dbResults.length === 0 && discovered.length === 0) {
@@ -213,6 +246,7 @@ async function run() {
     const ev = JSON.parse(e.data);
     if (ev.type === 'db-search-start') checkingDb = true;
     else if (ev.type === 'db-search-empty') checkingDb = false;
+    else if (ev.type === 'db-browse-found') checkingDb = false;
     else if (ev.type === 'start') { checkingDb = false; curatedTotal = ev.curatedTotal; }
     else if (ev.type === 'discoveredTotal') discoveredTotal = ev.count;
     else if (ev.type === 'site') {

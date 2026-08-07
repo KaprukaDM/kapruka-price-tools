@@ -84,13 +84,21 @@ app.post('/api/categories', async (req, res) => {
 // only when nothing in the database clears the match bar. `onProgress` (if
 // given) only fires for the live-search fallback path, since the DB search
 // itself is a single fast pass with nothing to stream incrementally.
+// db.mode 'single': a well-specified query matched exactly one product,
+// site-by-site comparison as before. db.mode 'browse': the query was too
+// short/generic for identity matching to ever fire (e.g. "iphone" alone),
+// so multiple candidate products are returned instead — see
+// checker/db-search.js's BROAD_QUERY_MAX_TOKENS.
 async function runCheckerSearch(query, onProgress = () => {}) {
   const db = await searchDatabase(query);
-  if (db.hasMatch) {
-    return { category: 'Database', query, results: db.results, discovered: [], source: 'database' };
+  if (db.hasMatch && db.mode === 'single') {
+    return { category: 'Database', query, results: db.results, discovered: [], source: 'database', mode: 'single' };
+  }
+  if (db.hasMatch && db.mode === 'browse') {
+    return { category: 'Database', query, products: db.products, source: 'database', mode: 'browse' };
   }
   const out = await runMatch(OTHER_CATEGORY, query, onProgress);
-  return { ...out, source: 'web' };
+  return { ...out, source: 'web', mode: 'web' };
 }
 
 // Run a price-checker match. Every query is persisted to the database.
@@ -131,10 +139,12 @@ app.get('/api/match/stream', async (req, res) => {
     const query = { name, description: description || '' };
     send('progress', { type: 'db-search-start' });
     const out = await runCheckerSearch(query, (ev) => send('progress', ev));
-    if (out.source === 'database') {
+    if (out.mode === 'single') {
       out.results.forEach((r, i) =>
         send('progress', { type: 'site', phase: 'curated', label: r.site, done: i + 1, total: out.results.length, result: r }),
       );
+    } else if (out.mode === 'browse') {
+      send('progress', { type: 'db-browse-found', count: out.products.length });
     }
     try {
       out.recordId = await savePriceCheck({ category: out.category, query, result: out });

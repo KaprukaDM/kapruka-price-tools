@@ -34,6 +34,15 @@ import { getPriceAuditItems, searchCompetitorProductsByTokens, allComparisonRows
 
 const AUDIT_ITEMS_SCAN_LIMIT = 6000; // comfortably above the ~2.5k rows currently stored
 const COMPETITOR_SEARCH_LIMIT = 500;
+// scoreCandidate() requires >=2 shared distinctive words before it'll even
+// consider a candidate (MIN_INTERSECTION in audit-scoring.js) — a query with
+// fewer words than that can never clear it, no matter how many products
+// actually match (e.g. "iphone" alone can't score >=2 against ANY name).
+// Below this token count, if the strict identity search finds nothing, fall
+// through to the looser "browse" search instead of straight to live web
+// search — see searchDatabase().
+const BROAD_QUERY_MAX_TOKENS = 2;
+const MAX_BROAD_PRODUCTS = 20;
 
 // The most distinctive (longest, non-spec) tokens anchor the ILIKE search —
 // specs like "128gb" are too common across unrelated products to narrow
@@ -107,6 +116,69 @@ async function searchPriceAuditItems(qIndexed) {
         sourceTable: 'price_audit_items',
       }),
     );
+}
+
+// Broad/browse search — used only when the strict identity search above
+// finds nothing AND the query is short enough that it plausibly couldn't
+// (see BROAD_QUERY_MAX_TOKENS). Deliberately much looser than
+// scoreCandidate(): "does every word the user typed appear in this
+// product's name" is a relevance filter, not an identity check, so a
+// generic query like "iphone" surfaces every audited iPhone product instead
+// of matching none. Only draws from price_audit_items, since that's the one
+// source that's already cleanly grouped into (product, site-matches) —
+// competitor_products/comparison_runs have no equivalent per-product
+// grouping to browse by.
+function broadTokenMatch(queryTokens, candidateTokens) {
+  for (const t of queryTokens) {
+    if (!candidateTokens.has(t)) return false;
+  }
+  return true;
+}
+
+async function searchPriceAuditItemsBroad(qIndexed) {
+  const rows = await getPriceAuditItems({ limit: AUDIT_ITEMS_SCAN_LIMIT });
+  if (!rows.length) return [];
+
+  const byKapruka = new Map();
+  for (const r of rows) {
+    if (!r.kapruka_url || !r.kapruka_name) continue;
+    if (!byKapruka.has(r.kapruka_url)) {
+      byKapruka.set(r.kapruka_url, { name: r.kapruka_name, price: r.kapruka_price_lkr, rows: [] });
+    }
+    byKapruka.get(r.kapruka_url).rows.push(r);
+  }
+
+  const products = [];
+  for (const [kaprukaUrl, group] of byKapruka) {
+    const kIndexed = toIndexed(group.name);
+    if (!broadTokenMatch(qIndexed._tokens, kIndexed._tokens)) continue;
+    products.push({
+      name: group.name,
+      url: kaprukaUrl,
+      kaprukaPrice: group.price,
+      extraTokens: kIndexed._tokens.size - qIndexed._tokens.size, // fewer extra words = closer to what was typed
+      results: group.rows
+        .filter((r) => r.matched_url)
+        .map((r) =>
+          resultRow({
+            site: r.site_name || r.site_domain,
+            domain: r.site_domain,
+            title: r.matched_name,
+            url: r.matched_url,
+            price: r.matched_price_lkr,
+            // No scoreCandidate ran here (that's what "broad" means) — the
+            // confidence that IS meaningful is the original audit match's
+            // own confidence, carried over rather than fabricating a number.
+            matchRate: r.match_confidence === 'high' ? 95 : 70,
+            sourceTable: 'price_audit_items',
+          }),
+        )
+        .sort((a, b) => (a.price ?? Infinity) - (b.price ?? Infinity)),
+    });
+  }
+
+  products.sort((a, b) => a.extraTokens - b.extraTokens || a.name.localeCompare(b.name));
+  return products.slice(0, MAX_BROAD_PRODUCTS).map(({ extraTokens, ...p }) => p);
 }
 
 // Table 2: competitor_products — raw scraped catalogue, matched live.
@@ -206,15 +278,30 @@ function byBestValue(a, b) {
 
 export async function searchDatabase({ name }) {
   const cleanName = String(name || '').trim();
-  if (!cleanName) return { hasMatch: false, results: [] };
+  if (!cleanName) return { hasMatch: false, mode: null };
   const qIndexed = toIndexed(cleanName);
 
+  // 1) Strict identity search — unchanged behavior for a well-specified
+  // query: merges all 3 tables into one product's site-by-site comparison.
   const [auditResults, competitorResults, comparisonResults] = await Promise.all([
     searchPriceAuditItems(qIndexed),
     searchCompetitorProductsTable(qIndexed, cleanName),
     searchComparisonRunsTable(qIndexed),
   ]);
-
   const merged = mergeByDomain(auditResults, competitorResults, comparisonResults).sort(byBestValue);
-  return { hasMatch: merged.length > 0, results: merged };
+  if (merged.length > 0) {
+    return { hasMatch: true, mode: 'single', results: merged };
+  }
+
+  // 2) Broad/browse fallback — only reached for a short, generic query where
+  // the strict search structurally never had a chance (see
+  // BROAD_QUERY_MAX_TOKENS). Returns multiple products instead of one.
+  if (qIndexed._tokens.size > 0 && qIndexed._tokens.size <= BROAD_QUERY_MAX_TOKENS) {
+    const products = await searchPriceAuditItemsBroad(qIndexed);
+    if (products.length > 0) {
+      return { hasMatch: true, mode: 'browse', products };
+    }
+  }
+
+  return { hasMatch: false, mode: null };
 }
