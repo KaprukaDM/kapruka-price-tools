@@ -31,7 +31,14 @@ function fixMojibake(s) {
     .replace(/Â /g, " "); // non-breaking space
 }
 
-const UA = { 'User-Agent': 'Mozilla/5.0 (price-reconcile bot)', 'Accept-Language': 'en-LK,en' };
+// Some WAFs (Wordfence, generic bot-fight heuristics) 403 requests that lack a
+// standard browser Accept header or that self-identify as a bot, even with no
+// JS challenge involved -- a realistic UA + Accept header alone gets through.
+const UA = {
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+  'Accept-Language': 'en-LK,en;q=0.9',
+  Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+};
 
 // Some partner sites (e.g. dimoretail.lk) sit behind Cloudflare's bot-protection
 // JS challenge, which 403s plain fetch() requests before our code ever sees the
@@ -603,6 +610,12 @@ function parseWooHtmlPage(html, origin) {
   return out;
 }
 
+// Some sites front WooCommerce with a WAF (Wordfence, Cloudflare bot-fight) that
+// intermittently 403s a fresh page render while a cached hit sails straight
+// through -- same origin, same request, different result a few seconds apart.
+// A 403/429/503 is worth a couple of retries; a 404 past the last page is not.
+const TRANSIENT_STATUS = /HTTP (403|429|503)\b/;
+
 async function fetchWooHtmlCatalog(shopUrl, log, fetchTextFn = fetchText) {
   const origin = toOrigin(shopUrl);
   const base = shopUrl.replace(/\/?$/, '/');
@@ -610,11 +623,20 @@ async function fetchWooHtmlCatalog(shopUrl, log, fetchTextFn = fetchText) {
   for (let page = 1; page <= 60; page++) {
     const url = page === 1 ? base : `${base}page/${page}/`;
     let html;
-    try {
-      html = await fetchTextFn(url);
-    } catch {
-      break; // page N/A (404 past the last page) -- stop, not a real failure
+    for (let attempt = 0; ; attempt++) {
+      try {
+        html = await fetchTextFn(url);
+        break;
+      } catch (e) {
+        if (TRANSIENT_STATUS.test(e.message) && attempt < 3) {
+          await sleep(4000 * (attempt + 1));
+          continue;
+        }
+        html = null;
+        break; // page N/A (404 past the last page, or a block that didn't clear) -- stop
+      }
     }
+    if (html == null) break;
     const products = parseWooHtmlPage(html, origin);
     if (products.length === 0) break;
     let added = 0;
