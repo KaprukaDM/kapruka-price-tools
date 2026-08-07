@@ -650,6 +650,372 @@ async function fetchWooHtmlCatalog(shopUrl, log, fetchTextFn = fetchText) {
   return [...byUrl.values()];
 }
 
+// ---- Bespoke per-site adapters --------------------------------------------
+// A handful of partners run hand-coded storefronts sharing no common CMS, so
+// each needs its own small scraper. All return the standard [{ id, name,
+// price, url }] shape fetchPartnerCatalog expects.
+
+// -- Odoo (website_sale) -- shared by disnies.lk and harvest.lk (and any
+// future Odoo-based partner). Card markup differs slightly by theme/version
+// between the two confirmed installs, so this reads from whichever stable
+// class/attribute is present rather than one exact selector.
+function parseOdooListingPage(html, origin) {
+  const $ = cheerio.load(html);
+  const out = [];
+  const seen = new Set();
+  $('form.oe_product_cart').each((_, el) => {
+    const $card = $(el);
+    const $link = $card.find('a.oe_product_image_link[href]').first();
+    let href = $link.attr('href');
+    if (!href) return;
+    if (!href.startsWith('http')) href = new URL(href, origin).toString();
+    if (seen.has(href)) return;
+    const price = parsePriceLKR($card.find('.oe_currency_value').first().text());
+    if (!price) return;
+    const nameLink = $card.find('a[itemprop="name"]').first();
+    const title = fixMojibake(decodeEntities(
+      (nameLink.length ? nameLink.text() : '') || $link.attr('title') || $link.find('img').attr('alt') || '',
+    )).replace(/\s+/g, ' ').trim();
+    if (!title) return;
+    seen.add(href);
+    out.push({ id: `odoo-${href}`, name: title, price, url: href });
+  });
+  return out;
+}
+
+async function fetchOdooCatalog(shopUrl, log, fetchTextFn = fetchText) {
+  const origin = toOrigin(shopUrl);
+  const base = shopUrl.replace(/\/?$/, '');
+  const byUrl = new Map();
+  for (let page = 1; page <= 60; page++) {
+    const url = page === 1 ? base : `${base}/page/${page}`;
+    let html;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        html = await fetchTextFn(url);
+        break;
+      } catch (e) {
+        if (TRANSIENT_STATUS.test(e.message) && attempt < 3) {
+          await sleep(4000 * (attempt + 1));
+          continue;
+        }
+        html = null;
+        break;
+      }
+    }
+    if (html == null) break;
+    const products = parseOdooListingPage(html, origin);
+    if (products.length === 0) break;
+    let added = 0;
+    for (const p of products) {
+      if (!byUrl.has(p.url)) { byUrl.set(p.url, p); added++; }
+    }
+    log(`  partner (odoo) page ${page}: ${products.length} cards (${added} new), total ${byUrl.size}`);
+    if (added === 0) break;
+    if (page > 1) await sleep(500);
+  }
+  return [...byUrl.values()];
+}
+
+// -- ichouse.lk (Pubudu Electronics) -- the whole catalogue lives in one
+// public Firestore document (no auth needed); a single request beats
+// crawling category pages. Firestore's REST API wraps every value in a
+// type tag ({ stringValue, integerValue, arrayValue, mapValue, ... }).
+function unwrapFirestoreValue(v) {
+  if (v == null) return null;
+  if ('stringValue' in v) return v.stringValue;
+  if ('integerValue' in v) return Number(v.integerValue);
+  if ('doubleValue' in v) return v.doubleValue;
+  if ('booleanValue' in v) return v.booleanValue;
+  if ('arrayValue' in v) return (v.arrayValue.values || []).map(unwrapFirestoreValue);
+  if ('mapValue' in v) {
+    const out = {};
+    for (const [k, val] of Object.entries(v.mapValue.fields || {})) out[k] = unwrapFirestoreValue(val);
+    return out;
+  }
+  return null;
+}
+
+function slugify(s) {
+  return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60).replace(/-+$/, '');
+}
+
+async function fetchIchouseCatalog(fetchJson = fetchJsonSafe) {
+  const url = 'https://firestore.googleapis.com/v1/projects/pubudueshop-cde28/databases/(default)/documents/shop/inventory';
+  const doc = await fetchJson(url);
+  const products = doc?.fields?.products?.arrayValue?.values || [];
+  const out = [];
+  for (const raw of products) {
+    const p = unwrapFirestoreValue(raw);
+    if (!p || !p.title || !p.price) continue;
+    const slug = `${slugify(p.mainCategory)}/${slugify(p.subCategory)}/${slugify(p.title)}`;
+    out.push({ id: `ichouse-${p.id}`, name: p.title, price: Math.round(p.price), url: `https://ichouse.lk/${slug}/` });
+  }
+  return out;
+}
+
+// -- kidsmarket.lk -- CodeIgniter storefront; pagination is a path offset
+// (12 products/page). Page 1's pagination widget exposes the total page
+// count directly, so no guessing is needed.
+function parseKidsmarketPage(html, origin) {
+  const $ = cheerio.load(html);
+  const out = [];
+  const seen = new Set();
+  $('a[href*="/product/kidsmarket/"]').each((_, el) => {
+    const $a = $(el);
+    let href = $a.attr('href');
+    if (!href) return;
+    if (!href.startsWith('http')) href = new URL(href, origin).toString();
+    if (seen.has(href)) return;
+    let $card = $a;
+    let priceEl = null;
+    for (let i = 0; i < 6; i++) {
+      $card = $card.parent();
+      if ($card.length === 0) break;
+      const p = $card.find('p.text-xl.font-bold.text-brand-blue').first();
+      if (p.length) { priceEl = p; break; }
+    }
+    if (!priceEl) return;
+    const price = parsePriceLKR(priceEl.text());
+    if (!price) return;
+    const title = fixMojibake(decodeEntities(
+      $card.find('h4.font-semibold.text-lg.text-brand-dark').first().text() || $a.text(),
+    )).replace(/\s+/g, ' ').trim();
+    if (!title) return;
+    seen.add(href);
+    out.push({ id: `kidsmarket-${href}`, name: title, price, url: href });
+  });
+  return out;
+}
+
+async function fetchKidsmarketCatalog(shopUrl, log, fetchTextFn = fetchText) {
+  const origin = toOrigin(shopUrl);
+  const base = `${origin}/shop/products`;
+  let html;
+  try { html = await fetchTextFn(base); } catch { return []; }
+  const byUrl = new Map();
+  for (const p of parseKidsmarketPage(html, origin)) byUrl.set(p.url, p);
+  log(`  partner (kidsmarket) page 1: ${byUrl.size} cards`);
+  let lastPage = 1;
+  const $page1 = cheerio.load(html);
+  $page1('[data-ci-pagination-page]').each((_, el) => {
+    const n = Number($page1(el).attr('data-ci-pagination-page'));
+    if (Number.isFinite(n) && n > lastPage) lastPage = n;
+  });
+  const PER_PAGE = 12;
+  for (let page = 2; page <= lastPage; page++) {
+    const offset = (page - 1) * PER_PAGE;
+    let h;
+    for (let attempt = 0; ; attempt++) {
+      try { h = await fetchTextFn(`${base}/${offset}`); break; }
+      catch (e) {
+        if (TRANSIENT_STATUS.test(e.message) && attempt < 3) { await sleep(4000 * (attempt + 1)); continue; }
+        h = null;
+        break;
+      }
+    }
+    if (h == null) break;
+    const products = parseKidsmarketPage(h, origin);
+    let added = 0;
+    for (const p of products) { if (!byUrl.has(p.url)) { byUrl.set(p.url, p); added++; } }
+    log(`  partner (kidsmarket) page ${page}: ${products.length} cards (${added} new), total ${byUrl.size}`);
+    await sleep(500);
+  }
+  return [...byUrl.values()];
+}
+
+// -- liveu.lk -- Laravel storefront whose listing endpoint honours a
+// per_page override, so the whole catalogue comes back in one request.
+function parseLiveuPage(html, origin) {
+  const $ = cheerio.load(html);
+  const out = [];
+  const seen = new Set();
+  $('div.vertical-product-card').each((_, el) => {
+    const $card = $(el);
+    const $a = $card.find('a.card-title').first();
+    let href = $a.attr('href');
+    if (!href) return;
+    if (!href.startsWith('http')) href = new URL(href, origin).toString();
+    if (seen.has(href)) return;
+    const price = parsePriceLKR($card.find('h6.price span.text-danger').first().text());
+    if (!price) return;
+    const title = fixMojibake(decodeEntities($a.text())).replace(/\s+/g, ' ').trim();
+    if (!title) return;
+    seen.add(href);
+    out.push({ id: `liveu-${href}`, name: title, price, url: href });
+  });
+  return out;
+}
+
+async function fetchLiveuCatalog(shopUrl, log, fetchTextFn = fetchText) {
+  const origin = toOrigin(shopUrl);
+  const html = await fetchTextFn(`${origin}/products?per_page=500`);
+  const products = parseLiveuPage(html, origin);
+  log(`  partner (liveu) single page: ${products.length} cards`);
+  return products;
+}
+
+// -- scgraphic.com (SC Promotion) -- entire catalogue renders on one page.
+function parseScgraphicPage(html, origin) {
+  const $ = cheerio.load(html);
+  const out = [];
+  const seen = new Set();
+  $('div.product-card').each((_, el) => {
+    const $card = $(el);
+    const $a = $card.find('a.btn-details[href]').first();
+    let href = $a.attr('href');
+    if (!href) return;
+    if (!href.startsWith('http')) href = new URL(href, origin).toString();
+    if (seen.has(href)) return;
+    const $discounted = $card.find('span.discounted-price').first();
+    const priceEl = $discounted.length ? $discounted : $card.find('span.regular-price').first();
+    const price = parsePriceLKR(priceEl.text());
+    if (!price) return;
+    const title = fixMojibake(decodeEntities($card.find('div.product-name').first().text())).replace(/\s+/g, ' ').trim();
+    if (!title) return;
+    seen.add(href);
+    out.push({ id: `scgraphic-${href}`, name: title, price, url: href });
+  });
+  return out;
+}
+
+async function fetchScgraphicCatalog(shopUrl, log, fetchTextFn = fetchText) {
+  const origin = toOrigin(shopUrl);
+  const html = await fetchTextFn(`${origin}/shop.php`);
+  const products = parseScgraphicPage(html, origin);
+  log(`  partner (scgraphic) single page: ${products.length} cards`);
+  return products;
+}
+
+// -- jeewakaherbals.com/jhstore -- AbanteCart storefront; the brand's main
+// domain is a marketing page, the real store lives under /jhstore/ across
+// three known category paths (8 products/page).
+const JHSTORE_CATEGORY_PATHS = [43, 52, 68];
+
+function parseJhstorePage(html, origin) {
+  const $ = cheerio.load(html);
+  const out = [];
+  const seen = new Set();
+  $('div.product-card').each((_, el) => {
+    const $card = $(el);
+    const $a = $card.find('a[href*="rt=product/product"]').first();
+    let href = $a.attr('href');
+    if (!href) return;
+    if (!href.startsWith('http')) href = new URL(href, origin).toString();
+    if (seen.has(href)) return;
+    const price = parsePriceLKR($card.find('div.price').first().text());
+    if (!price) return; // also drops genuine Rs.0.00 "call for price" entries
+    const title = fixMojibake(decodeEntities($card.find('div.card-title').first().text())).replace(/\s+/g, ' ').trim();
+    if (!title) return;
+    seen.add(href);
+    out.push({ id: `jhstore-${href}`, name: title, price, url: href });
+  });
+  return out;
+}
+
+async function fetchJhstoreCatalog(shopUrl, log, fetchTextFn = fetchText) {
+  const origin = toOrigin(shopUrl);
+  const byUrl = new Map();
+  for (const path of JHSTORE_CATEGORY_PATHS) {
+    for (let page = 1; page <= 20; page++) {
+      const url = `${origin}/jhstore/index.php?rt=product/category&path=${path}&page=${page}&limit=8`;
+      let html;
+      try { html = await fetchTextFn(url); } catch { break; }
+      const products = parseJhstorePage(html, origin);
+      if (products.length === 0) break;
+      let added = 0;
+      for (const p of products) { if (!byUrl.has(p.url)) { byUrl.set(p.url, p); added++; } }
+      log(`  partner (jhstore) path=${path} page ${page}: ${products.length} cards (${added} new), total ${byUrl.size}`);
+      if (added === 0) break;
+      await sleep(400);
+    }
+  }
+  return [...byUrl.values()];
+}
+
+// -- foreverskinnaturals.com -- static-exported Next.js shell with no
+// server-rendered content at all; the frontend's own backend API returns
+// the full catalogue as clean JSON, one entry per size/price variant.
+async function fetchForeverskinCatalog(fetchJson = fetchJsonSafe) {
+  const doc = await fetchJson('https://api.foreverskinnaturals.com/v1/api/product/all?page=0&size=500');
+  const list = doc?.data?.list || [];
+  const out = [];
+  for (const p of list) {
+    for (const s of p.sizes || []) {
+      const price = parsePriceLKR(s.price);
+      if (!price) continue;
+      out.push({
+        id: `foreverskin-${p.id}-${s.sizeId}`,
+        name: s.size ? `${p.name} ${s.size}` : p.name,
+        price,
+        url: `https://foreverskinnaturals.com/product/${p.id}`,
+      });
+    }
+  }
+  return out;
+}
+
+// -- nanotek.lk -- category-paginated storefront; every category has to be
+// walked individually since there's no site-wide listing.
+const NANOTEK_CATEGORIES = [
+  'pba-systems', 'apple', 'mobile-phones-tablets', 'all-in-one-nuc-systems', 'desktop-workstations',
+  'console-handheld-gaming', 'graphic-tablet', 'laptop', 'power-banks-laptop-bags-accessories',
+  'television-tv', 'monitors-monitor-arms', 'processor', 'motherboards', 'memory-ram', 'graphics-card',
+  'power-supply-ups-surge-protectors', 'cooling-lighting', 'storage-nas', 'casings',
+  'speakers-headsets-ear-buds', 'keyboardmouse-gamepad-controller', 'projectors', 'printers',
+  'gaming-chairs-tables', 'cables-hubs', 'external-storage', 'streaming-action-camera',
+  'expansion-cards-networking', 'os-software',
+];
+
+function parseNanotekPage(html, origin) {
+  const $ = cheerio.load(html);
+  const out = [];
+  const seen = new Set();
+  $('li.ty-catPage-productListItem').each((_, el) => {
+    const $card = $(el);
+    const $a = $card.find('a[href*="/product/"]').first();
+    let href = $a.attr('href');
+    if (!href) return;
+    if (!href.startsWith('http')) href = new URL(href, origin).toString();
+    if (seen.has(href)) return;
+    const price = parsePriceLKR($card.find('.ty-productBlock-price-retail').first().text());
+    if (!price) return;
+    const title = fixMojibake(decodeEntities($card.find('.ty-productBlock-title').first().text())).replace(/\s+/g, ' ').trim();
+    if (!title) return;
+    seen.add(href);
+    out.push({ id: `nanotek-${href}`, name: title, price, url: href });
+  });
+  return out;
+}
+
+async function fetchNanotekCatalog(shopUrl, log, fetchTextFn = fetchText) {
+  const origin = toOrigin(shopUrl);
+  const byUrl = new Map();
+  for (const cat of NANOTEK_CATEGORIES) {
+    for (let page = 1; page <= 30; page++) {
+      const url = page === 1 ? `${origin}/category/${cat}` : `${origin}/category/${cat}?page=${page}`;
+      let html;
+      for (let attempt = 0; ; attempt++) {
+        try { html = await fetchTextFn(url); break; }
+        catch (e) {
+          if (TRANSIENT_STATUS.test(e.message) && attempt < 3) { await sleep(4000 * (attempt + 1)); continue; }
+          html = null;
+          break;
+        }
+      }
+      if (html == null) break;
+      const products = parseNanotekPage(html, origin);
+      if (products.length === 0) break;
+      let added = 0;
+      for (const p of products) { if (!byUrl.has(p.url)) { byUrl.set(p.url, p); added++; } }
+      log(`  partner (nanotek) ${cat} page ${page}: ${products.length} cards (${added} new), total ${byUrl.size}`);
+      if (added === 0) break;
+      await sleep(400);
+    }
+  }
+  return [...byUrl.values()];
+}
+
 /**
  * Fetch a partner's full catalogue from their own site, auto-detecting the
  * platform. Returns the standard product shape. Throws if the platform isn't
@@ -666,6 +1032,38 @@ export async function fetchPartnerCatalog(site, { log = () => {}, platform = 'au
   if (platform === 'woocommerce-html') {
     const products = await fetchWooHtmlCatalog(site, log);
     return { products, platform: 'woocommerce-html' };
+  }
+  if (platform === 'odoo') {
+    const products = await fetchOdooCatalog(site, log);
+    return { products, platform: 'odoo' };
+  }
+  if (platform === 'ichouse') {
+    const products = await fetchIchouseCatalog(fetchJson);
+    return { products, platform: 'ichouse' };
+  }
+  if (platform === 'kidsmarket') {
+    const products = await fetchKidsmarketCatalog(site, log);
+    return { products, platform: 'kidsmarket' };
+  }
+  if (platform === 'liveu') {
+    const products = await fetchLiveuCatalog(site, log);
+    return { products, platform: 'liveu' };
+  }
+  if (platform === 'scgraphic') {
+    const products = await fetchScgraphicCatalog(site, log);
+    return { products, platform: 'scgraphic' };
+  }
+  if (platform === 'jhstore') {
+    const products = await fetchJhstoreCatalog(site, log);
+    return { products, platform: 'jhstore' };
+  }
+  if (platform === 'foreverskin') {
+    const products = await fetchForeverskinCatalog(fetchJson);
+    return { products, platform: 'foreverskin' };
+  }
+  if (platform === 'nanotek') {
+    const products = await fetchNanotekCatalog(site, log);
+    return { products, platform: 'nanotek' };
   }
   if (platform === 'woocommerce' || platform === 'auto') {
     const woo = await fetchWooCatalog(origin, log, fetchJson);
