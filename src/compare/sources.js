@@ -955,67 +955,6 @@ async function fetchForeverskinCatalog(fetchJson = fetchJsonSafe) {
   return out;
 }
 
-// -- nanotek.lk -- category-paginated storefront; every category has to be
-// walked individually since there's no site-wide listing.
-const NANOTEK_CATEGORIES = [
-  'pba-systems', 'apple', 'mobile-phones-tablets', 'all-in-one-nuc-systems', 'desktop-workstations',
-  'console-handheld-gaming', 'graphic-tablet', 'laptop', 'power-banks-laptop-bags-accessories',
-  'television-tv', 'monitors-monitor-arms', 'processor', 'motherboards', 'memory-ram', 'graphics-card',
-  'power-supply-ups-surge-protectors', 'cooling-lighting', 'storage-nas', 'casings',
-  'speakers-headsets-ear-buds', 'keyboardmouse-gamepad-controller', 'projectors', 'printers',
-  'gaming-chairs-tables', 'cables-hubs', 'external-storage', 'streaming-action-camera',
-  'expansion-cards-networking', 'os-software',
-];
-
-function parseNanotekPage(html, origin) {
-  const $ = cheerio.load(html);
-  const out = [];
-  const seen = new Set();
-  $('li.ty-catPage-productListItem').each((_, el) => {
-    const $card = $(el);
-    const $a = $card.find('a[href*="/product/"]').first();
-    let href = $a.attr('href');
-    if (!href) return;
-    if (!href.startsWith('http')) href = new URL(href, origin).toString();
-    if (seen.has(href)) return;
-    const price = parsePriceLKR($card.find('.ty-productBlock-price-retail').first().text());
-    if (!price) return;
-    const title = fixMojibake(decodeEntities($card.find('.ty-productBlock-title').first().text())).replace(/\s+/g, ' ').trim();
-    if (!title) return;
-    seen.add(href);
-    out.push({ id: `nanotek-${href}`, name: title, price, url: href });
-  });
-  return out;
-}
-
-async function fetchNanotekCatalog(shopUrl, log, fetchTextFn = fetchText) {
-  const origin = toOrigin(shopUrl);
-  const byUrl = new Map();
-  for (const cat of NANOTEK_CATEGORIES) {
-    for (let page = 1; page <= 30; page++) {
-      const url = page === 1 ? `${origin}/category/${cat}` : `${origin}/category/${cat}?page=${page}`;
-      let html;
-      for (let attempt = 0; ; attempt++) {
-        try { html = await fetchTextFn(url); break; }
-        catch (e) {
-          if (TRANSIENT_STATUS.test(e.message) && attempt < 3) { await sleep(4000 * (attempt + 1)); continue; }
-          html = null;
-          break;
-        }
-      }
-      if (html == null) break;
-      const products = parseNanotekPage(html, origin);
-      if (products.length === 0) break;
-      let added = 0;
-      for (const p of products) { if (!byUrl.has(p.url)) { byUrl.set(p.url, p); added++; } }
-      log(`  partner (nanotek) ${cat} page ${page}: ${products.length} cards (${added} new), total ${byUrl.size}`);
-      if (added === 0) break;
-      await sleep(400);
-    }
-  }
-  return [...byUrl.values()];
-}
-
 /**
  * Fetch a partner's full catalogue from their own site, auto-detecting the
  * platform. Returns the standard product shape. Throws if the platform isn't
@@ -1060,10 +999,6 @@ export async function fetchPartnerCatalog(site, { log = () => {}, platform = 'au
   if (platform === 'foreverskin') {
     const products = await fetchForeverskinCatalog(fetchJson);
     return { products, platform: 'foreverskin' };
-  }
-  if (platform === 'nanotek') {
-    const products = await fetchNanotekCatalog(site, log);
-    return { products, platform: 'nanotek' };
   }
   if (platform === 'woocommerce' || platform === 'auto') {
     const woo = await fetchWooCatalog(origin, log, fetchJson);

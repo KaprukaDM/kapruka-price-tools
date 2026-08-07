@@ -782,10 +782,17 @@ async function paginateCategories(categories, buildOpts) {
   return out;
 }
 
+// Kept in sync with the site's live category nav -- nanotek.lk retired its old
+// slugs (storage/networking/gaming/audio/keyboard-mouse/power-supply/ram/casing
+// all 404 now) and added several new categories since this list was written.
 const NANOTEK_CATEGORIES = [
-  'laptop', 'desktop-workstations', 'graphics-card', 'motherboards', 'monitors-monitor-arms',
-  'printers', 'television-tv', 'apple', 'storage', 'networking', 'gaming', 'audio', 'keyboard-mouse',
-  'power-supply', 'processor', 'ram', 'casing', 'cooling',
+  'pba-systems', 'apple', 'mobile-phones-tablets', 'all-in-one-nuc-systems', 'desktop-workstations',
+  'console-handheld-gaming', 'graphic-tablet', 'laptop', 'power-banks-laptop-bags-accessories',
+  'television-tv', 'monitors-monitor-arms', 'processor', 'motherboards', 'memory-ram', 'graphics-card',
+  'power-supply-ups-surge-protectors', 'cooling-lighting', 'storage-nas', 'casings',
+  'speakers-headsets-ear-buds', 'keyboardmouse-gamepad-controller', 'projectors', 'printers',
+  'gaming-chairs-tables', 'cables-hubs', 'external-storage', 'streaming-action-camera',
+  'expansion-cards-networking', 'os-software',
 ];
 function nanotekCatalog() {
   return () =>
