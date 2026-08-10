@@ -887,6 +887,31 @@ async function fetchScgraphicCatalog(shopUrl, log, fetchTextFn = fetchText) {
   return products;
 }
 
+// -- Agrola Ceylon's Daraz shop -- Daraz's shop product grid is loaded via a
+// signed internal API with no static fallback, and its search/pagination
+// endpoints trip Alibaba's TMD anti-bot challenge (an active CAPTCHA wall,
+// not a header check -- not something to route around). Manually maintained
+// from the shop page instead: https://www.daraz.lk/shop/x4cu9fso/
+// Update by re-checking that page and editing the list below.
+const AGROLA_DARAZ_SHOP_URL = 'https://www.daraz.lk/shop/x4cu9fso/';
+const AGROLA_DARAZ_PRODUCTS = [
+  { name: 'AGROLA Ceylon Cinnamon Antioxidant Booster Tea | 3-Pack Combo', price: 2025 },
+  { name: 'AGROLA Ceylon Cinnamon Detox & Weight Loss Tea - 20 Tea Bags', price: 750 },
+  { name: 'AGROLA Ceylon Hibiscus Spearmint Herbal Tea - 20 Tea Bags', price: 750 },
+  { name: 'Agrola Ceylon Moringa Super Wellness Herbal Tea - 20 Tea Bags', price: 750 },
+  { name: 'AGROLA Ceylon Cinnamon Antioxidant Booster Tea - 20 Tea Bags', price: 750 },
+];
+
+async function fetchAgrolaDarazCatalog(log) {
+  log(`  partner (agrola-daraz) manually maintained list: ${AGROLA_DARAZ_PRODUCTS.length} products`);
+  return AGROLA_DARAZ_PRODUCTS.map((p, i) => ({
+    id: `agrola-daraz-${i}`,
+    name: p.name,
+    price: p.price,
+    url: AGROLA_DARAZ_SHOP_URL,
+  }));
+}
+
 // -- jeewakaherbals.com/jhstore -- AbanteCart storefront; the brand's main
 // domain is a marketing page, the real store lives under /jhstore/ across
 // three known category paths (8 products/page).
@@ -991,6 +1016,10 @@ export async function fetchPartnerCatalog(site, { log = () => {}, platform = 'au
   if (platform === 'scgraphic') {
     const products = await fetchScgraphicCatalog(site, log);
     return { products, platform: 'scgraphic' };
+  }
+  if (platform === 'agrola-daraz') {
+    const products = await fetchAgrolaDarazCatalog(log);
+    return { products, platform: 'agrola-daraz' };
   }
   if (platform === 'jhstore') {
     const products = await fetchJhstoreCatalog(site, log);
