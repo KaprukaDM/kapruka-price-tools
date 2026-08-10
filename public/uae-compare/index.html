@@ -184,6 +184,8 @@
         <th>fnp.ae Match</th>
         <th>fnp.ae Price</th>
         <th>Converted (LKR)</th>
+        <th>Current GP</th>
+        <th>Min. Price (35% GP)</th>
         <th>Difference</th>
       </tr>
     </thead>
@@ -281,6 +283,29 @@ function escapeHtml(s) {
 const lkr = (v) => (v == null ? '—' : 'Rs. ' + Number(v).toLocaleString('en-LK', { maximumFractionDigits: 0 }));
 const aed = (v) => (v == null ? '—' : 'AED ' + Number(v).toLocaleString('en-AE', { maximumFractionDigits: 2 }));
 
+// ── Gross profit — cost is fnp.ae's price (converted to LKR), selling price
+// is Kapruka's own LKR price. Target margin to maintain: 35%.
+const GP_TARGET = 0.35;
+
+// GP% = (selling − cost) / selling. Needs both sides priced (status 'ok').
+function gpPct(r) {
+  if (r.kaprukaPriceLKR == null || r.fnpPriceLKR == null || r.kaprukaPriceLKR <= 0) return null;
+  return ((r.kaprukaPriceLKR - r.fnpPriceLKR) / r.kaprukaPriceLKR) * 100;
+}
+
+// The lowest selling price that still clears GP_TARGET on this cost:
+// solving GP_TARGET = (price − cost) / price for price.
+function minPriceForTargetGp(r) {
+  if (r.fnpPriceLKR == null) return null;
+  return r.fnpPriceLKR / (1 - GP_TARGET);
+}
+
+function gpBadge(pct) {
+  if (pct == null) return '<span class="badge faint">—</span>';
+  const cls = pct >= GP_TARGET * 100 ? 'good' : pct >= 15 ? 'mid' : 'bad';
+  return `<span class="badge ${cls}">${pct.toFixed(1)}%</span>`;
+}
+
 function setError(msg) {
   if (!msg) { errorBanner.style.display = 'none'; errorBanner.textContent = ''; return; }
   errorBanner.style.display = 'block';
@@ -322,19 +347,21 @@ function renderStats(data) {
   const flagged = ok.filter((r) => r.diffPct < -1).length;
   const pricier = ok.filter((r) => r.diffPct > 1).length;
   const unpaired = rows.length - paired.length;
+  const belowGpTarget = ok.filter((r) => { const g = gpPct(r); return g != null && g < GP_TARGET * 100; }).length;
   const card = (n, l, cls = '') => `<div class="stat ${cls}"><div class="n">${n}</div><div class="l">${l}</div></div>`;
   $('stats').innerHTML =
     card(data.kaprukaCount, 'Kapruka UAE products') +
     card(paired.length, 'Paired with fnp.ae') +
     card(flagged, '⚑ Flagged — Kapruka cheaper', flagged ? 'bad' : '') +
     card(pricier, 'Kapruka pricier', 'good') +
+    card(belowGpTarget, `Below ${GP_TARGET * 100}% GP target`, belowGpTarget ? 'bad' : 'good') +
     card(unpaired, 'Unpaired', unpaired ? 'mid' : '');
 }
 
 function renderTable(data) {
   const tbody = $('tbody');
   if (!data.comparisons.length) {
-    tbody.innerHTML = '<tr><td colspan="5" class="empty">No Kapruka UAE products found.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="7" class="empty">No Kapruka UAE products found.</td></tr>';
     return;
   }
   tbody.innerHTML = sortedComparisons(data).map((r) => `
@@ -358,6 +385,8 @@ function renderTable(data) {
       </td>
       <td class="price">${aed(r.fnpPriceAED)}</td>
       <td class="price">${lkr(r.fnpPriceLKR)}</td>
+      <td>${gpBadge(gpPct(r))}</td>
+      <td class="price">${lkr(minPriceForTargetGp(r))}</td>
       <td>${statusBadge(r)}</td>
     </tr>
   `).join('');
@@ -400,6 +429,10 @@ function renderGrid(data) {
       <div class="card-prices">
         <span>${lkr(r.kaprukaPriceLKR)}</span>
         <span>${aed(r.fnpPriceAED)}${r.fnpPriceLKR != null ? ' · ' + lkr(r.fnpPriceLKR) : ''}</span>
+      </div>
+      <div class="card-prices">
+        <span>GP: ${gpBadge(gpPct(r))}</span>
+        <span>Min: ${lkr(minPriceForTargetGp(r))}</span>
       </div>
       ${statusBadge(r)}
       ${matchTag(r) ? `<div class="match-tag">${escapeHtml(matchTag(r))}</div>` : ''}
