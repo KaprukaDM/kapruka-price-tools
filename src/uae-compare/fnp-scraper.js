@@ -119,20 +119,23 @@ export async function searchFnpProducts(query) {
 // URLs that fall outside the crawled categories (e.g. cakes/chocolates,
 // whose category page only exposes a rotating subsample, not a stable full
 // catalog). fnp.ae product pages carry no JSON-LD/OG price meta; the
-// reliable signal is the hidden #defaultProductPrice input that mirrors
-// whichever size/variant is preselected on page load.
+// reliable signal is the same <meta itemprop="price" content="..."> tag the
+// category-listing crawl already reads (see parseCategoryProducts above) —
+// the page used to instead expose a #defaultProductPrice hidden input, but
+// that id is gone from current markup (site redesign), which was silently
+// turning every direct per-product fetch into a "scrape_failed" row.
 export async function fetchFnpProduct(url) {
   const html = await fetchHtml(url);
-  const priceMatch = html.match(/id="defaultProductPrice"\s+value="([\d.]+)"/);
-  const h1Match = html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/);
-  const ogImageMatch = html.match(/property="og:image"[^>]*content="([^"]*)"/);
+  const $ = cheerio.load(html);
 
-  const priceAED = priceMatch ? Number(priceMatch[1]) : null;
-  const name = h1Match ? h1Match[1].replace(/\s+/g, ' ').trim() : null;
+  const priceAttr = $('meta[itemprop="price"]').first().attr('content');
+  const priceAED = priceAttr != null ? Number(priceAttr) : null;
+  const name = $('h1').first().text().replace(/\s+/g, ' ').trim() || null;
+  const image = $('meta[property="og:image"]').first().attr('content') || null;
 
   return {
     name,
-    image: ogImageMatch ? ogImageMatch[1] : null,
+    image,
     priceAED: Number.isFinite(priceAED) ? priceAED : null,
     currency: 'AED',
   };
