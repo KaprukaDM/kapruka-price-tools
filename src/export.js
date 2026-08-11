@@ -288,6 +288,7 @@ export async function overpricedReport() {
         partnerLabel: p.partnerLabel || p.partnerSite || '',
         category: categoryFromKaprukaUrl(m.kaprukaUrl),
         name: m.name ?? '',
+        partnerProductName: m.partnerName ?? '',
         kaprukaPrice: m.kaprukaPrice ?? null,
         partnerPrice: m.partnerPrice ?? null,
         diff: m.diff ?? null,

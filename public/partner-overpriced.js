@@ -12,6 +12,7 @@ const COLUMNS = [
   { key: 'partnerPrice', label: 'Partner site', num: true },
   { key: 'diff', label: 'Overcharge', num: true },
   { key: 'pct', label: '%', num: true },
+  { key: 'nameSimilarity', label: 'Name Sim %', num: true },
 ];
 let SORT = { key: 'diff', dir: 'desc' };
 
@@ -158,18 +159,18 @@ function render() {
   const body = pageRows
     .map((m, i) => {
       const pct = m.pct == null ? '' : `+${m.pct.toFixed(1)}%`;
-      const conf = m.confidence === 'high'
-        ? '<span class="badge b-hi">high</span>'
-        : '<span class="badge b-md">review</span>';
       return `<tr class="over">
         <td>${escapeHtml(m.category)}</td>
         <td><span class="store-pill">${escapeHtml(m.partner)}</span>${m.partnerLabel ? `<div class="ctx">${escapeHtml(m.partnerLabel)}</div>` : ''}</td>
-        <td>${link(m.kaprukaUrl, m.name)}
-          <div class="ctx">matched: ${link(m.partnerUrl, m.partnerLabel)} · ${conf} · name sim ${m.nameSimilarity ?? '—'}%</div></td>
+        <td class="col-product">
+          <div class="prod-name">${link(m.kaprukaUrl, m.name)}</div>
+          <div class="prod-name prod-partner">${link(m.partnerUrl, m.partnerProductName || m.partnerLabel || '—')}</div>
+        </td>
         <td class="num price">${lkr(m.kaprukaPrice)}</td>
         <td class="num">${lkr(m.partnerPrice)}</td>
         <td class="num over-amt">+${lkr(m.diff)}</td>
         <td class="num over-amt">${pct}</td>
+        <td class="num">${m.nameSimilarity != null ? m.nameSimilarity + '%' : '—'}</td>
         <td><button type="button" class="row-remove" data-idx="${(PAGE - 1) * PAGE_SIZE + i}" title="Remove from dashboard">🗑 Remove</button></td>
       </tr>`;
     })

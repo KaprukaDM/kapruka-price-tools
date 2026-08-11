@@ -560,9 +560,9 @@ app.get('/api/removed-products', async (_req, res) => {
 });
 
 app.post('/api/removed-products', async (req, res) => {
-  const { kaprukaUrl, name, category, partnerName, reason, sourcePage, snapshot } = req.body || {};
-  if (!kaprukaUrl || !String(reason || '').trim()) {
-    return res.status(400).json({ error: 'kaprukaUrl and a reason are required.' });
+  const { kaprukaUrl, name, category, partnerName, reason, removedBy, sourcePage, snapshot } = req.body || {};
+  if (!kaprukaUrl || !String(reason || '').trim() || !String(removedBy || '').trim()) {
+    return res.status(400).json({ error: 'kaprukaUrl, a reason, and the name of who removed it are required.' });
   }
   try {
     const row = await addRemovedProduct({
@@ -571,6 +571,7 @@ app.post('/api/removed-products', async (req, res) => {
       category: category || '',
       partnerName: partnerName || '',
       reason: String(reason).trim(),
+      removedBy: String(removedBy).trim(),
       sourcePage: sourcePage || '',
       snapshot: snapshot || {},
     });

@@ -112,6 +112,7 @@ function rowToRemoved(r) {
     category: r.category || '',
     partnerName: r.partner_name || '',
     reason: r.reason || '',
+    removedBy: r.removed_by || '',
     sourcePage: r.source_page || '',
     snapshot: r.snapshot || null,
   };
@@ -294,9 +295,11 @@ async function makePostgresBackend(connectionString) {
       category      TEXT,
       partner_name  TEXT,
       reason        TEXT NOT NULL,
+      removed_by    TEXT,
       source_page   TEXT,
       snapshot      JSONB
     );
+    ALTER TABLE removed_products ADD COLUMN IF NOT EXISTS removed_by TEXT;
   `);
 
   return {
@@ -305,16 +308,16 @@ async function makePostgresBackend(connectionString) {
       return rows.map(rowToRemoved);
     },
 
-    async addRemovedProduct({ kaprukaUrl, name, category, partnerName, reason, sourcePage, snapshot }) {
+    async addRemovedProduct({ kaprukaUrl, name, category, partnerName, reason, removedBy, sourcePage, snapshot }) {
       const { rows } = await pool.query(
-        `INSERT INTO removed_products (created_at, kapruka_url, name, category, partner_name, reason, source_page, snapshot)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb)
+        `INSERT INTO removed_products (created_at, kapruka_url, name, category, partner_name, reason, removed_by, source_page, snapshot)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb)
          ON CONFLICT (kapruka_url) DO UPDATE SET
            created_at = EXCLUDED.created_at, name = EXCLUDED.name, category = EXCLUDED.category,
-           partner_name = EXCLUDED.partner_name, reason = EXCLUDED.reason,
+           partner_name = EXCLUDED.partner_name, reason = EXCLUDED.reason, removed_by = EXCLUDED.removed_by,
            source_page = EXCLUDED.source_page, snapshot = EXCLUDED.snapshot
          RETURNING *`,
-        [nowIso(), kaprukaUrl, name || null, category || null, partnerName || null, reason, sourcePage || null, JSON.stringify(snapshot || {})],
+        [nowIso(), kaprukaUrl, name || null, category || null, partnerName || null, reason, removedBy || null, sourcePage || null, JSON.stringify(snapshot || {})],
       );
       return rowToRemoved(rows[0]);
     },
@@ -715,9 +718,12 @@ async function makePostgresBackend(connectionString) {
 //     category      TEXT,
 //     partner_name  TEXT,
 //     reason        TEXT NOT NULL,
+//     removed_by    TEXT,
 //     source_page   TEXT,
 //     snapshot      JSONB
 //   );
+//   -- Already had a removed_products table before removed_by existed? Run:
+//   -- ALTER TABLE removed_products ADD COLUMN IF NOT EXISTS removed_by TEXT;
 //   -- The static dashboard (GitHub Pages) reads this table directly with a
 //   -- public anon key, so it needs RLS enabled with a public SELECT policy:
 //   ALTER TABLE intl_gift_snapshots ENABLE ROW LEVEL SECURITY;
@@ -788,7 +794,7 @@ async function makeSupabaseRestBackend(baseUrl, serviceKey) {
       return rows.map(rowToRemoved);
     },
 
-    async addRemovedProduct({ kaprukaUrl, name, category, partnerName, reason, sourcePage, snapshot }) {
+    async addRemovedProduct({ kaprukaUrl, name, category, partnerName, reason, removedBy, sourcePage, snapshot }) {
       const rows = await restFetch('/removed_products?on_conflict=kapruka_url', {
         method: 'POST',
         headers: { Prefer: 'resolution=merge-duplicates,return=representation' },
@@ -799,6 +805,7 @@ async function makeSupabaseRestBackend(baseUrl, serviceKey) {
           category: category || null,
           partner_name: partnerName || null,
           reason,
+          removed_by: removedBy || null,
           source_page: sourcePage || null,
           snapshot: snapshot || {},
         }),
@@ -1218,6 +1225,7 @@ async function makeSqliteBackend() {
       category      TEXT,
       partner_name  TEXT,
       reason        TEXT NOT NULL,
+      removed_by    TEXT,
       source_page   TEXT,
       snapshot_json TEXT
     );
@@ -1231,17 +1239,18 @@ async function makeSqliteBackend() {
     category: r.category || '',
     partnerName: r.partner_name || '',
     reason: r.reason || '',
+    removedBy: r.removed_by || '',
     sourcePage: r.source_page || '',
     snapshot: r.snapshot_json ? JSON.parse(r.snapshot_json) : null,
   });
   const selRemoved = db.prepare(`SELECT * FROM removed_products ORDER BY created_at DESC`);
   const selRemovedByUrl = db.prepare(`SELECT * FROM removed_products WHERE kapruka_url = ?`);
   const upsertRemoved = db.prepare(`
-    INSERT INTO removed_products (created_at, kapruka_url, name, category, partner_name, reason, source_page, snapshot_json)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO removed_products (created_at, kapruka_url, name, category, partner_name, reason, removed_by, source_page, snapshot_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT (kapruka_url) DO UPDATE SET
       created_at = excluded.created_at, name = excluded.name, category = excluded.category,
-      partner_name = excluded.partner_name, reason = excluded.reason,
+      partner_name = excluded.partner_name, reason = excluded.reason, removed_by = excluded.removed_by,
       source_page = excluded.source_page, snapshot_json = excluded.snapshot_json`);
   const delRemoved = db.prepare(`DELETE FROM removed_products WHERE id = ?`);
 
@@ -1315,10 +1324,10 @@ async function makeSqliteBackend() {
       return selRemoved.all().map(rowToRemovedSqlite);
     },
 
-    async addRemovedProduct({ kaprukaUrl, name, category, partnerName, reason, sourcePage, snapshot }) {
+    async addRemovedProduct({ kaprukaUrl, name, category, partnerName, reason, removedBy, sourcePage, snapshot }) {
       upsertRemoved.run(
         nowIso(), kaprukaUrl, name || null, category || null, partnerName || null,
-        reason, sourcePage || null, JSON.stringify(snapshot || {}),
+        reason, removedBy || null, sourcePage || null, JSON.stringify(snapshot || {}),
       );
       return rowToRemovedSqlite(selRemovedByUrl.get(kaprukaUrl));
     },
