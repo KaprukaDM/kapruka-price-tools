@@ -10,12 +10,14 @@ const COLUMNS = [
 ];
 const PAGE_SIZE = 50;
 
-// Two independent panels sharing the page's category/store/search filters —
-// each tracks its own sort/page state and renders into its own table div.
+// Two directions sharing the page's category/store/search filters and one
+// table — the toggle switch picks which is currently rendered, each keeping
+// its own sort/page state across switches.
 const PANELS = {
-  partner: { rowClass: 'stock-partner', tableId: 'partnerTable', countId: 'partnerCount', exportId: 'partnerExport', sort: { key: 'name', dir: 'asc' }, page: 1, rows: [] },
-  kapruka: { rowClass: 'stock-kapruka', tableId: 'kaprukaTable', countId: 'kaprukaCount', exportId: 'kaprukaExport', sort: { key: 'name', dir: 'asc' }, page: 1, rows: [] },
+  partner: { rowClass: 'stock-partner', sort: { key: 'name', dir: 'asc' }, page: 1, rows: [] },
+  kapruka: { rowClass: 'stock-kapruka', sort: { key: 'name', dir: 'asc' }, page: 1, rows: [] },
 };
+let ACTIVE_DIR = 'partner';
 
 function sortRows(rows, sort) {
   const col = COLUMNS.find((c) => c.key === sort.key);
@@ -44,13 +46,12 @@ function theadHtml(sort) {
   return `<tr>${cells}</tr>`;
 }
 
-function pagerHtml(dir, totalPages, totalItems) {
-  const panel = PANELS[dir];
+function pagerHtml(panel, totalPages, totalItems) {
   if (totalPages <= 1) return '';
   return `<div class="pager">
-      <button class="ghost" data-pg="prev" data-dir="${dir}" type="button" ${panel.page === 1 ? 'disabled' : ''}>‹ Prev</button>
+      <button class="ghost" data-pg="prev" type="button" ${panel.page === 1 ? 'disabled' : ''}>‹ Prev</button>
       <span>Page ${panel.page} of ${totalPages} · ${totalItems} items</span>
-      <button class="ghost" data-pg="next" data-dir="${dir}" type="button" ${panel.page === totalPages ? 'disabled' : ''}>Next ›</button>
+      <button class="ghost" data-pg="next" type="button" ${panel.page === totalPages ? 'disabled' : ''}>Next ›</button>
     </div>`;
 }
 
@@ -126,13 +127,25 @@ function filteredFor(dir) {
   );
 }
 
-function renderPanel(dir) {
-  const panel = PANELS[dir];
-  let rows = filteredFor(dir);
-  $(panel.countId).textContent = `${rows.length} product${rows.length === 1 ? '' : 's'}`;
+function wireToggle() {
+  $('stockToggle').querySelectorAll('button').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.dir === ACTIVE_DIR);
+    btn.addEventListener('click', () => {
+      if (btn.dataset.dir === ACTIVE_DIR) return;
+      ACTIVE_DIR = btn.dataset.dir;
+      $('stockToggle').querySelectorAll('button').forEach((b) => b.classList.toggle('active', b === btn));
+      render();
+    });
+  });
+}
+
+function render() {
+  const panel = PANELS[ACTIVE_DIR];
+  let rows = filteredFor(ACTIVE_DIR);
+  $('activeCount').textContent = `${rows.length} product${rows.length === 1 ? '' : 's'}`;
 
   if (!rows.length) {
-    $(panel.tableId).innerHTML = '<p class="empty">No stock mismatches match your filter. 🎉</p>';
+    $('activeTable').innerHTML = '<p class="empty">No stock mismatches match your filter. 🎉</p>';
     panel.rows = [];
     return;
   }
@@ -160,31 +173,26 @@ function renderPanel(dir) {
     })
     .join('');
 
-  $(panel.tableId).innerHTML = `<div class="table-wrap"><table><thead>${theadHtml(panel.sort)}</thead>
-    <tbody>${body}</tbody></table></div>${pagerHtml(dir, totalPages, rows.length)}`;
+  $('activeTable').innerHTML = `<div class="table-wrap"><table><thead>${theadHtml(panel.sort)}</thead>
+    <tbody>${body}</tbody></table></div>${pagerHtml(panel, totalPages, rows.length)}`;
 
-  $(panel.tableId).querySelectorAll('th.sortable').forEach((th) => {
+  $('activeTable').querySelectorAll('th.sortable').forEach((th) => {
     th.addEventListener('click', () => {
       const key = th.dataset.key;
       const col = COLUMNS.find((c) => c.key === key);
       if (panel.sort.key === key) panel.sort.dir = panel.sort.dir === 'asc' ? 'desc' : 'asc';
       else panel.sort = { key, dir: col.num ? 'desc' : 'asc' };
       panel.page = 1;
-      renderPanel(dir);
+      render();
     });
   });
-  $(panel.tableId).querySelectorAll('[data-pg]').forEach((btn) => {
+  $('activeTable').querySelectorAll('[data-pg]').forEach((btn) => {
     btn.addEventListener('click', () => {
       panel.page = btn.dataset.pg === 'next' ? panel.page + 1 : panel.page - 1;
-      renderPanel(dir);
-      $(panel.tableId).scrollIntoView({ block: 'start', behavior: 'smooth' });
+      render();
+      $('activeTable').scrollIntoView({ block: 'start', behavior: 'smooth' });
     });
   });
-}
-
-function render() {
-  renderPanel('partner');
-  renderPanel('kapruka');
 }
 
 function footmeta() {
@@ -203,6 +211,7 @@ function paint() {
   statCards(DATA);
   categoryOptions();
   storeOptions();
+  wireToggle();
   render();
   footmeta();
   $('status').style.display = 'none';
@@ -248,7 +257,6 @@ function exportCsv(dir) {
 $('search').addEventListener('input', () => { PANELS.partner.page = 1; PANELS.kapruka.page = 1; render(); });
 $('category').addEventListener('change', () => { PANELS.partner.page = 1; PANELS.kapruka.page = 1; storeOptions(); render(); });
 $('store').addEventListener('change', () => { PANELS.partner.page = 1; PANELS.kapruka.page = 1; render(); });
-$('partnerExport').addEventListener('click', () => exportCsv('partner'));
-$('kaprukaExport').addEventListener('click', () => exportCsv('kapruka'));
+$('activeExport').addEventListener('click', () => exportCsv(ACTIVE_DIR));
 
 load();

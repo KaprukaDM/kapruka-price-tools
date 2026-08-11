@@ -20,11 +20,20 @@
     .toolbar input[type=search]{ max-width:260px; }
     .toolbar .right { margin-left:auto; display:flex; gap:10px; align-items:center; }
     button { margin-top:0; }
-    .section { margin-bottom: 30px; }
-    .section-head { display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; margin-bottom:10px; }
+    .section-head { display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; margin-bottom:14px; }
     .section-head h2 { margin:0; font-size:17px; color:var(--purple-dk); }
     .section-head .count { font-size:13px; color:var(--mut); }
     .section-head .right { margin-left:auto; }
+
+    /* Toggle switch between the two directions — one panel shown at a time
+       instead of stacking both, so the page stays short. */
+    .stock-toggle { display:inline-flex; align-items:center; background:var(--tint);
+                    border:1px solid var(--line); border-radius:999px; padding:3px; gap:2px; }
+    .stock-toggle button { margin:0; border:none; background:transparent; border-radius:999px;
+                            padding:8px 16px; font-size:13px; font-weight:700; color:var(--mut);
+                            cursor:pointer; white-space:nowrap; transition:background .15s, color .15s; }
+    .stock-toggle button.active { background:#fff; color:var(--purple-dk); box-shadow:0 1px 3px rgba(64,41,112,.14); }
+    .stock-toggle button:hover:not(.active) { color:var(--purple-dk); }
     .store-pill { display:inline-block; background:var(--tint); border:1px solid var(--line);
                   color:var(--purple-dk); border-radius:999px; padding:2px 10px; font-size:12px; font-weight:600; }
     tr.stock-partner td:first-child { box-shadow: inset 3px 0 var(--ok); }
@@ -63,23 +72,18 @@
         <input type="search" id="search" placeholder="Filter by product name…" />
       </div>
 
-      <div class="section" id="partnerSection">
-        <div class="section-head">
-          <h2>🟢 In stock on Kapruka, out of stock at partner</h2>
-          <span class="count" id="partnerCount"></span>
-          <div class="right"><button class="ghost btn-link" id="partnerExport" type="button">⬇ Export CSV</button></div>
+      <div class="toolbar">
+        <div class="stock-toggle" id="stockToggle">
+          <button type="button" data-dir="partner">🟢 In stock on Kapruka, out of stock at partner</button>
+          <button type="button" data-dir="kapruka">🔴 Out of stock on Kapruka, in stock at partner</button>
         </div>
-        <div id="partnerTable"></div>
       </div>
 
-      <div class="section" id="kaprukaSection">
-        <div class="section-head">
-          <h2>🔴 Out of stock on Kapruka, in stock at partner</h2>
-          <span class="count" id="kaprukaCount"></span>
-          <div class="right"><button class="ghost btn-link" id="kaprukaExport" type="button">⬇ Export CSV</button></div>
-        </div>
-        <div id="kaprukaTable"></div>
+      <div class="section-head">
+        <span class="count" id="activeCount"></span>
+        <div class="right"><button class="ghost btn-link" id="activeExport" type="button">⬇ Export CSV</button></div>
       </div>
+      <div id="activeTable"></div>
 
       <p class="meta" id="footmeta"></p>
     </div>
