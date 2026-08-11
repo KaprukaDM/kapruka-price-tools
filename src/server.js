@@ -102,16 +102,17 @@ app.post('/api/categories', async (req, res) => {
 // it's an independent network call. Daraz is deliberately left out of the
 // generic web-search step (serp.js's DISCOVERY_BLOCKLIST) — this is the
 // purpose-built replacement for it, always attached to the result as its own
-// `daraz` field. Skipped for the DB "browse" mode (many candidate products,
-// no single query to match Daraz's one result against).
+// `daraz` array (searchDaraz() tries several query variations and can return
+// more than one match). Skipped for the DB "browse" mode (many candidate
+// products, no single query to match Daraz's results against).
 async function runCheckerSearch(query, onProgress = () => {}) {
-  const darazPromise = searchDaraz(query.name).catch((err) => ({
+  const darazPromise = searchDaraz(query.name).catch((err) => [{
     site: 'Daraz',
     domain: 'daraz.lk',
     status: 'error',
     flags: ['daraz_failed'],
     note: err.message,
-  }));
+  }]);
   const db = await searchDatabase(query);
   if (db.hasMatch && db.mode === 'single') {
     return {

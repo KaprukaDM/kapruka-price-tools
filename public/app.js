@@ -19,8 +19,9 @@ function fmtPrice(r) {
 }
 
 function badge(rate) {
+  if (rate == null) return `<span class="badge b-lo">approx</span>`;
   const cls = rate >= 75 ? 'b-hi' : rate >= 50 ? 'b-md' : 'b-lo';
-  return `<span class="badge ${cls}">${rate ?? 0}%</span>`;
+  return `<span class="badge ${cls}">${rate}%</span>`;
 }
 
 function buildTable(list) {
@@ -104,10 +105,11 @@ function render(data) {
 
   const dbResults = data.results || [];
   const discovered = data.discovered || [];
-  const daraz = data.daraz && data.daraz.status && data.daraz.status !== 'error' && data.daraz.status !== 'no_result'
-    ? data.daraz
-    : null;
-  if (dbResults.length === 0 && discovered.length === 0 && !daraz) {
+  // searchDaraz() tries several query variations and can return several
+  // matches (e.g. the same helmet from more than one seller) — filter out
+  // the error/no_result placeholder entries, everything else is a real row.
+  const darazRows = (data.daraz || []).filter((r) => r.status && r.status !== 'error' && r.status !== 'no_result');
+  if (dbResults.length === 0 && discovered.length === 0 && darazRows.length === 0) {
     out.innerHTML = kaprukaRefBlock() + '<p class="empty">No results.</p>';
     return;
   }
@@ -131,10 +133,10 @@ function render(data) {
       Prices are pulled live; a non-LKR currency means the site geo-rendered for a different region.
     </p>`;
   }
-  if (daraz) {
-    html += '<h3 style="margin:24px 0 4px">Daraz.lk (live marketplace search)</h3>' + buildTable([daraz]);
+  if (darazRows.length) {
+    html += `<h3 style="margin:24px 0 4px">Daraz.lk (live marketplace search)</h3>` + buildTable(darazRows);
     html += `<p class="note" style="margin-top:14px">
-      A marketplace listing from a third-party seller, matched by name — not our own catalogue.
+      Marketplace listings from third-party sellers, matched by name — not our own catalogue.
       Verify the seller and stock before buying.
     </p>`;
   }
