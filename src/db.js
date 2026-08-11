@@ -743,6 +743,36 @@ async function makeSupabaseRestBackend(baseUrl, serviceKey) {
     return text ? JSON.parse(text) : null;
   }
 
+  // Fetch every row from a table in id-ascending order, in bounded batches
+  // instead of one unpaginated request. A single `?select=...&order=id.asc`
+  // with no limit asks PostgREST to sort and stream the WHOLE table
+  // (including a JSONB payload column that can be large) in one query — fine
+  // when the table is small, but as comparison_runs/price_checks grow this
+  // starts blowing past Supabase's statement_timeout ("57014: canceling
+  // statement due to statement timeout"), breaking CSV export AND every
+  // dashboard that calls latestRunPerPartner() (overpriced, stock-mismatch).
+  // Keyset pagination (id > cursor, indexed via the primary key) keeps each
+  // request small and fast regardless of total table size.
+  // Individual payload rows here run tens to hundreds of KB (a comparison run
+  // serializes a partner's whole catalogue match) — 500/batch measured at
+  // ~45MB and 7-13s, right at the edge of Supabase's statement_timeout under
+  // load. 100/batch measured ~11MB in under 2s, with comfortable margin.
+  const PAGE_SIZE = 100;
+  async function restFetchPaged(basePath, extraFilter = '') {
+    const rows = [];
+    let cursor = 0;
+    for (;;) {
+      const page = await restFetch(
+        `${basePath}&id=gt.${cursor}${extraFilter}&order=id.asc&limit=${PAGE_SIZE}`,
+      );
+      if (!page.length) break;
+      rows.push(...page);
+      cursor = page[page.length - 1].id;
+      if (page.length < PAGE_SIZE) break;
+    }
+    return rows;
+  }
+
   async function insert(table, row) {
     const rows = await restFetch(`/${table}`, {
       method: 'POST',
@@ -1051,13 +1081,13 @@ async function makeSupabaseRestBackend(baseUrl, serviceKey) {
     // a parsed object) to match the Postgres/SQLite backends' contract — every
     // caller in export.js does JSON.parse(row.payload_json) itself.
     async allPriceCheckRows() {
-      const rows = await restFetch(`/price_checks?select=id,created_at,payload&order=id.asc`);
+      const rows = await restFetchPaged(`/price_checks?select=id,created_at,payload`);
       return rows.map((r) => ({ id: r.id, created_at: r.created_at, payload_json: JSON.stringify(r.payload) }));
     },
 
     async allComparisonRows(partnerId = null) {
       const filter = partnerId ? `&partner_id=eq.${encodeURIComponent(partnerId)}` : '';
-      const rows = await restFetch(`/comparison_runs?select=id,created_at,payload&order=id.asc${filter}`);
+      const rows = await restFetchPaged(`/comparison_runs?select=id,created_at,payload`, filter);
       return rows.map((r) => ({ id: r.id, created_at: r.created_at, payload_json: JSON.stringify(r.payload) }));
     },
   };
