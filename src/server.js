@@ -5,6 +5,7 @@ import { dirname, join } from 'node:path';
 
 import { loadCategories, runMatch, addCategorySites, OTHER_CATEGORY } from './pipeline.js';
 import { searchDatabase } from './checker/db-search.js';
+import { searchDaraz } from './daraz.js';
 import { runComparison } from './compare/run.js';
 import { listPartners, addPartner, siteLabel, getPartner, requestRefresh } from './compare/partners.js';
 import {
@@ -96,16 +97,33 @@ app.post('/api/categories', async (req, res) => {
 // short/generic for identity matching to ever fire (e.g. "iphone" alone),
 // so multiple candidate products are returned instead — see
 // checker/db-search.js's BROAD_QUERY_MAX_TOKENS.
+// Third source: a direct live lookup on Daraz.lk (see daraz.js), run
+// concurrently with the database/web-search path rather than after it, since
+// it's an independent network call. Daraz is deliberately left out of the
+// generic web-search step (serp.js's DISCOVERY_BLOCKLIST) — this is the
+// purpose-built replacement for it, always attached to the result as its own
+// `daraz` field. Skipped for the DB "browse" mode (many candidate products,
+// no single query to match Daraz's one result against).
 async function runCheckerSearch(query, onProgress = () => {}) {
+  const darazPromise = searchDaraz(query.name).catch((err) => ({
+    site: 'Daraz',
+    domain: 'daraz.lk',
+    status: 'error',
+    flags: ['daraz_failed'],
+    note: err.message,
+  }));
   const db = await searchDatabase(query);
   if (db.hasMatch && db.mode === 'single') {
-    return { category: 'Database', query, results: db.results, discovered: [], source: 'database', mode: 'single' };
+    return {
+      category: 'Database', query, results: db.results, discovered: [],
+      source: 'database', mode: 'single', daraz: await darazPromise,
+    };
   }
   if (db.hasMatch && db.mode === 'browse') {
     return { category: 'Database', query, products: db.products, source: 'database', mode: 'browse' };
   }
   const out = await runMatch(OTHER_CATEGORY, query, onProgress);
-  return { ...out, source: 'web', mode: 'web' };
+  return { ...out, source: 'web', mode: 'web', daraz: await darazPromise };
 }
 
 // Run a price-checker match. Every query is persisted to the database.

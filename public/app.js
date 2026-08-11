@@ -104,7 +104,10 @@ function render(data) {
 
   const dbResults = data.results || [];
   const discovered = data.discovered || [];
-  if (dbResults.length === 0 && discovered.length === 0) {
+  const daraz = data.daraz && data.daraz.status && data.daraz.status !== 'error' && data.daraz.status !== 'no_result'
+    ? data.daraz
+    : null;
+  if (dbResults.length === 0 && discovered.length === 0 && !daraz) {
     out.innerHTML = kaprukaRefBlock() + '<p class="empty">No results.</p>';
     return;
   }
@@ -123,8 +126,16 @@ function render(data) {
     }
     html += `<p class="note" style="margin-top:14px">
       Flagged rows still link to the source page so you can verify manually.
-      Web-search results exclude Daraz, Big Deals, ikman, Facebook and foreign sites.
+      Web-search results exclude Daraz, Big Deals, ikman, Facebook and foreign sites (Daraz is checked
+      separately below).
       Prices are pulled live; a non-LKR currency means the site geo-rendered for a different region.
+    </p>`;
+  }
+  if (daraz) {
+    html += '<h3 style="margin:24px 0 4px">Daraz.lk (live marketplace search)</h3>' + buildTable([daraz]);
+    html += `<p class="note" style="margin-top:14px">
+      A marketplace listing from a third-party seller, matched by name — not our own catalogue.
+      Verify the seller and stock before buying.
     </p>`;
   }
   out.innerHTML = html;

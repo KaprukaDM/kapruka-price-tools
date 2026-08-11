@@ -16,7 +16,7 @@ const SERP_PROVIDER = resolveProvider();
 // Clean a product name before sending it to the search engine. Parenthetical
 // notes and stray punctuation (e.g. "Chocolate Cake(gmc)") can zero out results,
 // so we strip them for the SEARCH only — the full name is still used for matching.
-function cleanQuery(s) {
+export function cleanQuery(s) {
   return String(s || '')
     .replace(/\([^)]*\)/g, ' ') // remove "(gmc)" etc.
     .replace(/[^\w\s.\-+&]/g, ' ') // drop odd punctuation
