@@ -134,6 +134,36 @@ a:hover { text-decoration: underline; }
   .floating-form { width:auto; max-width:none; }
 }
 
+/* Remove-product modal + Removed Products card view — shared by
+   compare.html, partner-overpriced.html and all-products-overpriced.html
+   (see public/removed.js). */
+.rp-overlay { position:fixed; inset:0; background:rgba(31,27,46,.45); display:flex;
+              align-items:center; justify-content:center; z-index:100; padding:20px; }
+.rp-modal { background:#fff; border-radius:14px; padding:22px; width:100%; max-width:420px;
+            box-shadow:0 20px 50px rgba(0,0,0,.25); }
+.rp-modal h3 { margin:0 0 4px; font-size:16px; }
+.rp-modal h3::before { display:none; }
+.rp-item { font-size:13px; color:var(--mut); margin:0 0 12px; }
+.rp-modal label { margin-top:0; }
+.rp-actions { display:flex; justify-content:flex-end; gap:10px; margin-top:16px; }
+.rp-actions button { margin-top:0; }
+.rp-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:14px; margin-top:6px; }
+.rp-card { background:#fff; border:1px solid var(--line); border-radius:12px; padding:16px;
+           box-shadow:0 1px 3px rgba(64,41,112,.06); }
+.rp-card-head { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px; }
+.rp-src { font-size:11px; text-transform:uppercase; letter-spacing:.04em; color:var(--purple);
+          background:var(--tint); border-radius:999px; padding:2px 9px; font-weight:700; white-space:nowrap; }
+.rp-restore { padding:5px 12px; font-size:12px; margin-top:0; }
+.rp-name { font-weight:700; color:var(--purple-dk); margin-bottom:4px; }
+.rp-meta { font-size:12px; color:var(--mut); margin-bottom:3px; }
+.rp-reason { font-style:italic; font-size:13px; margin:8px 0 6px; color:var(--txt); }
+.rp-date { font-size:11px; color:var(--mut); }
+.row-remove { padding:5px 10px; font-size:12px; margin-top:0; background:#fff; color:var(--bad);
+              border:1px solid var(--line); }
+.row-remove:hover { background:#fdeceb; border-color:var(--bad); }
+.removed-toggle .rp-badge { display:inline-block; background:rgba(194,65,59,.12); color:var(--bad);
+              border-radius:999px; padding:1px 7px; font-size:11px; font-weight:700; margin-left:5px; }
+
 @media (max-width:640px){ .grid{ grid-template-columns:1fr; } }
 @media (max-width:680px) {
   .toolbar { flex-direction:column; align-items:stretch; }

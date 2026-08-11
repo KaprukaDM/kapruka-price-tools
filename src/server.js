@@ -22,7 +22,12 @@ import {
   storageKind,
   listUnsupportedPartners,
   addUnsupportedPartner,
+  listRemovedProducts,
+  addRemovedProduct,
+  deleteRemovedProduct,
+  removedUrlSet,
 } from './db.js';
+import { summarize } from './compare/matcher.js';
 import {
   exportPriceChecksCsv,
   exportComparisonCsv,
@@ -341,6 +346,22 @@ app.get('/api/compare', async (req, res) => {
     if (latest) {
       const stored = await getComparisonRun(latest.id);
       if (stored) {
+        // Drop team-curated exclusions (see removed_products in db.js) from
+        // the matched list and recompute the summary counts to match, so a
+        // product removed on any dashboard also disappears from this partner's
+        // own comparison view instead of just the aggregate reports.
+        const removed = await removedUrlSet();
+        if (removed.size) {
+          const matched = stored.matched.filter((m) => !removed.has(m.kaprukaUrl));
+          res.json({
+            ...stored,
+            matched,
+            summary: summarize({ matched, onlyKapruka: stored.onlyKapruka, onlyPartner: stored.onlyPartner }),
+            cached: true,
+            stored: true,
+          });
+          return;
+        }
         res.json({ ...stored, cached: true, stored: true });
         return;
       }
@@ -448,9 +469,13 @@ app.post('/api/overpriced/refresh', async (_req, res) => {
   }
 });
 
-app.get('/api/export/overpriced.csv', async (_req, res) => {
+app.get('/api/export/overpriced.csv', async (req, res) => {
   try {
-    sendCsv(res, 'overpriced.csv', await exportOverpricedCsv());
+    const partnerId = req.query.partner || null;
+    const category = req.query.category || null;
+    const suffix = [partnerId, category].filter(Boolean).join('-');
+    const name = suffix ? `overpriced-${suffix}.csv` : 'overpriced.csv';
+    sendCsv(res, name, await exportOverpricedCsv(partnerId, category));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -472,6 +497,50 @@ app.get('/api/overpriced/all', async (_req, res) => {
 app.get('/api/export/overpriced-all.csv', async (_req, res) => {
   try {
     sendCsv(res, 'overpriced-all.csv', await exportAllProductsOverpricedCsv());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---- Removed products (team-curated exclusions) ---------------------------
+// A shared "Removed Products" list read by all three overpriced dashboards
+// (Partner Comparison, Partner Overpriced, All Products Overpriced). Removing
+// a product here (keyed by its Kapruka URL) hides it from every one of those
+// views' reports — see removedUrlSet() usage in export.js and the /api/compare
+// handler above — and it stays hidden until restored from this same list.
+app.get('/api/removed-products', async (_req, res) => {
+  try {
+    res.json(await listRemovedProducts());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/removed-products', async (req, res) => {
+  const { kaprukaUrl, name, category, partnerName, reason, sourcePage, snapshot } = req.body || {};
+  if (!kaprukaUrl || !String(reason || '').trim()) {
+    return res.status(400).json({ error: 'kaprukaUrl and a reason are required.' });
+  }
+  try {
+    const row = await addRemovedProduct({
+      kaprukaUrl,
+      name: name || '',
+      category: category || '',
+      partnerName: partnerName || '',
+      reason: String(reason).trim(),
+      sourcePage: sourcePage || '',
+      snapshot: snapshot || {},
+    });
+    res.json(row);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/removed-products/:id', async (req, res) => {
+  try {
+    await deleteRemovedProduct(Number(req.params.id));
+    res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

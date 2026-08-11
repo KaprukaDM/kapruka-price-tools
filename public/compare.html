@@ -113,19 +113,22 @@
       <div class="toolbar">
         <div class="tabs" id="tabs"></div>
         <div class="right">
+          <select id="category" style="display:none"><option value="">All categories</option></select>
           <input type="search" id="search" placeholder="Filter by product name…" />
           <label class="chk" id="overOnlyWrap"><input type="checkbox" id="overOnly" /> Overpriced only</label>
-          <a class="ghost btn-link" id="exportCsv" href="/api/export/comparison.csv">⬇ Export CSV</a>
+          <button class="ghost btn-link" id="exportCsv" type="button">⬇ Export CSV</button>
           <button class="ghost" id="refresh">↻ Refresh</button>
         </div>
       </div>
 
       <div id="table"></div>
+      <div id="removedSection" style="display:none"></div>
       <p class="meta" id="footmeta"></p>
       <p class="meta" id="refreshHint"></p>
     </div>
   </div>
 
+  <script src="removed.js"></script>
   <script src="compare.js"></script>
 </body>
 </html>

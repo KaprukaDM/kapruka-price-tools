@@ -2,6 +2,7 @@ const $ = (id) => document.getElementById(id);
 let DATA = null;
 let PAGE = 1;
 const PAGE_SIZE = 50;
+let CURRENT_ROWS = []; // the filtered+sorted rows behind the currently rendered page — see wireRemoveButtons()
 
 const COLUMNS = [
   { key: 'category', label: 'Category' },
@@ -121,13 +122,14 @@ function render() {
   }
 
   rows = sortRows(rows);
+  CURRENT_ROWS = rows;
 
   const totalPages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
   PAGE = Math.min(PAGE, totalPages);
   const pageRows = rows.slice((PAGE - 1) * PAGE_SIZE, PAGE * PAGE_SIZE);
 
   const body = pageRows
-    .map((m) => {
+    .map((m, i) => {
       const pct = m.pct == null ? '' : `+${m.pct.toFixed(1)}%`;
       const partnerCell = m.partner
         ? `${link(m.partner.url, m.partner.name)}<div class="ctx price">${lkr(m.partner.price)}</div>`
@@ -141,23 +143,55 @@ function render() {
         <td class="num price">${link(m.bestUrl, lkr(m.bestPrice))}<div class="ctx">${escapeHtml(m.bestName || '')}</div></td>
         <td class="num over-amt">+${lkr(m.diff)}</td>
         <td class="num over-amt">${pct}</td>
+        <td><button type="button" class="row-remove" data-idx="${(PAGE - 1) * PAGE_SIZE + i}" title="Remove from dashboard">🗑 Remove</button></td>
       </tr>`;
     })
     .join('');
 
   // Columns rendered above (category, product, kapruka, partner, cheaper
   // elsewhere, best price, overcharge, %) — one extra "Cheaper elsewhere"
-  // header not in COLUMNS since it's a free-form list, not a sortable value.
+  // header not in COLUMNS since it's a free-form list, not a sortable value,
+  // plus a trailing unsortable "Remove" action header.
   const theadCells = [
     ...COLUMNS.slice(0, 4).map((c) => headCell(c)),
     '<th>Cheaper elsewhere</th>',
     ...COLUMNS.slice(4).map((c) => headCell(c)),
+    '<th></th>',
   ].join('');
 
   $('table').innerHTML = `<div class="table-wrap"><table><thead><tr>${theadCells}</tr></thead>
     <tbody>${body}</tbody></table></div>${pagerHtml(totalPages, rows.length)}`;
   wirePager(totalPages);
   wireSort();
+  wireRemoveButtons();
+}
+
+// Wires each row's Remove button: opens the shared reason modal, POSTs the
+// removal, then reloads /api/overpriced/all (which already excludes removed
+// products server-side) so this table and the stat cards stay in sync.
+function wireRemoveButtons() {
+  $('table').querySelectorAll('.row-remove').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const m = CURRENT_ROWS[Number(btn.dataset.idx)];
+      if (!m) return;
+      btn.disabled = true;
+      try {
+        const removed = await RemovedProducts.removeWithPrompt({
+          kaprukaUrl: m.kaprukaUrl,
+          name: m.name,
+          category: m.category,
+          partnerName: m.partner?.name || '',
+          sourcePage: 'all-products-overpriced',
+          snapshot: m,
+        });
+        if (removed) await load();
+        else btn.disabled = false;
+      } catch (err) {
+        alert('Error: ' + err.message);
+        btn.disabled = false;
+      }
+    });
+  });
 }
 
 function headCell(c) {
@@ -180,6 +214,28 @@ function paint() {
   footmeta();
   $('status').style.display = 'none';
   $('app').style.display = '';
+  refreshRemovedCount();
+}
+
+async function refreshRemovedCount() {
+  const n = await RemovedProducts.count();
+  const badge = $('removedCount');
+  badge.hidden = !n;
+  badge.textContent = n;
+}
+
+function toggleRemovedSection() {
+  const showingRemoved = $('removedSection').style.display !== 'none';
+  if (showingRemoved) {
+    $('removedSection').style.display = 'none';
+    $('table').style.display = '';
+    $('toggleRemovedLabel').textContent = '🗑 Removed Products';
+  } else {
+    $('table').style.display = 'none';
+    $('removedSection').style.display = '';
+    $('toggleRemovedLabel').textContent = '← Back to overpriced products';
+    RemovedProducts.renderInto($('removedSection'), () => { refreshRemovedCount(); load(); });
+  }
 }
 
 async function load() {
@@ -197,5 +253,6 @@ async function load() {
 $('search').addEventListener('input', () => { PAGE = 1; render(); });
 $('category').addEventListener('change', () => { PAGE = 1; render(); });
 $('refresh').addEventListener('click', load);
+$('toggleRemoved').addEventListener('click', toggleRemovedSection);
 
 load();

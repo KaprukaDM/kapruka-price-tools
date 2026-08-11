@@ -5,7 +5,7 @@
 // A UTF-8 BOM is prepended so Excel renders Sri Lankan/Unicode product names
 // correctly instead of mojibake.
 
-import { allPriceCheckRows, allComparisonRows, getPriceAuditItems } from './db.js';
+import { allPriceCheckRows, allComparisonRows, getPriceAuditItems, removedUrlSet } from './db.js';
 
 function csvCell(v) {
   if (v == null) return '';
@@ -262,13 +262,16 @@ export async function overpricedReport() {
   const items = [];
   const partners = [];
   let lastUpdated = null;
+  const removed = await removedUrlSet();
 
   for (const { created_at, payload } of (await latestRunPerPartner()).values()) {
     const p = payload.partner || {};
     const at = payload.generatedAt || created_at;
     if (!lastUpdated || at > lastUpdated) lastUpdated = at;
 
-    const over = (payload.matched || []).filter((m) => m.verdict === 'kapruka_higher');
+    // Team-curated exclusions (e.g. the partner's higher price is explained
+    // by a bundled add-on) — see removed_products in db.js.
+    const over = (payload.matched || []).filter((m) => m.verdict === 'kapruka_higher' && !removed.has(m.kaprukaUrl));
     partners.push({
       id: p.id ?? '',
       name: p.name ?? '',
@@ -326,9 +329,12 @@ const OVERPRICED_COLUMNS = [
   { key: 'generatedAt', label: 'Updated at' },
 ];
 
-export async function exportOverpricedCsv() {
+export async function exportOverpricedCsv(partnerId = null, category = null) {
   const { items } = await overpricedReport();
-  const rows = items.map((i) => ({
+  const filtered = items.filter(
+    (i) => (!partnerId || i.partnerId === partnerId) && (!category || i.category === category),
+  );
+  const rows = filtered.map((i) => ({
     ...i,
     pct_out: i.pct != null ? Math.round(i.pct * 10) / 10 : '',
   }));
@@ -365,6 +371,7 @@ export async function allProductsOverpricedReport() {
     return p;
   }
 
+  const removed = await removedUrlSet();
   const auditRows = await getPriceAuditItems({ limit: 20000 });
   for (const r of auditRows) {
     if (!r.kapruka_url || !r.matched_url || r.matched_price_lkr == null) continue;
@@ -394,6 +401,8 @@ export async function allProductsOverpricedReport() {
   const items = [];
   for (const p of products.values()) {
     if (p.kaprukaPrice == null) continue;
+    // Team-curated exclusions — see removed_products in db.js.
+    if (removed.has(p.kaprukaUrl)) continue;
     const candidates = [];
     if (p.partner) candidates.push({ type: 'partner', ...p.partner });
     for (const s of p.otherSites) candidates.push({ type: 'other', ...s });

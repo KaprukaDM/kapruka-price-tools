@@ -56,16 +56,19 @@
         <select id="store"><option value="">All stores</option></select>
         <div class="right">
           <input type="search" id="search" placeholder="Filter by product name…" />
-          <a class="ghost btn-link" id="exportCsv" href="/api/export/overpriced.csv">⬇ Export CSV</a>
+          <button class="ghost btn-link" id="exportCsv" type="button">⬇ Export CSV</button>
+          <button class="ghost removed-toggle" id="toggleRemoved" type="button"><span id="toggleRemovedLabel">🗑 Removed Products</span><span class="rp-badge" id="removedCount" hidden></span></button>
           <button class="ghost" id="refresh">↻ Refresh now</button>
         </div>
       </div>
 
       <div id="table"></div>
+      <div id="removedSection" style="display:none"></div>
       <p class="meta" id="footmeta"></p>
     </div>
   </div>
 
+  <script src="removed.js"></script>
   <script src="partner-overpriced.js"></script>
 </body>
 </html>

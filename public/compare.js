@@ -4,6 +4,8 @@ let TAB = 'matched';
 let PARTNER_LABEL = 'partner site';
 let PAGE = 1;
 const PAGE_SIZE = 50;
+let EXPORT_URL = '/api/export/comparison.csv';
+let CURRENT_MATCHED_ROWS = []; // the matched rows behind the currently rendered page — see wireRemoveButtons()
 
 function pagerHtml(totalPages, totalItems) {
   if (totalPages <= 1) return '';
@@ -27,6 +29,22 @@ function escapeHtml(s) {
 }
 function link(url, text) {
   return url ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener">${escapeHtml(text)}</a>` : escapeHtml(text);
+}
+
+// Kapruka product URLs carry their catalogue category as a code in the
+// /kid/<code> segment — mirrors categoryFromKaprukaUrl() in src/export.js so
+// the category filter here lines up with the Overpriced dashboard's.
+const CATEGORY_PREFIX_MAP = {
+  elec: 'Electronics', clot: 'Clothing', book: 'Books', cosm: 'Cosmetics',
+  home: 'Home & Lifestyle', kids: 'Kids', groc: 'Groceries', perf: 'Perfume & Fragrance',
+  scho: 'School & Office', spor: 'Sports', auto: 'Automotive', jewe: 'Jewellery',
+  adul: 'Adult', moth: 'Mother & Baby', phar: 'Pharmacy', flow: 'Flowers',
+};
+function categoryFromKaprukaUrl(url) {
+  const m = String(url || '').match(/\/kid\/(?:ef_pc_)?([a-z]+)/i);
+  if (!m) return 'Other';
+  const prefix = m[1].toLowerCase();
+  return CATEGORY_PREFIX_MAP[prefix] || prefix.charAt(0).toUpperCase() + prefix.slice(1);
 }
 
 const MATCHED_COLUMNS = [
@@ -66,7 +84,7 @@ function matchedTheadHtml() {
     const label = c.label ?? escapeHtml(PARTNER_LABEL);
     return `<th class="sortable${c.num ? ' num' : ''}" data-key="${c.key}">${label}${arrow}</th>`;
   }).join('');
-  return `<tr>${cells}</tr>`;
+  return `<tr>${cells}<th></th></tr>`;
 }
 
 function wireMatchedSort() {
@@ -106,6 +124,7 @@ function buildTabs(s, partnerName) {
     ['matched', `Matched · ${s.matched}`],
     ['onlyKapruka', `Only on Kapruka · ${s.onlyKapruka}`],
     ['onlyPartner', `Only on ${escapeHtml(partnerName)} · ${s.onlyPartner}`],
+    ['removed', '🗑 Removed Products'],
   ];
   $('tabs').innerHTML = defs
     .map(([k, label]) => `<div class="tab ${k === TAB ? 'active' : ''}" data-tab="${k}">${label}</div>`)
@@ -118,7 +137,30 @@ function buildTabs(s, partnerName) {
       render();
     }),
   );
+  // Category is derived from each matched product's Kapruka URL, so it only
+  // makes sense (and is only shown) on the Matched tab — the same scope the
+  // CSV export covers. Search/export apply to the table tabs only, not the
+  // Removed Products card view.
   $('overOnlyWrap').style.display = TAB === 'matched' ? '' : 'none';
+  $('category').style.display = TAB === 'matched' ? '' : 'none';
+  $('search').style.display = TAB === 'removed' ? 'none' : '';
+  $('exportCsv').style.display = TAB === 'removed' ? 'none' : '';
+}
+
+// Counts categories across DATA.matched and (re)builds the <select>, keeping
+// the current selection if it's still valid.
+function categoryOptions() {
+  const sel = $('category');
+  const current = sel.value;
+  const counts = new Map();
+  for (const m of DATA.matched) {
+    const c = categoryFromKaprukaUrl(m.kaprukaUrl);
+    counts.set(c, (counts.get(c) || 0) + 1);
+  }
+  const cats = [...counts.keys()].sort((a, b) => counts.get(b) - counts.get(a));
+  sel.innerHTML = '<option value="">All categories</option>' +
+    cats.map((c) => `<option value="${escapeHtml(c)}">${escapeHtml(c)} · ${counts.get(c)}</option>`).join('');
+  sel.value = counts.has(current) ? current : '';
 }
 
 function matchedRows(rows) {
@@ -126,8 +168,9 @@ function matchedRows(rows) {
   const sorted = MATCHED_SORT.key
     ? sortMatchedRows(rows)
     : [...rows].sort((a, b) => (order[a.verdict] - order[b.verdict]) || (Math.abs(b.diff || 0) - Math.abs(a.diff || 0)));
+  CURRENT_MATCHED_ROWS = sorted;
   return sorted
-    .map((m) => {
+    .map((m, i) => {
       const v = VERDICT[m.verdict] || VERDICT.price_missing;
       const pct = m.pct == null ? '' : `${m.pct > 0 ? '+' : ''}${m.pct.toFixed(1)}%`;
       const conf = m.confidence === 'high'
@@ -141,9 +184,39 @@ function matchedRows(rows) {
         <td class="num">${m.diff == null ? '' : (m.diff > 0 ? '+' : '') + lkr(m.diff)}</td>
         <td class="num">${pct}</td>
         <td class="${v.cls}">${v.label}</td>
+        <td><button type="button" class="row-remove" data-idx="${i}" title="Remove from dashboard">🗑 Remove</button></td>
       </tr>`;
     })
     .join('');
+}
+
+// Wires each matched row's Remove button: opens the shared reason modal,
+// POSTs the removal, then reloads /api/compare (which already excludes
+// removed products server-side) so this table and the summary stats stay in
+// sync — and so the other two overpriced dashboards pick it up too.
+function wireRemoveButtons() {
+  $('table').querySelectorAll('.row-remove').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const m = CURRENT_MATCHED_ROWS[Number(btn.dataset.idx)];
+      if (!m) return;
+      btn.disabled = true;
+      try {
+        const removed = await RemovedProducts.removeWithPrompt({
+          kaprukaUrl: m.kaprukaUrl,
+          name: m.name,
+          category: categoryFromKaprukaUrl(m.kaprukaUrl),
+          partnerName: DATA.partner?.name || '',
+          sourcePage: 'compare',
+          snapshot: m,
+        });
+        if (removed) load();
+        else btn.disabled = false;
+      } catch (err) {
+        alert('Error: ' + err.message);
+        btn.disabled = false;
+      }
+    });
+  });
 }
 
 function listRows(rows, withSku) {
@@ -157,7 +230,89 @@ function listRows(rows, withSku) {
     .join('');
 }
 
+// Matched rows after search + category + "overpriced only" — the exact set
+// the CSV export offers to scope down to, so this is shared between render()
+// and exportCsv() rather than re-derived.
+function filteredMatched() {
+  const q = $('search').value.trim().toLowerCase();
+  const category = $('category').value;
+  let rows = DATA.matched.filter((m) => !q || (m.name + ' ' + m.partnerName).toLowerCase().includes(q));
+  if (category) rows = rows.filter((m) => categoryFromKaprukaUrl(m.kaprukaUrl) === category);
+  if ($('overOnly').checked) rows = rows.filter((m) => m.verdict === 'kapruka_higher');
+  return rows;
+}
+
+function csvCell(v) {
+  const s = v == null ? '' : String(v);
+  return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+
+// Mirrors COMPARISON_COLUMNS in src/export.js so a filtered client-side
+// export lines up with the full server-side one.
+function matchedToCsv(rows) {
+  const header = ['Partner', 'Partner site', 'Kapruka product', 'Kapruka price', 'Partner product',
+    'Partner price', 'Partner regular price', 'Kapruka − Partner', 'Diff %', 'Verdict', 'Confidence',
+    'Name similarity %', 'Partner SKU', 'Kapruka URL', 'Partner URL'];
+  const lines = [header.map(csvCell).join(',')];
+  const partnerName = DATA.partner?.name ?? '';
+  const partnerSite = DATA.partner?.partnerSite ?? '';
+  for (const m of rows) {
+    lines.push([
+      partnerName, partnerSite, m.name ?? '', m.kaprukaPrice ?? '', m.partnerName ?? '',
+      m.partnerPrice ?? '', m.partnerRegularPrice ?? '', m.diff ?? '',
+      m.pct != null ? Math.round(m.pct * 10) / 10 : '', m.verdict ?? '', m.confidence ?? '',
+      m.nameSimilarity ?? '', m.partnerSku ?? '', m.kaprukaUrl ?? '', m.partnerUrl ?? '',
+    ].map(csvCell).join(','));
+  }
+  return lines.join('\r\n');
+}
+
+function downloadCsv(csv, filename) {
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// The server export always returns every matched row for this partner. If
+// the user has narrowed the Matched tab down (search text, a category, or
+// "Overpriced only"), ask whether to export just that filtered view instead
+// — same "filter then export" behavior as the Overpriced dashboard.
+function exportCsv() {
+  const q = $('search').value.trim();
+  const category = $('category').value;
+  const overOnly = $('overOnly').checked;
+  const filterActive = TAB === 'matched' && (q || category || overOnly);
+
+  if (filterActive) {
+    const parts = [];
+    if (category) parts.push(`category "${category}"`);
+    if (overOnly) parts.push('overpriced only');
+    if (q) parts.push(`search "${q}"`);
+    const onlyFiltered = confirm(
+      `You've filtered by ${parts.join(', ')}.\n\nExport only these ${filteredMatched().length} filtered rows?\n\nOK = filtered rows only\nCancel = all matched products for this partner`,
+    );
+    if (onlyFiltered) {
+      downloadCsv(matchedToCsv(filteredMatched()), 'comparison-filtered.csv');
+      return;
+    }
+  }
+  window.location.href = EXPORT_URL;
+}
+
 function render() {
+  if (TAB === 'removed') {
+    $('table').style.display = 'none';
+    $('removedSection').style.display = '';
+    RemovedProducts.renderInto($('removedSection'), () => load());
+    return;
+  }
+  $('table').style.display = '';
+  $('removedSection').style.display = 'none';
+
   const q = $('search').value.trim().toLowerCase();
   const match = (name) => !q || name.toLowerCase().includes(q);
   let html = '';
@@ -165,8 +320,7 @@ function render() {
   let totalPages = 1;
 
   if (TAB === 'matched') {
-    let rows = DATA.matched.filter((m) => match(m.name + ' ' + m.partnerName));
-    if ($('overOnly').checked) rows = rows.filter((m) => m.verdict === 'kapruka_higher');
+    let rows = filteredMatched();
     shown = rows.length;
     totalPages = Math.max(1, Math.ceil(shown / PAGE_SIZE));
     PAGE = Math.min(PAGE, totalPages);
@@ -192,7 +346,7 @@ function render() {
   }
   $('table').innerHTML = shown ? html + pagerHtml(totalPages, shown) : '<p class="empty">No products match your filter.</p>';
   wirePager(totalPages);
-  if (TAB === 'matched' && shown) wireMatchedSort();
+  if (TAB === 'matched' && shown) { wireMatchedSort(); wireRemoveButtons(); }
 }
 
 function footmeta() {
@@ -250,8 +404,9 @@ async function attemptLoad(partnerId, startedAt) {
       `Our listing <a href="${escapeHtml(kLink)}" target="_blank" rel="noopener">${escapeHtml(kLink.replace(/^https?:\/\//, ''))}</a> ` +
       `reconciled against <a href="${escapeHtml(data.partner.partnerSite)}" target="_blank" rel="noopener">${escapeHtml(PARTNER_LABEL)}</a>.`;
     // Scope the CSV export to the partner currently in view.
-    $('exportCsv').href = '/api/export/comparison.csv?partner=' + encodeURIComponent(partnerId);
+    EXPORT_URL = '/api/export/comparison.csv?partner=' + encodeURIComponent(partnerId);
     statCards(data.summary, data.catalogCounts, data.partner.name);
+    categoryOptions();
     buildTabs(data.summary, data.partner.name);
     render();
     footmeta();
@@ -365,7 +520,9 @@ async function addStore() {
 }
 
 $('search').addEventListener('input', () => { PAGE = 1; render(); });
+$('category').addEventListener('change', () => { PAGE = 1; render(); });
 $('overOnly').addEventListener('change', () => { PAGE = 1; render(); });
+$('exportCsv').addEventListener('click', exportCsv);
 $('partner').addEventListener('change', () => load());
 // Clicking a pre-filled box should offer the full list to pick a different
 // partner from, not just filter down to the one already selected.

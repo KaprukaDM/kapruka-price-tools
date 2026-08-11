@@ -46,6 +46,17 @@
 //                         this local table instead of live-searching every
 //                         product, same idea as the UAE checker's fnp.ae catalog
 //                         crawl. Bulk-upserted per site (many rows per call).
+//   removed_products   - team-curated exclusion list, keyed by kapruka_url. A
+//                         product lands here when someone manually dismisses it
+//                         from one of the overpriced dashboards (e.g. the
+//                         partner's price is higher for a legitimate reason,
+//                         like a bundled add-on). Every report that surfaces
+//                         overpriced items (overpricedReport, all-products
+//                         report, and the per-partner /api/compare matched
+//                         list) filters these out by kaprukaUrl; the Removed
+//                         Products card view on each dashboard reads this same
+//                         table so a removal made from any page is reflected
+//                         everywhere, and can be undone (restored) from any page.
 //
 // Each row keeps flat summary columns for easy SQL plus a full JSON payload so
 // nothing is lost. ALL exported functions are async (Postgres/REST are async;
@@ -87,6 +98,24 @@ async function selectBackend() {
 
 const { backend, kind: storageKind } = await selectBackend();
 export { storageKind };
+
+// Shared shape for a removed-product row from the Postgres/Supabase-REST
+// backends, where `snapshot` is a JSONB/json column the driver already hands
+// back parsed. SQLite stores it as a TEXT column (snapshot_json) instead and
+// maps its rows separately, inline, where it's read.
+function rowToRemoved(r) {
+  return {
+    id: r.id,
+    createdAt: r.created_at,
+    kaprukaUrl: r.kapruka_url,
+    name: r.name || '',
+    category: r.category || '',
+    partnerName: r.partner_name || '',
+    reason: r.reason || '',
+    sourcePage: r.source_page || '',
+    snapshot: r.snapshot || null,
+  };
+}
 
 // Shared shape for a partner row across all three backends.
 function rowToPartner(r) {
@@ -136,6 +165,15 @@ export const getCompetitorProducts = (siteDomain) => backend.getCompetitorProduc
 // `tokens` are ANDed (every token must appear somewhere in product_name).
 export const searchCompetitorProductsByTokens = (tokens, limit = 500) =>
   backend.searchCompetitorProductsByTokens(tokens, limit);
+export const listRemovedProducts = () => backend.listRemovedProducts();
+export const addRemovedProduct = (row) => backend.addRemovedProduct(row);
+export const deleteRemovedProduct = (id) => backend.deleteRemovedProduct(id);
+// Convenience for callers that just need to filter items by kaprukaUrl (every
+// overpriced report) — avoids each caller re-deriving a Set from the full row list.
+export async function removedUrlSet() {
+  const rows = await listRemovedProducts();
+  return new Set(rows.map((r) => r.kaprukaUrl));
+}
 
 // ---------------------------------------------------------------------------
 // Postgres (Supabase) backend
@@ -248,9 +286,43 @@ async function makePostgresBackend(connectionString) {
     );
     CREATE INDEX IF NOT EXISTS idx_competitor_products_site ON competitor_products (site_domain);
     CREATE INDEX IF NOT EXISTS idx_competitor_products_category ON competitor_products (category);
+    CREATE TABLE IF NOT EXISTS removed_products (
+      id            BIGSERIAL PRIMARY KEY,
+      created_at    TEXT NOT NULL,
+      kapruka_url   TEXT NOT NULL UNIQUE,
+      name          TEXT,
+      category      TEXT,
+      partner_name  TEXT,
+      reason        TEXT NOT NULL,
+      source_page   TEXT,
+      snapshot      JSONB
+    );
   `);
 
   return {
+    async listRemovedProducts() {
+      const { rows } = await pool.query(`SELECT * FROM removed_products ORDER BY created_at DESC`);
+      return rows.map(rowToRemoved);
+    },
+
+    async addRemovedProduct({ kaprukaUrl, name, category, partnerName, reason, sourcePage, snapshot }) {
+      const { rows } = await pool.query(
+        `INSERT INTO removed_products (created_at, kapruka_url, name, category, partner_name, reason, source_page, snapshot)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb)
+         ON CONFLICT (kapruka_url) DO UPDATE SET
+           created_at = EXCLUDED.created_at, name = EXCLUDED.name, category = EXCLUDED.category,
+           partner_name = EXCLUDED.partner_name, reason = EXCLUDED.reason,
+           source_page = EXCLUDED.source_page, snapshot = EXCLUDED.snapshot
+         RETURNING *`,
+        [nowIso(), kaprukaUrl, name || null, category || null, partnerName || null, reason, sourcePage || null, JSON.stringify(snapshot || {})],
+      );
+      return rowToRemoved(rows[0]);
+    },
+
+    async deleteRemovedProduct(id) {
+      await pool.query(`DELETE FROM removed_products WHERE id = $1`, [id]);
+    },
+
     async upsertCompetitorProducts(siteDomain, products, category = null) {
       // Dedupe by product_url first — a multi-row INSERT ... ON CONFLICT DO
       // UPDATE errors if the same (site_domain, product_url) pair appears
@@ -635,6 +707,17 @@ async function makePostgresBackend(connectionString) {
 //     UNIQUE (site_domain, product_url)
 //   );
 //   CREATE INDEX IF NOT EXISTS idx_competitor_products_site ON competitor_products (site_domain);
+//   CREATE TABLE IF NOT EXISTS removed_products (
+//     id            BIGSERIAL PRIMARY KEY,
+//     created_at    TEXT NOT NULL,
+//     kapruka_url   TEXT NOT NULL UNIQUE,
+//     name          TEXT,
+//     category      TEXT,
+//     partner_name  TEXT,
+//     reason        TEXT NOT NULL,
+//     source_page   TEXT,
+//     snapshot      JSONB
+//   );
 //   -- The static dashboard (GitHub Pages) reads this table directly with a
 //   -- public anon key, so it needs RLS enabled with a public SELECT policy:
 //   ALTER TABLE intl_gift_snapshots ENABLE ROW LEVEL SECURITY;
@@ -670,6 +753,33 @@ async function makeSupabaseRestBackend(baseUrl, serviceKey) {
   }
 
   return {
+    async listRemovedProducts() {
+      const rows = await restFetch('/removed_products?select=*&order=created_at.desc');
+      return rows.map(rowToRemoved);
+    },
+
+    async addRemovedProduct({ kaprukaUrl, name, category, partnerName, reason, sourcePage, snapshot }) {
+      const rows = await restFetch('/removed_products?on_conflict=kapruka_url', {
+        method: 'POST',
+        headers: { Prefer: 'resolution=merge-duplicates,return=representation' },
+        body: JSON.stringify({
+          created_at: nowIso(),
+          kapruka_url: kaprukaUrl,
+          name: name || null,
+          category: category || null,
+          partner_name: partnerName || null,
+          reason,
+          source_page: sourcePage || null,
+          snapshot: snapshot || {},
+        }),
+      });
+      return rowToRemoved(rows[0]);
+    },
+
+    async deleteRemovedProduct(id) {
+      await restFetch(`/removed_products?id=eq.${encodeURIComponent(id)}`, { method: 'DELETE' });
+    },
+
     async upsertCompetitorProducts(siteDomain, products, category = null) {
       // Dedupe by product_url first — Postgres's ON CONFLICT DO UPDATE errors
       // out ("command cannot affect row a second time") if the same
@@ -1070,7 +1180,40 @@ async function makeSqliteBackend() {
       UNIQUE (site_domain, product_url)
     );
     CREATE INDEX IF NOT EXISTS idx_competitor_products_site ON competitor_products (site_domain);
+    CREATE TABLE IF NOT EXISTS removed_products (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      created_at    TEXT NOT NULL,
+      kapruka_url   TEXT NOT NULL UNIQUE,
+      name          TEXT,
+      category      TEXT,
+      partner_name  TEXT,
+      reason        TEXT NOT NULL,
+      source_page   TEXT,
+      snapshot_json TEXT
+    );
   `);
+
+  const rowToRemovedSqlite = (r) => ({
+    id: r.id,
+    createdAt: r.created_at,
+    kaprukaUrl: r.kapruka_url,
+    name: r.name || '',
+    category: r.category || '',
+    partnerName: r.partner_name || '',
+    reason: r.reason || '',
+    sourcePage: r.source_page || '',
+    snapshot: r.snapshot_json ? JSON.parse(r.snapshot_json) : null,
+  });
+  const selRemoved = db.prepare(`SELECT * FROM removed_products ORDER BY created_at DESC`);
+  const selRemovedByUrl = db.prepare(`SELECT * FROM removed_products WHERE kapruka_url = ?`);
+  const upsertRemoved = db.prepare(`
+    INSERT INTO removed_products (created_at, kapruka_url, name, category, partner_name, reason, source_page, snapshot_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT (kapruka_url) DO UPDATE SET
+      created_at = excluded.created_at, name = excluded.name, category = excluded.category,
+      partner_name = excluded.partner_name, reason = excluded.reason,
+      source_page = excluded.source_page, snapshot_json = excluded.snapshot_json`);
+  const delRemoved = db.prepare(`DELETE FROM removed_products WHERE id = ?`);
 
   const upsertCompetitorProduct = db.prepare(`
     INSERT INTO competitor_products (site_domain, site_name, product_url, product_name, price_lkr, scraped_at, category)
@@ -1138,6 +1281,22 @@ async function makeSqliteBackend() {
       diff_lkr = excluded.diff_lkr, diff_pct = excluded.diff_pct, checked_at = excluded.checked_at`);
 
   return {
+    async listRemovedProducts() {
+      return selRemoved.all().map(rowToRemovedSqlite);
+    },
+
+    async addRemovedProduct({ kaprukaUrl, name, category, partnerName, reason, sourcePage, snapshot }) {
+      upsertRemoved.run(
+        nowIso(), kaprukaUrl, name || null, category || null, partnerName || null,
+        reason, sourcePage || null, JSON.stringify(snapshot || {}),
+      );
+      return rowToRemovedSqlite(selRemovedByUrl.get(kaprukaUrl));
+    },
+
+    async deleteRemovedProduct(id) {
+      delRemoved.run(id);
+    },
+
     async upsertCompetitorProducts(siteDomain, products, category = null) {
       // node:sqlite's DatabaseSync has no .transaction() helper (that's a
       // better-sqlite3-only convenience method) — wrap with raw BEGIN/COMMIT

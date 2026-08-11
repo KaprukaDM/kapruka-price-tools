@@ -7,7 +7,7 @@
 // Matching uses a shared strong model code (high confidence) and/or descriptive
 // token overlap (Jaccard). See normalize.js for how codes/tokens are derived.
 
-import { tokenize, extractModelCodes, codesMatch, extractSpecs, specsConflict, normalizeName } from './normalize.js';
+import { tokenize, extractModelCodes, extractNativeModelCodes, codesMatch, extractSpecs, specsConflict, normalizeName } from './normalize.js';
 
 // Adult-wellness listings lean so heavily on generic shared vocabulary
 // (vibrator, silicone, anal, sex toys...) that plain name-overlap routinely
@@ -54,6 +54,13 @@ const CODE_MATCH_MIN_JACCARD = 0.12;
 // a human glance. Only label "high" once the name overlap is convincingly
 // above the bare acceptance floor too.
 const HIGH_CONFIDENCE_MIN_JACCARD = 0.3;
+// A pure-name match with near-total token overlap and no code at all is, on
+// its own, as strong a signal as a code match — two listings that use almost
+// exactly the same words are the same product. Without this, a 100%
+// name-similarity match still landed in "medium" (shown as "needs review")
+// purely for lacking a model code, sending obviously-correct matches to
+// manual review while genuinely uncertain ones went unflagged.
+const NAME_ONLY_HIGH_CONFIDENCE_JACCARD = 0.9;
 
 function jaccard(a, b) {
   if (a.size === 0 || b.size === 0) return 0;
@@ -79,6 +86,7 @@ export function index(products, withSku) {
       ...p,
       _tokens: tokenize(text),
       _codes: extractModelCodes(text),
+      _nativeCodes: extractNativeModelCodes(text),
       _specs: extractSpecs(p.name),
     };
   });
@@ -91,12 +99,23 @@ export function index(products, withSku) {
 // matchCatalogs() index of both sides.
 export function score(k, s) {
   const codes = sharedCodeCount(k._codes, s._codes);
+  const nativeCodes = sharedCodeCount(k._nativeCodes, s._nativeCodes);
   const jac = jaccard(k._tokens, s._tokens);
-  // A shared model code is strong identity. A pure-name match is weaker, so we
-  // additionally reject it when the two names carry conflicting specs (different
-  // wattage/capacity ⇒ different product).
-  const codeMatch = codes >= 1 && jac >= CODE_MATCH_MIN_JACCARD;
-  const nameMatch = jac >= NAME_ONLY_JACCARD && !specsConflict(k._specs, s._specs);
+  // Conflicting specs (different wattage/capacity/tyre size ⇒ different
+  // product) veto a pure-name match. A code match is normally trusted over a
+  // spec conflict (the code is stronger evidence, and spec-parsing itself
+  // has known blind spots — e.g. a decimal point already lost upstream in
+  // the source name). But that trust only holds for a *native* code, already
+  // fused as one token in the source text (e.g. "HD9373"). A code that only
+  // exists because the prefix+digits join glued two separate words together
+  // (extractNativeModelCodes vs. extractModelCodes in normalize.js) is much
+  // weaker: the same join that turns "NF 9269" into "nf9269" also turns "MRF
+  // 100" (a tyre brand followed by its width, not a SKU) into "mrf100",
+  // making two differently-sized tyres of the same brand look like a strong
+  // code match — so a conflicting spec still vetoes those.
+  const conflict = specsConflict(k._specs, s._specs);
+  const codeMatch = codes >= 1 && jac >= CODE_MATCH_MIN_JACCARD && (nativeCodes >= 1 || !conflict);
+  const nameMatch = jac >= NAME_ONLY_JACCARD && !conflict;
   if (!codeMatch && !nameMatch) return null;
   if ((isAdultToyName(k.name) || isAdultToyName(s.name)) && extractQty(k.name) !== extractQty(s.name)) {
     return null;
@@ -175,7 +194,11 @@ export function matchCatalogs(kapruka, partner) {
       partnerCategory: p.category || '',
       partnerPrice: p.price,
       partnerRegularPrice: p.regularPrice,
-      confidence: sc.codes >= 1 && sc.jaccard >= HIGH_CONFIDENCE_MIN_JACCARD ? 'high' : 'medium',
+      confidence:
+        (sc.codes >= 1 && sc.jaccard >= HIGH_CONFIDENCE_MIN_JACCARD) ||
+        sc.jaccard >= NAME_ONLY_HIGH_CONFIDENCE_JACCARD
+          ? 'high'
+          : 'medium',
       sharedCodes: sc.codes,
       nameSimilarity: Math.round(sc.jaccard * 100),
       ...price,

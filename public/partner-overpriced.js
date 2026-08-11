@@ -2,6 +2,7 @@ const $ = (id) => document.getElementById(id);
 let DATA = null;
 let PAGE = 1;
 const PAGE_SIZE = 50;
+let CURRENT_ROWS = []; // the filtered+sorted rows behind the currently rendered page — see wireRemoveButtons()
 
 const COLUMNS = [
   { key: 'category', label: 'Category' },
@@ -38,7 +39,7 @@ function theadHtml() {
     const arrow = active ? (SORT.dir === 'asc' ? ' ▲' : ' ▼') : '';
     return `<th class="sortable${c.num ? ' num' : ''}" data-key="${c.key}">${c.label}${arrow}</th>`;
   }).join('');
-  return `<tr>${cells}</tr>`;
+  return `<tr>${cells}<th></th></tr>`;
 }
 
 function wireSort() {
@@ -148,26 +149,28 @@ function render() {
   }
 
   rows = sortRows(rows);
+  CURRENT_ROWS = rows;
 
   const totalPages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
   PAGE = Math.min(PAGE, totalPages);
   const pageRows = rows.slice((PAGE - 1) * PAGE_SIZE, PAGE * PAGE_SIZE);
 
   const body = pageRows
-    .map((m) => {
+    .map((m, i) => {
       const pct = m.pct == null ? '' : `+${m.pct.toFixed(1)}%`;
       const conf = m.confidence === 'high'
         ? '<span class="badge b-hi">high</span>'
         : '<span class="badge b-md">review</span>';
       return `<tr class="over">
         <td>${escapeHtml(m.category)}</td>
-        <td><span class="store-pill">${escapeHtml(m.partner)}</span></td>
+        <td><span class="store-pill">${escapeHtml(m.partner)}</span>${m.partnerLabel ? `<div class="ctx">${escapeHtml(m.partnerLabel)}</div>` : ''}</td>
         <td>${link(m.kaprukaUrl, m.name)}
           <div class="ctx">matched: ${link(m.partnerUrl, m.partnerLabel)} · ${conf} · name sim ${m.nameSimilarity ?? '—'}%</div></td>
         <td class="num price">${lkr(m.kaprukaPrice)}</td>
         <td class="num">${lkr(m.partnerPrice)}</td>
         <td class="num over-amt">+${lkr(m.diff)}</td>
         <td class="num over-amt">${pct}</td>
+        <td><button type="button" class="row-remove" data-idx="${(PAGE - 1) * PAGE_SIZE + i}" title="Remove from dashboard">🗑 Remove</button></td>
       </tr>`;
     })
     .join('');
@@ -176,6 +179,35 @@ function render() {
     <tbody>${body}</tbody></table></div>${pagerHtml(totalPages, rows.length)}`;
   wirePager(totalPages);
   wireSort();
+  wireRemoveButtons();
+}
+
+// Wires each row's Remove button: opens the shared reason modal, POSTs the
+// removal, then reloads /api/overpriced (which already excludes removed
+// products server-side) so this table and the stat cards stay in sync.
+function wireRemoveButtons() {
+  $('table').querySelectorAll('.row-remove').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const m = CURRENT_ROWS[Number(btn.dataset.idx)];
+      if (!m) return;
+      btn.disabled = true;
+      try {
+        const removed = await RemovedProducts.removeWithPrompt({
+          kaprukaUrl: m.kaprukaUrl,
+          name: m.name,
+          category: m.category,
+          partnerName: m.partner,
+          sourcePage: 'partner-overpriced',
+          snapshot: m,
+        });
+        if (removed) await load();
+        else btn.disabled = false;
+      } catch (err) {
+        alert('Error: ' + err.message);
+        btn.disabled = false;
+      }
+    });
+  });
 }
 
 function footmeta() {
@@ -197,6 +229,28 @@ function paint() {
   footmeta();
   $('status').style.display = 'none';
   $('app').style.display = '';
+  refreshRemovedCount();
+}
+
+async function refreshRemovedCount() {
+  const n = await RemovedProducts.count();
+  const badge = $('removedCount');
+  badge.hidden = !n;
+  badge.textContent = n;
+}
+
+function toggleRemovedSection() {
+  const showingRemoved = $('removedSection').style.display !== 'none';
+  if (showingRemoved) {
+    $('removedSection').style.display = 'none';
+    $('table').style.display = '';
+    $('toggleRemovedLabel').textContent = '🗑 Removed Products';
+  } else {
+    $('table').style.display = 'none';
+    $('removedSection').style.display = '';
+    $('toggleRemovedLabel').textContent = '← Back to overpriced products';
+    RemovedProducts.renderInto($('removedSection'), () => { refreshRemovedCount(); load(); });
+  }
 }
 
 async function load() {
@@ -230,9 +284,34 @@ async function refreshNow() {
   }
 }
 
+function exportCsv() {
+  const storeSel = $('store');
+  const storeId = storeSel.value;
+  const category = $('category').value;
+
+  if (storeId || category) {
+    const parts = [];
+    if (category) parts.push(`category "${category}"`);
+    if (storeId) parts.push(`store "${storeSel.options[storeSel.selectedIndex].textContent}"`);
+    const onlyFiltered = confirm(
+      `You've filtered by ${parts.join(', ')}. Export only the filtered products?\n\nOK = filtered only\nCancel = every overpriced product`,
+    );
+    if (onlyFiltered) {
+      const params = new URLSearchParams();
+      if (storeId) params.set('partner', storeId);
+      if (category) params.set('category', category);
+      window.location.href = '/api/export/overpriced.csv?' + params.toString();
+      return;
+    }
+  }
+  window.location.href = '/api/export/overpriced.csv';
+}
+
 $('search').addEventListener('input', () => { PAGE = 1; render(); });
 $('category').addEventListener('change', () => { PAGE = 1; storeOptions(); render(); });
 $('store').addEventListener('change', () => { PAGE = 1; render(); });
+$('exportCsv').addEventListener('click', exportCsv);
 $('refresh').addEventListener('click', refreshNow);
+$('toggleRemoved').addEventListener('click', toggleRemovedSection);
 
 load();

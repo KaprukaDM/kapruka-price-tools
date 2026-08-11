@@ -88,18 +88,34 @@ const GPU_TOKEN = /^(rtx|gtx|rx|arc|mx)\d{3,4}(ti|super)?$/;
 // becomes "nf9269" on both sides before the rule above is applied. Skipped for
 // stopwords ("in 2024", "by 2025") so we don't manufacture false codes out of
 // ordinary phrases that happen to precede a number.
-export function extractModelCodes(s) {
+function modelCodesOf(tokens) {
   const out = new Set();
-  const joined = normalizeName(s).replace(/\b([a-z]{1,3}) (\d{3,6})\b/g, (whole, prefix, digits) =>
-    STOPWORDS.has(prefix) ? whole : prefix + digits,
-  );
-  for (const t of joined.split(' ')) {
+  for (const t of tokens) {
     if (t.length < 4 || SPEC_TOKEN.test(t) || CPU_TOKEN.test(t) || GPU_TOKEN.test(t)) continue;
     const letters = (t.match(/[a-z]/g) || []).length;
     const digits = (t.match(/[0-9]/g) || []).length;
     if (letters >= 1 && digits >= 2) out.add(t);
   }
   return out;
+}
+
+export function extractModelCodes(s) {
+  const joined = normalizeName(s).replace(/\b([a-z]{1,3}) (\d{3,6})\b/g, (whole, prefix, digits) =>
+    STOPWORDS.has(prefix) ? whole : prefix + digits,
+  );
+  return modelCodesOf(joined.split(' '));
+}
+
+// Same as extractModelCodes(), but excludes codes that only exist because the
+// prefix+digits join above glued two separate words together. A code already
+// fused in the source text (native) is reliable SKU identity. A joined one is
+// weaker: the same join that turns "NF 9269" into "nf9269" also turns "MRF
+// 100" (a tyre brand followed by its width, not a SKU) into "mrf100", making
+// two differently-sized tyres of the same brand look like a strong code
+// match. Callers can use this to only trust a code match enough to skip
+// other checks (like a spec-conflict veto) when it's native.
+export function extractNativeModelCodes(s) {
+  return modelCodesOf(normalizeName(s).split(' '));
 }
 
 // normalizeName() strips "." to a space, which silently corrupts decimal
@@ -169,6 +185,25 @@ export function extractSpecs(s) {
     }
   } else if (gbMatches.length === 1) {
     (specs.storage_gb ||= new Set()).add(parseFloat(gbMatches[0][1]));
+  }
+  // Tyre size (width/aspect-ratio-rim, e.g. "100/90-17" or "195/65R15" — both
+  // normalize to "100 90 17" / "195 65r15" once punctuation is stripped).
+  // Two tyres from the same brand and tread pattern name routinely share
+  // every descriptive word ("MRF Zapper", "Timsun TS-...") while being a
+  // completely different size — e.g. a 100/90-17 and a 100/90-10 are not
+  // interchangeable despite an almost-identical name. Bounded to plausible
+  // tyre dimensions (width/aspect/rim ranges) so this doesn't fire on
+  // unrelated numeric triples in other product names.
+  const TIRE_RE = /\b(\d{2,3})\s+(\d{2})r?[\s-]*(\d{2})\b/g;
+  let tm;
+  while ((tm = TIRE_RE.exec(norm))) {
+    const width = parseInt(tm[1], 10);
+    const aspect = parseInt(tm[2], 10);
+    const rim = parseInt(tm[3], 10);
+    if (width >= 60 && width <= 315 && aspect >= 20 && aspect <= 95 && rim >= 8 && rim <= 24) {
+      (specs.tire_rim ||= new Set()).add(rim);
+      (specs.tire_size ||= new Set()).add(width * 1000 + aspect); // width+aspect as one comparable value
+    }
   }
   return specs;
 }
