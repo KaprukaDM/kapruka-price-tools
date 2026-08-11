@@ -1,7 +1,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-import { fetchKaprukaCatalog, fetchPartnerCatalog, parseKaprukaSource } from "./sources.js";
+import { fetchKaprukaCatalog, fetchPartnerCatalog, fetchKaprukaProduct, parseKaprukaSource } from "./sources.js";
 import { matchCatalogs, summarize } from "./matcher.js";
 import { getPartner } from "./partners.js";
 import { hydrateComparisonResultFromMcp } from "./mcpPrices.js";
@@ -11,12 +11,47 @@ const CACHE_DIR = path.resolve(
   process.cwd(),
   process.env.COMPARE_CACHE_DIR || "data/compare-cache"
 );
+// The Kapruka *catalogue/storefront listing* page's JSON-LD reports every
+// product as in stock regardless of reality (confirmed against live data —
+// see the Out of Stock dashboard's original limitation note); only a
+// product's own page carries accurate, real-time availability. So after
+// matching, re-check each matched pair's Kapruka stock status against its
+// own product page rather than trusting the catalogue scrape's inStock flag.
+// One extra request per *matched* product only (not the full catalogue),
+// throttled to stay under Kapruka's rate limit. Off switch for emergencies.
+const STOCK_HYDRATE_DELAY_MS = Number(process.env.KAPRUKA_STOCK_DELAY_MS || 350);
+const DISABLE_STOCK_HYDRATE = process.env.DISABLE_KAPRUKA_STOCK_HYDRATE === "1";
 
 const memoryCache = new Map();
 const refreshJobs = new Map();
 
 function nowMs() {
   return Date.now();
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function hydrateKaprukaStock(matched, log) {
+  if (DISABLE_STOCK_HYDRATE || !matched.length) return { checked: 0, flippedOos: 0 };
+  let checked = 0;
+  let flippedOos = 0;
+  for (const row of matched) {
+    if (checked > 0) await sleep(STOCK_HYDRATE_DELAY_MS);
+    checked++;
+    try {
+      const product = await fetchKaprukaProduct(row.kaprukaUrl);
+      const realInStock = product?.inStock !== false;
+      if (row.kaprukaInStock && !realInStock) flippedOos++;
+      row.kaprukaInStock = realInStock;
+    } catch (err) {
+      // Leave the catalogue-scrape default (in stock) rather than failing
+      // the whole comparison run over one product's fetch error.
+      log(`Stock check failed for "${row.name}": ${err.message}`);
+    }
+  }
+  return { checked, flippedOos };
 }
 
 function cacheFile(partnerId) {
@@ -59,6 +94,11 @@ async function compute(partner, log) {
   ]);
 
   const result = matchCatalogs(kapruka, partnerCat.products);
+
+  const stock = await hydrateKaprukaStock(result.matched, log);
+  if (stock.checked) {
+    log(`  Kapruka stock re-checked: ${stock.checked} matched product(s), ${stock.flippedOos} corrected to out-of-stock`);
+  }
 
   const mcp = await hydrateComparisonResultFromMcp(result, { log });
 

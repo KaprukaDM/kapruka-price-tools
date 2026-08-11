@@ -38,6 +38,7 @@
                   color:var(--purple-dk); border-radius:999px; padding:2px 10px; font-size:12px; font-weight:600; }
     tr.stock-partner td:first-child { box-shadow: inset 3px 0 var(--ok); }
     tr.stock-kapruka td:first-child { box-shadow: inset 3px 0 var(--bad); }
+    tr.stock-both td:first-child { box-shadow: inset 3px 0 var(--mut); }
     .meta { font-size:12px; color:var(--mut); margin: 10px 0 0; }
     .note { font-size:13px; color:var(--mut); background:var(--tint); border:1px solid var(--line);
             border-radius:10px; padding:12px 16px; margin-bottom:16px; line-height:1.55; }
@@ -58,10 +59,9 @@
 
   <div class="wrap">
     <h1>Stock mismatches — configured partner stores</h1>
-    <p class="sub">Matched products where <strong>our Kapruka listing and the partner's own site disagree on stock
-       status</strong> — sourced from the same reconciliation runs as the
-       <a href="partner-overpriced.html">Partner Overpriced Price Dashboard</a>. Products that are out of stock (or
-       in stock) on both sides aren't shown — only the mismatches.</p>
+    <p class="sub">Matched products where <strong>at least one side is out of stock</strong> — sourced from the same
+       reconciliation runs as the <a href="partner-overpriced.html">Partner Overpriced Price Dashboard</a>. Products
+       in stock everywhere aren't shown.</p>
 
     <div id="status" class="card"><span class="spin"></span>Loading the latest stock data…</div>
 
@@ -78,14 +78,15 @@
         <div class="stock-toggle" id="stockToggle">
           <button type="button" data-dir="partner">🟢 In stock on Kapruka, out of stock at partner</button>
           <button type="button" data-dir="kapruka">🔴 Out of stock on Kapruka, in stock at partner</button>
+          <button type="button" data-dir="both">⚫ Out of stock on both</button>
         </div>
       </div>
 
       <div class="note" id="kaprukaLimitNote" style="display:none">
-        ⚠️ This side can't be reliably detected yet. Kapruka's partner-storefront pages report every product as
-        "in stock" in their structured data regardless of the real stock status shown on the page (that's rendered
-        separately by JavaScript we don't execute) — so this will show 0 even where a real mismatch exists, until a
-        more reliable signal is found.
+        ℹ️ Kapruka-side stock is re-checked against each matched product's own page after matching (the
+        catalogue/storefront listing itself can't be trusted — it reports every product as in stock regardless of
+        reality). A partner only shows accurate results here once it's had a run since that re-check was added —
+        hit "↻ Refresh" on the Comparison page for a partner if this looks stale.
       </div>
 
       <div class="section-head">

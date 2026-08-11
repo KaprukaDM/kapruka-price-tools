@@ -342,22 +342,25 @@ export async function exportOverpricedCsv(partnerId = null, category = null) {
   return buildCsv(OVERPRICED_COLUMNS, rows);
 }
 
-// ---- Stock mismatch dashboard: matched products where one side has stock the
-// other doesn't ------------------------------------------------------------
+// ---- Stock mismatch dashboard: matched products split by stock status -----
 // Reads the same latest-per-partner comparison runs as overpricedReport(),
-// but instead of price splits matched pairs into two directions:
+// but instead of price splits matched pairs into three buckets:
 //   partnerOutOfStock - we still have it, the partner's site doesn't (an
 //                       opportunity we could be capturing that they can't).
 //   kaprukaOutOfStock - the partner has it, we don't (a gap worth restocking).
-// Same-status pairs (both in stock, or both out) aren't mismatches and are
-// left out. Relies on kaprukaInStock/partnerInStock on each matched row (see
-// matcher.js) — only populated on runs scraped after the Kapruka catalogue
-// parser started reading real stock status (see parseKaprukaPage() in
-// compare/sources.js); older stored runs default every Kapruka product to
-// in-stock, so a partner needs a fresh run before it can show up here.
+//   bothOutOfStock    - out of stock everywhere (neither side can sell it).
+// Both-in-stock pairs aren't interesting and are left out entirely. Relies on
+// kaprukaInStock/partnerInStock on each matched row (see matcher.js) —
+// kaprukaInStock is only trustworthy on runs re-checked against each
+// product's own Kapruka page post-match (see hydrateKaprukaStock() in
+// compare/run.js); the catalogue/storefront listing scrape alone reports
+// every Kapruka product as in stock regardless of reality, so a partner
+// needs a fresh run (after that hydration existed) before it can show up
+// in the kapruka/both buckets.
 export async function stockMismatchReport() {
   const partnerOutOfStock = [];
   const kaprukaOutOfStock = [];
+  const bothOutOfStock = [];
   let lastUpdated = null;
   const removed = await removedUrlSet();
 
@@ -370,7 +373,7 @@ export async function stockMismatchReport() {
       if (!m.kaprukaUrl || removed.has(m.kaprukaUrl)) continue;
       const kIn = m.kaprukaInStock !== false;
       const pIn = m.partnerInStock !== false;
-      if (kIn === pIn) continue; // both in stock or both out — not a mismatch
+      if (kIn && pIn) continue; // both in stock — not interesting
 
       const row = {
         partnerId: p.id ?? '',
@@ -386,7 +389,8 @@ export async function stockMismatchReport() {
         partnerUrl: m.partnerUrl ?? '',
         generatedAt: at,
       };
-      if (kIn && !pIn) partnerOutOfStock.push(row);
+      if (!kIn && !pIn) bothOutOfStock.push(row);
+      else if (kIn && !pIn) partnerOutOfStock.push(row);
       else kaprukaOutOfStock.push(row);
     }
   }
@@ -395,7 +399,12 @@ export async function stockMismatchReport() {
     lastUpdated,
     partnerOutOfStock,
     kaprukaOutOfStock,
-    counts: { partnerOutOfStock: partnerOutOfStock.length, kaprukaOutOfStock: kaprukaOutOfStock.length },
+    bothOutOfStock,
+    counts: {
+      partnerOutOfStock: partnerOutOfStock.length,
+      kaprukaOutOfStock: kaprukaOutOfStock.length,
+      bothOutOfStock: bothOutOfStock.length,
+    },
   };
 }
 
@@ -412,10 +421,12 @@ const STOCK_MISMATCH_COLUMNS = [
   { key: 'generatedAt', label: 'Updated at' },
 ];
 
-// direction: 'partner' -> partnerOutOfStock rows, 'kapruka' -> kaprukaOutOfStock rows.
+// direction: 'partner' -> partnerOutOfStock, 'kapruka' -> kaprukaOutOfStock, 'both' -> bothOutOfStock.
 export async function exportStockMismatchCsv(direction, partnerId = null, category = null) {
   const report = await stockMismatchReport();
-  const items = direction === 'kapruka' ? report.kaprukaOutOfStock : report.partnerOutOfStock;
+  const items = direction === 'kapruka' ? report.kaprukaOutOfStock
+    : direction === 'both' ? report.bothOutOfStock
+    : report.partnerOutOfStock;
   const filtered = items.filter(
     (i) => (!partnerId || i.partnerId === partnerId) && (!category || i.category === category),
   );

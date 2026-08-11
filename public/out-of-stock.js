@@ -10,12 +10,13 @@ const COLUMNS = [
 ];
 const PAGE_SIZE = 50;
 
-// Two directions sharing the page's category/store/search filters and one
+// Three directions sharing the page's category/store/search filters and one
 // table — the toggle switch picks which is currently rendered, each keeping
 // its own sort/page state across switches.
 const PANELS = {
   partner: { rowClass: 'stock-partner', sort: { key: 'name', dir: 'asc' }, page: 1, rows: [] },
   kapruka: { rowClass: 'stock-kapruka', sort: { key: 'name', dir: 'asc' }, page: 1, rows: [] },
+  both: { rowClass: 'stock-both', sort: { key: 'name', dir: 'asc' }, page: 1, rows: [] },
 };
 let ACTIVE_DIR = 'partner';
 
@@ -69,7 +70,8 @@ function statCards(d) {
   const card = (n, l, cls = '') => `<div class="stat ${cls}"><div class="n">${n}</div><div class="l">${l}</div></div>`;
   $('cards').innerHTML =
     card(d.counts.partnerOutOfStock, 'In stock on Kapruka only', 'good') +
-    card(d.counts.kaprukaOutOfStock, 'In stock at partner only', 'bad');
+    card(d.counts.kaprukaOutOfStock, 'In stock at partner only', 'bad') +
+    card(d.counts.bothOutOfStock, 'Out of stock everywhere');
 }
 
 function countBy(items, key) {
@@ -83,7 +85,7 @@ function countBy(items, key) {
 }
 
 function allItems() {
-  return [...DATA.partnerOutOfStock, ...DATA.kaprukaOutOfStock];
+  return [...DATA.partnerOutOfStock, ...DATA.kaprukaOutOfStock, ...DATA.bothOutOfStock];
 }
 
 function categoryOptions() {
@@ -118,7 +120,9 @@ function filteredFor(dir) {
   const q = $('search').value.trim().toLowerCase();
   const store = $('store').value;
   const category = $('category').value;
-  const source = dir === 'kapruka' ? DATA.kaprukaOutOfStock : DATA.partnerOutOfStock;
+  const source = dir === 'kapruka' ? DATA.kaprukaOutOfStock
+    : dir === 'both' ? DATA.bothOutOfStock
+    : DATA.partnerOutOfStock;
   return source.filter(
     (m) =>
       (!category || m.category === category) &&
@@ -140,7 +144,7 @@ function wireToggle() {
 }
 
 function render() {
-  $('kaprukaLimitNote').style.display = ACTIVE_DIR === 'kapruka' ? '' : 'none';
+  $('kaprukaLimitNote').style.display = ACTIVE_DIR !== 'partner' ? '' : 'none';
   const panel = PANELS[ACTIVE_DIR];
   let rows = filteredFor(ACTIVE_DIR);
   $('activeCount').textContent = `${rows.length} product${rows.length === 1 ? '' : 's'}`;
@@ -255,9 +259,14 @@ function exportCsv(dir) {
   window.location.href = base;
 }
 
-$('search').addEventListener('input', () => { PANELS.partner.page = 1; PANELS.kapruka.page = 1; render(); });
-$('category').addEventListener('change', () => { PANELS.partner.page = 1; PANELS.kapruka.page = 1; storeOptions(); render(); });
-$('store').addEventListener('change', () => { PANELS.partner.page = 1; PANELS.kapruka.page = 1; render(); });
+function resetPages() {
+  PANELS.partner.page = 1;
+  PANELS.kapruka.page = 1;
+  PANELS.both.page = 1;
+}
+$('search').addEventListener('input', () => { resetPages(); render(); });
+$('category').addEventListener('change', () => { resetPages(); storeOptions(); render(); });
+$('store').addEventListener('change', () => { resetPages(); render(); });
 $('activeExport').addEventListener('click', () => exportCsv(ACTIVE_DIR));
 
 load();

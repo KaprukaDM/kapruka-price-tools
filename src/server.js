@@ -535,7 +535,7 @@ app.get('/api/stock-mismatch', async (_req, res) => {
 
 app.get('/api/export/stock-mismatch.csv', async (req, res) => {
   try {
-    const direction = req.query.direction === 'kapruka' ? 'kapruka' : 'partner';
+    const direction = ['kapruka', 'both'].includes(req.query.direction) ? req.query.direction : 'partner';
     const partnerId = req.query.partner || null;
     const category = req.query.category || null;
     const suffix = [direction, partnerId, category].filter(Boolean).join('-');
