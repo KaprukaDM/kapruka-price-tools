@@ -36,6 +36,8 @@ import {
   overpricedReport,
   allProductsOverpricedReport,
   exportAllProductsOverpricedCsv,
+  stockMismatchReport,
+  exportStockMismatchCsv,
   productRows,
 } from './export.js';
 import { uaeCompareApiRouter } from './uae-compare/routes.js';
@@ -497,6 +499,29 @@ app.get('/api/overpriced/all', async (_req, res) => {
 app.get('/api/export/overpriced-all.csv', async (_req, res) => {
   try {
     sendCsv(res, 'overpriced-all.csv', await exportAllProductsOverpricedCsv());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---- Stock mismatch dashboard — see stockMismatchReport() in export.js ----
+// Matched products where our Kapruka listing and the partner's own site
+// disagree on stock status, split into the two directions.
+app.get('/api/stock-mismatch', async (_req, res) => {
+  try {
+    res.json({ ...(await stockMismatchReport()), refreshing: REFRESH_STATE.running });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/export/stock-mismatch.csv', async (req, res) => {
+  try {
+    const direction = req.query.direction === 'kapruka' ? 'kapruka' : 'partner';
+    const partnerId = req.query.partner || null;
+    const category = req.query.category || null;
+    const suffix = [direction, partnerId, category].filter(Boolean).join('-');
+    sendCsv(res, `stock-${suffix}.csv`, await exportStockMismatchCsv(direction, partnerId, category));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

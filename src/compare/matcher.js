@@ -187,6 +187,7 @@ export function matchCatalogs(kapruka, partner) {
       name: k.name,
       kaprukaUrl: k.url,
       kaprukaPrice: k.price,
+      kaprukaInStock: k.inStock !== false,
       partnerName: p.name,
       partnerUrl: p.url,
       partnerSku: p.sku,
@@ -194,6 +195,7 @@ export function matchCatalogs(kapruka, partner) {
       partnerCategory: p.category || '',
       partnerPrice: p.price,
       partnerRegularPrice: p.regularPrice,
+      partnerInStock: p.inStock !== false,
       confidence:
         (sc.codes >= 1 && sc.jaccard >= HIGH_CONFIDENCE_MIN_JACCARD) ||
         sc.jaccard >= NAME_ONLY_HIGH_CONFIDENCE_JACCARD

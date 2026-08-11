@@ -341,6 +341,86 @@ export async function exportOverpricedCsv(partnerId = null, category = null) {
   return buildCsv(OVERPRICED_COLUMNS, rows);
 }
 
+// ---- Stock mismatch dashboard: matched products where one side has stock the
+// other doesn't ------------------------------------------------------------
+// Reads the same latest-per-partner comparison runs as overpricedReport(),
+// but instead of price splits matched pairs into two directions:
+//   partnerOutOfStock - we still have it, the partner's site doesn't (an
+//                       opportunity we could be capturing that they can't).
+//   kaprukaOutOfStock - the partner has it, we don't (a gap worth restocking).
+// Same-status pairs (both in stock, or both out) aren't mismatches and are
+// left out. Relies on kaprukaInStock/partnerInStock on each matched row (see
+// matcher.js) — only populated on runs scraped after the Kapruka catalogue
+// parser started reading real stock status (see parseKaprukaPage() in
+// compare/sources.js); older stored runs default every Kapruka product to
+// in-stock, so a partner needs a fresh run before it can show up here.
+export async function stockMismatchReport() {
+  const partnerOutOfStock = [];
+  const kaprukaOutOfStock = [];
+  let lastUpdated = null;
+  const removed = await removedUrlSet();
+
+  for (const { created_at, payload } of (await latestRunPerPartner()).values()) {
+    const p = payload.partner || {};
+    const at = payload.generatedAt || created_at;
+    if (!lastUpdated || at > lastUpdated) lastUpdated = at;
+
+    for (const m of payload.matched || []) {
+      if (!m.kaprukaUrl || removed.has(m.kaprukaUrl)) continue;
+      const kIn = m.kaprukaInStock !== false;
+      const pIn = m.partnerInStock !== false;
+      if (kIn === pIn) continue; // both in stock or both out — not a mismatch
+
+      const row = {
+        partnerId: p.id ?? '',
+        partner: p.name ?? '',
+        partnerLabel: p.partnerLabel || p.partnerSite || '',
+        category: categoryFromKaprukaUrl(m.kaprukaUrl),
+        name: m.name ?? '',
+        kaprukaPrice: m.kaprukaPrice ?? null,
+        partnerPrice: m.partnerPrice ?? null,
+        confidence: m.confidence ?? '',
+        nameSimilarity: m.nameSimilarity ?? null,
+        kaprukaUrl: m.kaprukaUrl ?? '',
+        partnerUrl: m.partnerUrl ?? '',
+        generatedAt: at,
+      };
+      if (kIn && !pIn) partnerOutOfStock.push(row);
+      else kaprukaOutOfStock.push(row);
+    }
+  }
+
+  return {
+    lastUpdated,
+    partnerOutOfStock,
+    kaprukaOutOfStock,
+    counts: { partnerOutOfStock: partnerOutOfStock.length, kaprukaOutOfStock: kaprukaOutOfStock.length },
+  };
+}
+
+const STOCK_MISMATCH_COLUMNS = [
+  { key: 'category', label: 'Category' },
+  { key: 'partner', label: 'Store' },
+  { key: 'name', label: 'Product' },
+  { key: 'kaprukaPrice', label: 'Kapruka price' },
+  { key: 'partnerPrice', label: 'Partner price' },
+  { key: 'confidence', label: 'Match confidence' },
+  { key: 'nameSimilarity', label: 'Name similarity %' },
+  { key: 'kaprukaUrl', label: 'Kapruka URL' },
+  { key: 'partnerUrl', label: 'Partner URL' },
+  { key: 'generatedAt', label: 'Updated at' },
+];
+
+// direction: 'partner' -> partnerOutOfStock rows, 'kapruka' -> kaprukaOutOfStock rows.
+export async function exportStockMismatchCsv(direction, partnerId = null, category = null) {
+  const report = await stockMismatchReport();
+  const items = direction === 'kapruka' ? report.kaprukaOutOfStock : report.partnerOutOfStock;
+  const filtered = items.filter(
+    (i) => (!partnerId || i.partnerId === partnerId) && (!category || i.category === category),
+  );
+  return buildCsv(STOCK_MISMATCH_COLUMNS, filtered);
+}
+
 // ---- All Products Overpriced dashboard --------------------------------------
 // Same idea as overpricedReport(), but across EVERY product we have price data
 // for, not just ones sold through a configured partner storefront. Merges two

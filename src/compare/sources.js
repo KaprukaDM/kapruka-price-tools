@@ -306,26 +306,36 @@ export function kaprukaBaseUrl(src) {
 // product code in /kid/<code>) and use the visible span only as an LKR-only
 // fallback. Regex over each <script> block rather than JSON.parse, because some
 // product names contain characters that make the JSON-LD invalid JSON.
+// Also builds the per-product stock map alongside price: each catalogue-page
+// product card carries its own Product JSON-LD block (same one price is read
+// from above), and that block's offers.availability is a genuine, geo-independent
+// schema.org InStock/OutOfStock signal — not previously read, so parseKaprukaPage()
+// below used to hardcode every Kapruka product as in stock regardless of reality.
 function kaprukaLkrPriceMap(html) {
-  const map = new Map();
+  const priceMap = new Map();
+  const stockMap = new Map();
   const blocks = html.match(/<script[^>]*type="application\/ld\+json"[^>]*>([\s\S]*?)<\/script>/gi) || [];
   for (const block of blocks) {
     if (!/"@type"\s*:\s*"Product"/i.test(block)) continue;
     const url = (block.match(/"url"\s*:\s*"([^"]+)"/) || [])[1] || '';
     const kid = (url.match(/\/kid\/([^/"?#]+)/i) || [])[1];
     if (!kid) continue;
+    const kidKey = kid.toLowerCase();
     const cur = (block.match(/"priceCurrency"\s*:\s*"?(\w+)/i) || [])[1];
     const priceStr = (block.match(/"price"\s*:\s*"?([\d.]+)/i) || [])[1];
-    if (!priceStr || !/^LKR$/i.test(cur || '')) continue; // only trust LKR offers
-    const price = Math.round(parseFloat(priceStr));
-    if (Number.isFinite(price) && price > 0) map.set(kid.toLowerCase(), price);
+    if (priceStr && /^LKR$/i.test(cur || '')) {
+      const price = Math.round(parseFloat(priceStr));
+      if (Number.isFinite(price) && price > 0) priceMap.set(kidKey, price);
+    }
+    const availability = (block.match(/"availability"\s*:\s*"([^"]+)"/) || [])[1];
+    if (availability) stockMap.set(kidKey, !/OutOfStock/i.test(availability));
   }
-  return map;
+  return { priceMap, stockMap };
 }
 
 function parseKaprukaPage(html) {
   const $ = cheerio.load(html);
-  const lkrByKid = kaprukaLkrPriceMap(html);
+  const { priceMap: lkrByKid, stockMap: stockByKid } = kaprukaLkrPriceMap(html);
   const out = [];
   $('a[href*="/buyonline/"]').each((_, el) => {
     const $a = $(el);
@@ -335,9 +345,10 @@ function parseKaprukaPage(html) {
     if (!name) return;
     const href = $a.attr('href') || '';
     const kid = (href.match(/\/kid\/([^/"?#]+)/i) || [])[1];
+    const kidKey = kid ? kid.toLowerCase() : null;
 
     // 1) Canonical LKR price from JSON-LD (geo-independent).
-    let price = kid ? lkrByKid.get(kid.toLowerCase()) ?? null : null;
+    let price = kidKey ? lkrByKid.get(kidKey) ?? null : null;
 
     // 2) Fallback: the visible price, but ONLY when it's rendered in LKR. If the
     //    page geo-converted to USD/another currency, leave price null rather than
@@ -351,7 +362,10 @@ function parseKaprukaPage(html) {
         price = m ? parseInt(m[1].replace(/,/g, ''), 10) : null;
       }
     }
-    out.push({ name, price, url: href, inStock: true });
+    // Default to in-stock when a card has no JSON-LD availability of its own
+    // (rare) rather than assuming the worse case for missing data.
+    const inStock = kidKey && stockByKid.has(kidKey) ? stockByKid.get(kidKey) : true;
+    out.push({ name, price, url: href, inStock });
   });
   return out;
 }

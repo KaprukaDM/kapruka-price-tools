@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#402970" />
+  <link rel="icon" href="https://www.kapruka.com/static/icons/favicon.ico" />
+  <title>Kapruka · Out of Stock Dashboard</title>
+  <link rel="stylesheet" href="theme.css" />
+  <style>
+    .cards { display:flex; flex-wrap:wrap; gap:12px; margin: 6px 0 22px; }
+    .stat { background:#fff; border:1px solid var(--line); border-radius:12px; padding:14px 18px;
+            min-width:150px; box-shadow:0 1px 3px rgba(64,41,112,.06); }
+    .stat .n { font-size:26px; font-weight:800; color:var(--purple-dk); line-height:1.1; }
+    .stat .l { font-size:11px; color:var(--mut); text-transform:uppercase; letter-spacing:.04em; margin-top:3px; }
+    .stat.good .n { color:var(--ok); }
+    .stat.bad .n { color:var(--bad); }
+    .toolbar { display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin-bottom:14px; }
+    .toolbar select { max-width:220px; }
+    .toolbar input[type=search]{ max-width:260px; }
+    .toolbar .right { margin-left:auto; display:flex; gap:10px; align-items:center; }
+    button { margin-top:0; }
+    .section { margin-bottom: 30px; }
+    .section-head { display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; margin-bottom:10px; }
+    .section-head h2 { margin:0; font-size:17px; color:var(--purple-dk); }
+    .section-head .count { font-size:13px; color:var(--mut); }
+    .section-head .right { margin-left:auto; }
+    .store-pill { display:inline-block; background:var(--tint); border:1px solid var(--line);
+                  color:var(--purple-dk); border-radius:999px; padding:2px 10px; font-size:12px; font-weight:600; }
+    tr.stock-partner td:first-child { box-shadow: inset 3px 0 var(--ok); }
+    tr.stock-kapruka td:first-child { box-shadow: inset 3px 0 var(--bad); }
+    .meta { font-size:12px; color:var(--mut); margin: 10px 0 0; }
+    th.sortable { cursor:pointer; user-select:none; white-space:nowrap; }
+    th.sortable:hover { color: var(--purple-dk, #402970); }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="bar">
+      <img class="logo-mark" src="https://www.kapruka.com/static/icons/apple-touch-icon-180x180.png?v2"
+           alt="Kapruka" onerror="this.style.display='none'" />
+      <span class="logo">kapruka<span class="dot">.</span></span>
+      <span class="pill">Out of Stock Dashboard</span>
+      <span class="tag"><a href="index.html">← Menu</a></span>
+    </div>
+  </header>
+
+  <div class="wrap">
+    <h1>Stock mismatches — configured partner stores</h1>
+    <p class="sub">Matched products where <strong>our Kapruka listing and the partner's own site disagree on stock
+       status</strong> — sourced from the same reconciliation runs as the
+       <a href="partner-overpriced.html">Partner Overpriced Price Dashboard</a>. Products that are out of stock (or
+       in stock) on both sides aren't shown — only the mismatches.</p>
+
+    <div id="status" class="card"><span class="spin"></span>Loading the latest stock data…</div>
+
+    <div id="app" style="display:none">
+      <div class="cards" id="cards"></div>
+
+      <div class="toolbar">
+        <select id="category"><option value="">All categories</option></select>
+        <select id="store"><option value="">All stores</option></select>
+        <input type="search" id="search" placeholder="Filter by product name…" />
+      </div>
+
+      <div class="section" id="partnerSection">
+        <div class="section-head">
+          <h2>🟢 In stock on Kapruka, out of stock at partner</h2>
+          <span class="count" id="partnerCount"></span>
+          <div class="right"><button class="ghost btn-link" id="partnerExport" type="button">⬇ Export CSV</button></div>
+        </div>
+        <div id="partnerTable"></div>
+      </div>
+
+      <div class="section" id="kaprukaSection">
+        <div class="section-head">
+          <h2>🔴 Out of stock on Kapruka, in stock at partner</h2>
+          <span class="count" id="kaprukaCount"></span>
+          <div class="right"><button class="ghost btn-link" id="kaprukaExport" type="button">⬇ Export CSV</button></div>
+        </div>
+        <div id="kaprukaTable"></div>
+      </div>
+
+      <p class="meta" id="footmeta"></p>
+    </div>
+  </div>
+
+  <script src="out-of-stock.js"></script>
+</body>
+</html>
