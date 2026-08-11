@@ -10,6 +10,7 @@ import { scrapeProduct } from './scrape.js';
 import { scoreMatch, scoreIdentity } from './matcher.js';
 import { getSiteScraper, scrapeByPlatform } from './sites/index.js';
 import { parseStorage } from './variant.js';
+import { tryCatalogFallback } from './catalog-fallback.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CATEGORIES_PATH = join(__dirname, '..', 'config', 'categories.json');
@@ -90,10 +91,20 @@ async function processSite(query, site) {
 
   // 1) candidate URLs from SERP
   const { urls, error: serpError } = await getCandidateUrls(query.name, site.domain);
-  if (serpError) {
-    return { ...base, status: 'error', flags: ['serp_failed'], note: serpError };
-  }
-  if (urls.length === 0) {
+  if (serpError || urls.length === 0) {
+    // SERP found nothing (or is unreliable/blocked for this domain, e.g. the
+    // `site:` operator -- see electronics-audit/site-adapters.js) -- if we
+    // already know how to read this site's own catalogue, browse it
+    // directly and pick the closest-named product instead of giving up.
+    const fallback = await tryCatalogFallback(query, site);
+    if (fallback) {
+      fallback.status = deriveStatus(fallback);
+      fallback.requestedStorage = requestedStorage;
+      return fallback;
+    }
+    if (serpError) {
+      return { ...base, status: 'error', flags: ['serp_failed'], note: serpError };
+    }
     return { ...base, status: 'no_result', flags: ['no_candidates'] };
   }
 

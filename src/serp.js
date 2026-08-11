@@ -91,12 +91,16 @@ const PROVIDERS = { serper, serpapi };
 export async function getCandidateUrls(productName, domain) {
   const provider = PROVIDERS[SERP_PROVIDER];
   if (!provider) {
-    throw new Error(
-      `Unknown SERP_PROVIDER "${SERP_PROVIDER}". Supported: ${Object.keys(PROVIDERS).join(', ')}`,
-    );
+    // Config problems get the same graceful { urls: [], error } shape as a
+    // live API failure below -- previously these threw straight out of
+    // processSite(), which crashed the *entire* runMatch() call (rejecting
+    // Promise.all across every curated site) instead of degrading just this
+    // one site, and skipped the catalogue fallback entirely since it never
+    // got a chance to run.
+    return { urls: [], error: `Unknown SERP_PROVIDER "${SERP_PROVIDER}". Supported: ${Object.keys(PROVIDERS).join(', ')}` };
   }
   if (!SERP_API_KEY) {
-    throw new Error('SERP_API_KEY is not set');
+    return { urls: [], error: 'SERP_API_KEY is not set' };
   }
 
   const query = `${cleanQuery(productName)} site:${domain}`;
