@@ -40,12 +40,28 @@ export function normalizeName(s) {
     .trim();
 }
 
+// Fold simple regular plurals to their singular form, so token comparison
+// treats "helmets" the same as "helmet" — without this, a query for "axor
+// helmets" never matches a listing titled "Axor Helmet" even though they
+// plainly mean the same product, because every downstream identity check
+// (unmatchedDistinctiveToken, overlap coefficient, ...) works on exact token
+// equality. Deliberately narrow: skips short tokens (avoids "gas"/"bus" at
+// length 3) and any token ending in a digit + "s" (a model-suffix code like
+// "5s"/"11s"/"15s" — e.g. iPhone 5s vs iPhone 5 — not a plural).
+function singularize(t) {
+  if (t.length <= 3 || /\ds$/.test(t)) return t;
+  if (/[^aeiou]ies$/.test(t)) return t.slice(0, -3) + 'y'; // batteries -> battery
+  if (/(?:s|x|z|ch|sh)es$/.test(t)) return t.slice(0, -2); // glasses -> glass, watches -> watch
+  if (t.endsWith('s') && !t.endsWith('ss')) return t.slice(0, -1); // helmets -> helmet
+  return t;
+}
+
 // Descriptive token set (model codes included), minus stopwords and 1-char noise.
 export function tokenize(s) {
   const out = new Set();
   for (const t of normalizeName(s).split(' ')) {
     if (t.length < 2 || STOPWORDS.has(t)) continue;
-    out.add(t);
+    out.add(singularize(t));
   }
   return out;
 }

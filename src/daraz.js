@@ -13,6 +13,18 @@
 // generate the product link ourselves, rather than relying on Google to have
 // indexed it. The best-scoring result becomes a single extra row in the
 // checker, clearly flagged as a marketplace listing.
+//
+// Two lookup paths, tried in order:
+//  1) /tag/<slug>/?ajax=true — Daraz's curated tag/category pages (the same
+//     URL you land on clicking a tag like daraz.lk/tag/helmet/). These rank
+//     noticeably cleaner than raw search: e.g. /tag/axor-helmets/ surfaces
+//     genuine Axor helmets at the very top, where the plain catalog search
+//     for the same query buries the one relevant result among 40 mostly-
+//     irrelevant ones. Slug = the query, lowercased, punctuation stripped,
+//     spaces turned into hyphens.
+//  2) /catalog/?ajax=true&q=... — the original raw search endpoint, used as
+//     a fallback when the tag doesn't exist (Daraz serves an HTML page, not
+//     JSON, for an unrecognized tag) or returns nothing.
 
 import { cleanQuery } from './serp.js';
 import { index } from './compare/matcher.js';
@@ -25,6 +37,31 @@ const HEADERS = {
 };
 
 const searchUrl = (q) => `https://www.daraz.lk/catalog/?ajax=true&q=${encodeURIComponent(q)}&page=1`;
+const tagUrl = (slug) => `https://www.daraz.lk/tag/${slug}/?ajax=true`;
+
+// "Axor Apex Helmet" -> "axor-apex-helmet". Daraz tag slugs are lowercase,
+// hyphen-separated, alphanumeric only.
+function toTagSlug(name) {
+  return String(name || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, ' ')
+    .trim()
+    .replace(/\s+/g, '-');
+}
+
+// A nonexistent tag serves Daraz's normal HTML page (200 OK, not JSON) rather
+// than erroring, so JSON-ness is the actual signal for "this tag exists" —
+// checking res.ok alone isn't enough.
+async function fetchJson(url) {
+  const res = await fetch(url, { headers: HEADERS });
+  if (!res.ok) return null;
+  if (!(res.headers.get('content-type') || '').includes('application/json')) return null;
+  try {
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
 
 function fixUrl(href) {
   if (!href) return '';
@@ -78,16 +115,15 @@ function parseItems(data) {
  */
 export async function searchDaraz(productName) {
   const base = { site: 'Daraz', domain: 'daraz.lk' };
-  let data;
+  let items = [];
   try {
-    const res = await fetch(searchUrl(cleanQuery(productName)), { headers: HEADERS });
-    if (!res.ok) throw new Error(`Daraz search error ${res.status}`);
-    data = await res.json();
+    const slug = toTagSlug(productName);
+    if (slug) items = parseItems(await fetchJson(tagUrl(slug)));
+    if (!items.length) items = parseItems(await fetchJson(searchUrl(cleanQuery(productName))));
   } catch (err) {
     return { ...base, status: 'error', flags: ['daraz_failed'], note: err.message };
   }
 
-  const items = parseItems(data);
   if (!items.length) {
     return { ...base, status: 'no_result', flags: ['no_candidates'] };
   }
