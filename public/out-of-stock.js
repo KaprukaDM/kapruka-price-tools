@@ -140,6 +140,7 @@ function wireToggle() {
 }
 
 function render() {
+  $('kaprukaLimitNote').style.display = ACTIVE_DIR === 'kapruka' ? '' : 'none';
   const panel = PANELS[ACTIVE_DIR];
   let rows = filteredFor(ACTIVE_DIR);
   $('activeCount').textContent = `${rows.length} product${rows.length === 1 ? '' : 's'}`;

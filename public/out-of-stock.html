@@ -39,6 +39,8 @@
     tr.stock-partner td:first-child { box-shadow: inset 3px 0 var(--ok); }
     tr.stock-kapruka td:first-child { box-shadow: inset 3px 0 var(--bad); }
     .meta { font-size:12px; color:var(--mut); margin: 10px 0 0; }
+    .note { font-size:13px; color:var(--mut); background:var(--tint); border:1px solid var(--line);
+            border-radius:10px; padding:12px 16px; margin-bottom:16px; line-height:1.55; }
     th.sortable { cursor:pointer; user-select:none; white-space:nowrap; }
     th.sortable:hover { color: var(--purple-dk, #402970); }
   </style>
@@ -77,6 +79,13 @@
           <button type="button" data-dir="partner">🟢 In stock on Kapruka, out of stock at partner</button>
           <button type="button" data-dir="kapruka">🔴 Out of stock on Kapruka, in stock at partner</button>
         </div>
+      </div>
+
+      <div class="note" id="kaprukaLimitNote" style="display:none">
+        ⚠️ This side can't be reliably detected yet. Kapruka's partner-storefront pages report every product as
+        "in stock" in their structured data regardless of the real stock status shown on the page (that's rendered
+        separately by JavaScript we don't execute) — so this will show 0 even where a real mismatch exists, until a
+        more reliable signal is found.
       </div>
 
       <div class="section-head">
