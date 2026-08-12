@@ -8,11 +8,11 @@ const COLUMNS = [
   { key: 'category', label: 'Category' },
   { key: 'partner', label: 'Store' },
   { key: 'name', label: 'Product' },
+  { key: 'nameSimilarity', label: 'Name Sim %', num: true },
   { key: 'kaprukaPrice', label: 'Kapruka', num: true },
   { key: 'partnerPrice', label: 'Partner site', num: true },
   { key: 'diff', label: 'Overcharge', num: true },
   { key: 'pct', label: '%', num: true },
-  { key: 'nameSimilarity', label: 'Name Sim %', num: true },
 ];
 let SORT = { key: 'diff', dir: 'desc' };
 
@@ -166,11 +166,11 @@ function render() {
           <div class="prod-name">${link(m.kaprukaUrl, m.name)}</div>
           <div class="prod-name prod-partner">${link(m.partnerUrl, m.partnerProductName || m.partnerLabel || '—')}</div>
         </td>
+        <td class="num">${m.nameSimilarity != null ? m.nameSimilarity + '%' : '—'}</td>
         <td class="num price">${lkr(m.kaprukaPrice)}</td>
         <td class="num">${lkr(m.partnerPrice)}</td>
         <td class="num over-amt">+${lkr(m.diff)}</td>
         <td class="num over-amt">${pct}</td>
-        <td class="num">${m.nameSimilarity != null ? m.nameSimilarity + '%' : '—'}</td>
         <td><button type="button" class="row-remove" data-idx="${(PAGE - 1) * PAGE_SIZE + i}" title="Remove from dashboard">🗑 Remove</button></td>
       </tr>`;
     })
