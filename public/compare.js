@@ -31,6 +31,16 @@ function link(url, text) {
   return url ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener">${escapeHtml(text)}</a>` : escapeHtml(text);
 }
 
+// A badge when the partner's own site shows this as discounted from its
+// regular price (regular_price on WooCommerce, compare_at_price on Shopify —
+// see partnerRegularPrice in matcher.js). Not related to our overcharge —
+// this is about whether *they're* currently running a sale.
+function discountBadge(regular, price) {
+  if (regular == null || price == null || regular <= price) return '';
+  const pct = Math.round(((regular - price) / regular) * 100);
+  return ` <span class="badge b-hi" title="Partner regular price: ${lkr(regular)}">🏷 -${pct}%</span>`;
+}
+
 // Kapruka product URLs carry their catalogue category as a code in the
 // /kid/<code> segment — mirrors categoryFromKaprukaUrl() in src/export.js so
 // the category filter here lines up with the Overpriced dashboard's.
@@ -180,7 +190,7 @@ function matchedRows(rows) {
         <td>${link(m.kaprukaUrl, m.name)}
           <div class="ctx">matched: ${link(m.partnerUrl, m.partnerName)} · ${conf} · name sim ${m.nameSimilarity}%</div></td>
         <td class="num price">${lkr(m.kaprukaPrice)}</td>
-        <td class="num">${lkr(m.partnerPrice)}</td>
+        <td class="num">${lkr(m.partnerPrice)}${discountBadge(m.partnerRegularPrice, m.partnerPrice)}</td>
         <td class="num">${m.diff == null ? '' : (m.diff > 0 ? '+' : '') + lkr(m.diff)}</td>
         <td class="num">${pct}</td>
         <td class="${v.cls}">${v.label}</td>

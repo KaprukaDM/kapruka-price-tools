@@ -80,6 +80,16 @@ function link(url, text) {
   return url ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener">${escapeHtml(text)}</a>` : escapeHtml(text);
 }
 
+// A badge when the partner's own site shows this as discounted from its
+// regular price (regular_price on WooCommerce, compare_at_price on Shopify —
+// see partnerRegularPrice in matcher.js). Not related to our overcharge —
+// this is about whether *they're* currently running a sale.
+function discountBadge(regular, price) {
+  if (regular == null || price == null || regular <= price) return '';
+  const pct = Math.round(((regular - price) / regular) * 100);
+  return ` <span class="badge b-hi" title="Partner regular price: ${lkr(regular)}">🏷 -${pct}%</span>`;
+}
+
 function statCards(d) {
   const card = (n, l, cls = '') => `<div class="stat ${cls}"><div class="n">${n}</div><div class="l">${l}</div></div>`;
   const stores = d.partners.filter((p) => p.overpriced > 0).length;
@@ -168,7 +178,7 @@ function render() {
         </td>
         <td class="num">${m.nameSimilarity != null ? m.nameSimilarity + '%' : '—'}</td>
         <td class="num price">${lkr(m.kaprukaPrice)}</td>
-        <td class="num">${lkr(m.partnerPrice)}</td>
+        <td class="num">${lkr(m.partnerPrice)}${discountBadge(m.partnerRegularPrice, m.partnerPrice)}</td>
         <td class="num over-amt">+${lkr(m.diff)}</td>
         <td class="num over-amt">${pct}</td>
         <td><button type="button" class="row-remove" data-idx="${(PAGE - 1) * PAGE_SIZE + i}" title="Remove from dashboard">🗑 Remove</button></td>
