@@ -16,7 +16,10 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const CATEGORIES_PATH = join(__dirname, '..', 'config', 'categories.json');
 
 // Below this match rate we don't trust the result as "the same product".
-const MATCH_THRESHOLD = 50;
+// Loosened from 50 -> 30 on request: don't tighten the bar for what counts
+// as a usable match, surface anything the identity check is at least 30%
+// confident in rather than only near-certain ones.
+const MATCH_THRESHOLD = 30;
 
 // Hard cap per site so one slow/hanging page (e.g. a Playwright render that
 // never settles, or a scrape target that just doesn't respond) can't stall
