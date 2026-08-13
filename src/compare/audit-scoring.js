@@ -103,6 +103,28 @@ function qualifierMismatch(a, b) {
   return false;
 }
 
+// A phone/gadget's own name is a substring of virtually every accessory
+// listing for it ("iPhone 15 Silicone Case" contains "iPhone 15" in full),
+// so a query for the device alone was passing every one of scoreCandidate's
+// other checks against a case/cover/charger listing -- high token overlap,
+// no conflicting spec, no unmatched qualifier word. A case is never the same
+// product as the device it protects, no matter how strong the rest of the
+// match looks, so this is checked unconditionally (both the code and
+// no-code branches) rather than folded into either path's own bar. Doesn't
+// fire when the QUERY itself is for the accessory ("iPhone 15 case") --
+// only when the accessory word appears on just one side.
+const ACCESSORY_WORDS = new Set([
+  'case', 'cover', 'pouch', 'sleeve', 'skin', 'sticker', 'decal', 'tempered',
+  'protector', 'charger', 'cable', 'adapter', 'holder', 'mount', 'stand',
+  'strap', 'bumper', 'magsafe', 'lanyard',
+]);
+export function accessoryMismatch(kTokens, cTokens) {
+  for (const w of ACCESSORY_WORDS) {
+    if (cTokens.has(w) && !kTokens.has(w)) return true;
+  }
+  return false;
+}
+
 // k/c are indexed products (see matcher.js's index()) with ._tokens,
 // ._codes, ._specs already computed. Returns null (reject) or
 // { value, codes, overlap } for ranking candidates against one Kapruka
@@ -111,6 +133,7 @@ export function scoreCandidate(k, c) {
   const codes = sharedCodeCount(k._codes, c._codes);
   const { overlap, intersection } = overlapCoefficient(k._tokens, c._tokens);
   if (intersection < MIN_INTERSECTION || specsConflict(k._specs, c._specs)) return null;
+  if (accessoryMismatch(k._tokens, c._tokens)) return null;
 
   if (codes >= 1) {
     if (overlap < CODE_MATCH_MIN_OVERLAP) return null;

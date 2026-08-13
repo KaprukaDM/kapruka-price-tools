@@ -41,9 +41,17 @@ function buildTable(list) {
         (r.matchRate ?? 0) < 40 && r.reasoning
           ? `<div class="ctx reason">Why: ${escapeHtml(r.reasoning)}</div>`
           : '';
+      // Only Daraz rows currently carry an image (its live feed returns one
+      // per listing) -- the database-sourced rows (price_audit_items/
+      // competitor_products/comparison_runs) don't store one at all, so this
+      // is simply absent there rather than broken. onerror hides a dead
+      // thumbnail instead of leaving a broken-image icon in the table.
+      const thumb = r.image
+        ? `<img src="${escapeHtml(r.image)}" alt="" loading="lazy" onerror="this.remove()" style="width:40px;height:40px;object-fit:cover;border-radius:6px;vertical-align:middle;margin-right:8px">`
+        : '';
       return `<tr>
         <td><strong>${escapeHtml(r.site)}</strong><div class="ctx">${escapeHtml(r.domain || '')}</div></td>
-        <td>${title}${reason}</td>
+        <td>${thumb}${title}${reason}</td>
         <td><span class="price">${fmtPrice(r)}</span>${ctx}</td>
         <td>${badge(r.matchRate)}</td>
         <td class="${st.cls}">${st.text}${note}</td>

@@ -32,7 +32,7 @@
 //      the newer audit tables.
 
 import { index } from '../compare/matcher.js';
-import { scoreCandidate } from '../compare/audit-scoring.js';
+import { scoreCandidate, accessoryMismatch } from '../compare/audit-scoring.js';
 import { tokenize, SPEC_TOKEN, extractModelCodes } from '../compare/normalize.js';
 import { getPriceAuditItems, searchCompetitorProductsByTokens, allComparisonRows } from '../db.js';
 
@@ -182,6 +182,7 @@ async function searchPriceAuditItems(qIndexed) {
 // competitor_products/comparison_runs have no equivalent per-product
 // grouping to browse by.
 function broadTokenMatch(queryTokens, candidateTokens) {
+  if (accessoryMismatch(queryTokens, candidateTokens)) return false;
   for (const t of queryTokens) {
     if (!candidateTokens.has(t)) return false;
   }
@@ -342,6 +343,27 @@ export async function searchDatabase({ name, description }) {
   const cleanDescription = String(description || '').trim();
   if (!cleanName) return { hasMatch: false, mode: null };
   const qIndexed = toIndexed(cleanName, cleanDescription);
+  const isShortQuery = qIndexed._tokens.size > 0 && qIndexed._tokens.size <= BROAD_QUERY_MAX_TOKENS;
+
+  // 0) A short query ("iPhone 15") can legitimately refer to several
+  // distinct catalogued products at once -- different storage/color SKUs
+  // that all share that same short name (price_audit_items really can hold
+  // "iPhone 15 128GB Black", "...Pink", "...256GB", etc. as separate rows).
+  // Checked BEFORE the strict identity search below: a single stray exact-
+  // text match elsewhere (e.g. some competitor's own generically-titled
+  // "iPhone 15" listing, no storage/color given at all) would otherwise win
+  // strict mode outright and silently hide every other real SKU -- the
+  // opposite of what "browse multiple candidates" exists for. Only takes
+  // over when there's genuine ambiguity (>1 distinct product); a short query
+  // that resolves to exactly one tracked product still goes through the
+  // strict path below so it also picks up competitor_products/
+  // comparison_runs matches, not just price_audit_items.
+  if (isShortQuery) {
+    const ambiguous = await searchPriceAuditItemsBroad(qIndexed);
+    if (ambiguous.length > 1) {
+      return { hasMatch: true, mode: 'browse', products: ambiguous };
+    }
+  }
 
   // 1) Strict identity search — unchanged behavior for a well-specified
   // query: merges all 3 tables into one product's site-by-site comparison.
@@ -358,7 +380,7 @@ export async function searchDatabase({ name, description }) {
   // 2) Broad/browse fallback — only reached for a short, generic query where
   // the strict search structurally never had a chance (see
   // BROAD_QUERY_MAX_TOKENS). Returns multiple products instead of one.
-  if (qIndexed._tokens.size > 0 && qIndexed._tokens.size <= BROAD_QUERY_MAX_TOKENS) {
+  if (isShortQuery) {
     const products = await searchPriceAuditItemsBroad(qIndexed);
     if (products.length > 0) {
       return { hasMatch: true, mode: 'browse', products };

@@ -462,6 +462,37 @@ function parsePriceLKR(text) {
   return Number.isFinite(n) && n > 0 ? Math.round(n) : null;
 }
 
+// The HTML-scraped adapters below (unlike the WooCommerce REST / Shopify
+// paths above, which read the site's own currency-tagged field) have no
+// currency field to lean on at all -- just whatever text the theme renders.
+// A site that's actually priced in USD ("$45.99") was silently treated as
+// Rs. 45.99 by parsePriceLKR, which ignores the symbol entirely -- massively
+// underpricing that partner everywhere it's compared. Flag it here instead:
+// a "$"/"USD" with no accompanying Rs./LKR marker on the same string is USD,
+// everything else stays LKR exactly as before.
+function parsePriceMaybeForeign(text) {
+  const price = parsePriceLKR(text);
+  if (price == null) return null;
+  const s = String(text || '');
+  const isUsd = /\$|USD/i.test(s) && !/Rs\.?|LKR|රු/i.test(s);
+  return { price, currency: isUsd ? 'USD' : 'LKR' };
+}
+
+// cheerio's .each() callback can't be async, so parsePriceMaybeForeign just
+// flags a foreign price during that (synchronous) pass -- this converts the
+// flagged ones afterwards, in one batch. convertToLkr() caches its FX rate
+// per currency for 30 minutes, so this costs at most one network call per
+// currency per catalogue fetch, not one per product.
+async function convertForeignItems(items) {
+  for (const item of items) {
+    if (item._currency && item._currency !== 'LKR' && item.price != null) {
+      item.price = await convertToLkr(item.price, item._currency);
+    }
+    delete item._currency;
+  }
+  return items;
+}
+
 // WooCommerce Store API: /wp-json/wc/store/v1/products?per_page=100&page=N.
 // Prices are integer strings scaled by currency_minor_unit.
 //
@@ -582,7 +613,7 @@ async function fetchShopifyCatalog(origin, log, fetchJson = fetchJsonSafe) {
 // read the title/price from there. `shopUrl` must be the exact listing page
 // (e.g. "https://site.com/shop/"), not just the origin -- these sites don't
 // follow one consistent path.
-function parseWooHtmlPage(html, origin) {
+async function parseWooHtmlPage(html, origin) {
   const $ = cheerio.load(html);
   const seen = new Set();
   const out = [];
@@ -609,8 +640,8 @@ function parseWooHtmlPage(html, origin) {
     const priceEl = found.find('.price').first();
     const saleAmt = priceEl.find('ins .woocommerce-Price-amount, ins .amount').first();
     const amt = saleAmt.length ? saleAmt : priceEl.find('.woocommerce-Price-amount, .amount').first();
-    const price = parsePriceLKR((amt.length ? amt : priceEl).text());
-    if (!price) return;
+    const parsed = parsePriceMaybeForeign((amt.length ? amt : priceEl).text());
+    if (!parsed) return;
 
     const title = fixMojibake(decodeEntities(
       found.find('h1,h2,h3,h4,.woocommerce-loop-product__title,.wd-entities-title,.product-title,.product_title')
@@ -619,9 +650,9 @@ function parseWooHtmlPage(html, origin) {
     if (!title) return;
 
     seen.add(href);
-    out.push({ id: `woohtml-${href}`, name: title, price, url: href });
+    out.push({ id: `woohtml-${href}`, name: title, price: parsed.price, url: href, _currency: parsed.currency });
   });
-  return out;
+  return convertForeignItems(out);
 }
 
 // Some sites front WooCommerce with a WAF (Wordfence, Cloudflare bot-fight) that
@@ -651,7 +682,7 @@ async function fetchWooHtmlCatalog(shopUrl, log, fetchTextFn = fetchText) {
       }
     }
     if (html == null) break;
-    const products = parseWooHtmlPage(html, origin);
+    const products = await parseWooHtmlPage(html, origin);
     if (products.length === 0) break;
     let added = 0;
     for (const p of products) {
@@ -673,7 +704,7 @@ async function fetchWooHtmlCatalog(shopUrl, log, fetchTextFn = fetchText) {
 // future Odoo-based partner). Card markup differs slightly by theme/version
 // between the two confirmed installs, so this reads from whichever stable
 // class/attribute is present rather than one exact selector.
-function parseOdooListingPage(html, origin) {
+async function parseOdooListingPage(html, origin) {
   const $ = cheerio.load(html);
   const out = [];
   const seen = new Set();
@@ -684,17 +715,17 @@ function parseOdooListingPage(html, origin) {
     if (!href) return;
     if (!href.startsWith('http')) href = new URL(href, origin).toString();
     if (seen.has(href)) return;
-    const price = parsePriceLKR($card.find('.oe_currency_value').first().text());
-    if (!price) return;
+    const parsed = parsePriceMaybeForeign($card.find('.oe_currency_value').first().text());
+    if (!parsed) return;
     const nameLink = $card.find('a[itemprop="name"]').first();
     const title = fixMojibake(decodeEntities(
       (nameLink.length ? nameLink.text() : '') || $link.attr('title') || $link.find('img').attr('alt') || '',
     )).replace(/\s+/g, ' ').trim();
     if (!title) return;
     seen.add(href);
-    out.push({ id: `odoo-${href}`, name: title, price, url: href });
+    out.push({ id: `odoo-${href}`, name: title, price: parsed.price, url: href, _currency: parsed.currency });
   });
-  return out;
+  return convertForeignItems(out);
 }
 
 async function fetchOdooCatalog(shopUrl, log, fetchTextFn = fetchText) {
@@ -718,7 +749,7 @@ async function fetchOdooCatalog(shopUrl, log, fetchTextFn = fetchText) {
       }
     }
     if (html == null) break;
-    const products = parseOdooListingPage(html, origin);
+    const products = await parseOdooListingPage(html, origin);
     if (products.length === 0) break;
     let added = 0;
     for (const p of products) {
@@ -771,7 +802,7 @@ async function fetchIchouseCatalog(fetchJson = fetchJsonSafe) {
 // -- kidsmarket.lk -- CodeIgniter storefront; pagination is a path offset
 // (12 products/page). Page 1's pagination widget exposes the total page
 // count directly, so no guessing is needed.
-function parseKidsmarketPage(html, origin) {
+async function parseKidsmarketPage(html, origin) {
   const $ = cheerio.load(html);
   const out = [];
   const seen = new Set();
@@ -790,16 +821,16 @@ function parseKidsmarketPage(html, origin) {
       if (p.length) { priceEl = p; break; }
     }
     if (!priceEl) return;
-    const price = parsePriceLKR(priceEl.text());
-    if (!price) return;
+    const parsed = parsePriceMaybeForeign(priceEl.text());
+    if (!parsed) return;
     const title = fixMojibake(decodeEntities(
       $card.find('h4.font-semibold.text-lg.text-brand-dark').first().text() || $a.text(),
     )).replace(/\s+/g, ' ').trim();
     if (!title) return;
     seen.add(href);
-    out.push({ id: `kidsmarket-${href}`, name: title, price, url: href });
+    out.push({ id: `kidsmarket-${href}`, name: title, price: parsed.price, url: href, _currency: parsed.currency });
   });
-  return out;
+  return convertForeignItems(out);
 }
 
 async function fetchKidsmarketCatalog(shopUrl, log, fetchTextFn = fetchText) {
@@ -808,7 +839,7 @@ async function fetchKidsmarketCatalog(shopUrl, log, fetchTextFn = fetchText) {
   let html;
   try { html = await fetchTextFn(base); } catch { return []; }
   const byUrl = new Map();
-  for (const p of parseKidsmarketPage(html, origin)) byUrl.set(p.url, p);
+  for (const p of await parseKidsmarketPage(html, origin)) byUrl.set(p.url, p);
   log(`  partner (kidsmarket) page 1: ${byUrl.size} cards`);
   let lastPage = 1;
   const $page1 = cheerio.load(html);
@@ -829,7 +860,7 @@ async function fetchKidsmarketCatalog(shopUrl, log, fetchTextFn = fetchText) {
       }
     }
     if (h == null) break;
-    const products = parseKidsmarketPage(h, origin);
+    const products = await parseKidsmarketPage(h, origin);
     let added = 0;
     for (const p of products) { if (!byUrl.has(p.url)) { byUrl.set(p.url, p); added++; } }
     log(`  partner (kidsmarket) page ${page}: ${products.length} cards (${added} new), total ${byUrl.size}`);
@@ -840,7 +871,7 @@ async function fetchKidsmarketCatalog(shopUrl, log, fetchTextFn = fetchText) {
 
 // -- liveu.lk -- Laravel storefront whose listing endpoint honours a
 // per_page override, so the whole catalogue comes back in one request.
-function parseLiveuPage(html, origin) {
+async function parseLiveuPage(html, origin) {
   const $ = cheerio.load(html);
   const out = [];
   const seen = new Set();
@@ -851,26 +882,26 @@ function parseLiveuPage(html, origin) {
     if (!href) return;
     if (!href.startsWith('http')) href = new URL(href, origin).toString();
     if (seen.has(href)) return;
-    const price = parsePriceLKR($card.find('h6.price span.text-danger').first().text());
-    if (!price) return;
+    const parsed = parsePriceMaybeForeign($card.find('h6.price span.text-danger').first().text());
+    if (!parsed) return;
     const title = fixMojibake(decodeEntities($a.text())).replace(/\s+/g, ' ').trim();
     if (!title) return;
     seen.add(href);
-    out.push({ id: `liveu-${href}`, name: title, price, url: href });
+    out.push({ id: `liveu-${href}`, name: title, price: parsed.price, url: href, _currency: parsed.currency });
   });
-  return out;
+  return convertForeignItems(out);
 }
 
 async function fetchLiveuCatalog(shopUrl, log, fetchTextFn = fetchText) {
   const origin = toOrigin(shopUrl);
   const html = await fetchTextFn(`${origin}/products?per_page=500`);
-  const products = parseLiveuPage(html, origin);
+  const products = await parseLiveuPage(html, origin);
   log(`  partner (liveu) single page: ${products.length} cards`);
   return products;
 }
 
 // -- scgraphic.com (SC Promotion) -- entire catalogue renders on one page.
-function parseScgraphicPage(html, origin) {
+async function parseScgraphicPage(html, origin) {
   const $ = cheerio.load(html);
   const out = [];
   const seen = new Set();
@@ -883,20 +914,20 @@ function parseScgraphicPage(html, origin) {
     if (seen.has(href)) return;
     const $discounted = $card.find('span.discounted-price').first();
     const priceEl = $discounted.length ? $discounted : $card.find('span.regular-price').first();
-    const price = parsePriceLKR(priceEl.text());
-    if (!price) return;
+    const parsed = parsePriceMaybeForeign(priceEl.text());
+    if (!parsed) return;
     const title = fixMojibake(decodeEntities($card.find('div.product-name').first().text())).replace(/\s+/g, ' ').trim();
     if (!title) return;
     seen.add(href);
-    out.push({ id: `scgraphic-${href}`, name: title, price, url: href });
+    out.push({ id: `scgraphic-${href}`, name: title, price: parsed.price, url: href, _currency: parsed.currency });
   });
-  return out;
+  return convertForeignItems(out);
 }
 
 async function fetchScgraphicCatalog(shopUrl, log, fetchTextFn = fetchText) {
   const origin = toOrigin(shopUrl);
   const html = await fetchTextFn(`${origin}/shop.php`);
-  const products = parseScgraphicPage(html, origin);
+  const products = await parseScgraphicPage(html, origin);
   log(`  partner (scgraphic) single page: ${products.length} cards`);
   return products;
 }
@@ -931,7 +962,7 @@ async function fetchAgrolaDarazCatalog(log) {
 // three known category paths (8 products/page).
 const JHSTORE_CATEGORY_PATHS = [43, 52, 68];
 
-function parseJhstorePage(html, origin) {
+async function parseJhstorePage(html, origin) {
   const $ = cheerio.load(html);
   const out = [];
   const seen = new Set();
@@ -942,14 +973,14 @@ function parseJhstorePage(html, origin) {
     if (!href) return;
     if (!href.startsWith('http')) href = new URL(href, origin).toString();
     if (seen.has(href)) return;
-    const price = parsePriceLKR($card.find('div.price').first().text());
-    if (!price) return; // also drops genuine Rs.0.00 "call for price" entries
+    const parsed = parsePriceMaybeForeign($card.find('div.price').first().text());
+    if (!parsed) return; // also drops genuine Rs.0.00 "call for price" entries
     const title = fixMojibake(decodeEntities($card.find('div.card-title').first().text())).replace(/\s+/g, ' ').trim();
     if (!title) return;
     seen.add(href);
-    out.push({ id: `jhstore-${href}`, name: title, price, url: href });
+    out.push({ id: `jhstore-${href}`, name: title, price: parsed.price, url: href, _currency: parsed.currency });
   });
-  return out;
+  return convertForeignItems(out);
 }
 
 async function fetchJhstoreCatalog(shopUrl, log, fetchTextFn = fetchText) {
@@ -960,7 +991,7 @@ async function fetchJhstoreCatalog(shopUrl, log, fetchTextFn = fetchText) {
       const url = `${origin}/jhstore/index.php?rt=product/category&path=${path}&page=${page}&limit=8`;
       let html;
       try { html = await fetchTextFn(url); } catch { break; }
-      const products = parseJhstorePage(html, origin);
+      const products = await parseJhstorePage(html, origin);
       if (products.length === 0) break;
       let added = 0;
       for (const p of products) { if (!byUrl.has(p.url)) { byUrl.set(p.url, p); added++; } }
@@ -981,8 +1012,9 @@ async function fetchForeverskinCatalog(fetchJson = fetchJsonSafe) {
   const out = [];
   for (const p of list) {
     for (const s of p.sizes || []) {
-      const price = parsePriceLKR(s.price);
-      if (!price) continue;
+      const parsed = parsePriceMaybeForeign(s.price);
+      if (!parsed) continue;
+      const price = parsed.currency === 'LKR' ? parsed.price : await convertToLkr(parsed.price, parsed.currency);
       out.push({
         id: `foreverskin-${p.id}-${s.sizeId}`,
         name: s.size ? `${p.name} ${s.size}` : p.name,

@@ -39,7 +39,7 @@
 
 import { cleanQuery } from './serp.js';
 import { index } from './compare/matcher.js';
-import { scoreCandidate, MIN_INTERSECTION } from './compare/audit-scoring.js';
+import { scoreCandidate, MIN_INTERSECTION, accessoryMismatch } from './compare/audit-scoring.js';
 
 const HEADERS = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
@@ -164,10 +164,17 @@ function queryVariations(name) {
 // the same minimum shared-token floor scoreCandidate() itself uses
 // (MIN_INTERSECTION), so this can't degrade into "any random helmet counts"
 // — and every result from this path is explicitly flagged approximate,
-// never presented as if it were the exact product.
+// never presented as if it were the exact product. Also excluded here for
+// the same reason scoreCandidate() rejects it outright: a search for a
+// device pools in every accessory listing for it too (a case/cover/charger
+// title always contains the device's own name), and without this a search
+// for "iPhone 15" that finds no genuine phone listing fell back to showing
+// phone CASES as the "closest match" -- never useful, and actively
+// misleading at a glance.
 function closestMatches(qIndexed, pool, limit) {
   const scored = [];
   for (const c of index(pool, false)) {
+    if (accessoryMismatch(qIndexed._tokens, c._tokens)) continue;
     let shared = 0;
     for (const t of qIndexed._tokens) if (c._tokens.has(t)) shared++;
     if (shared < MIN_INTERSECTION) continue;
