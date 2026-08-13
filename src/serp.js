@@ -141,6 +141,7 @@ export async function getCandidateUrls(productName, domain) {
 // .lk domains, this blocklist is the main defense against cross-border
 // marketplaces shipping from outside Sri Lanka rather than local retailers.
 const DISCOVERY_BLOCKLIST = [
+  'kapruka.', // never surface Kapruka's own site as a "competitor" to itself
   'daraz.', // Daraz
   'ikman.', // classifieds
   'facebook.', 'fb.com', 'fb.me', 'instagram.', 'tiktok.', 'pinterest.', // social
