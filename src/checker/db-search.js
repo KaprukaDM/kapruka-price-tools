@@ -4,14 +4,18 @@
 // runMatch) is only used as a fallback when nothing here clears the match
 // bar — see server.js.
 //
-// Matching only ever looks at the product NAME (never the description) —
-// same convention as every other matcher in this codebase (match-local.js,
-// retry-unmatched.js, matcher.js). The description is still shown in the UI
-// and still passed through to the live-search fallback, where the LLM
-// identity check can use it; it's just not part of this cheap DB pre-filter,
-// since a stray descriptive word ("with Apple Care") that isn't in a
-// competitor's own product title would otherwise cause scoreCandidate's
-// strict token-containment check to reject an otherwise-correct match.
+// Identity matching (scoreCandidate's token-containment check) still only
+// ever looks at the product NAME — same convention as every other matcher
+// in this codebase (match-local.js, retry-unmatched.js, matcher.js). A
+// stray descriptive word ("with Apple Care") that isn't in a competitor's
+// own product title would otherwise cause that strict containment check to
+// reject an otherwise-correct match. The description IS used, but only in
+// ways that can widen recall without weakening that precision check: mining
+// it for a model/SKU code to add to the query's code set (see toIndexed()),
+// and as a fallback source of SQL search tokens when the name alone finds
+// nothing in competitor_products (see searchCompetitorProductsTable()). It's
+// also still passed through to the live-search fallback, where the LLM
+// identity check can use it directly.
 //
 // Scans 3 tables:
 //   1. price_audit_items  - confirmed Kapruka<->competitor matches from the
@@ -29,11 +33,45 @@
 
 import { index } from '../compare/matcher.js';
 import { scoreCandidate } from '../compare/audit-scoring.js';
-import { tokenize, SPEC_TOKEN } from '../compare/normalize.js';
+import { tokenize, SPEC_TOKEN, extractModelCodes } from '../compare/normalize.js';
 import { getPriceAuditItems, searchCompetitorProductsByTokens, allComparisonRows } from '../db.js';
 
 const AUDIT_ITEMS_SCAN_LIMIT = 6000; // comfortably above the ~2.5k rows currently stored
 const COMPETITOR_SEARCH_LIMIT = 500;
+
+// price_audit_items/comparison_runs are full-table scans over PostgREST,
+// paged in <=1000-row chunks — several network round trips EVERY checker
+// search, even though the underlying data only changes when a nightly audit
+// or partner-compare run writes to it (roughly once/day). That round-trip
+// cost, repeated on every single query, was the main source of the "search
+// takes too long" complaints. Cache the raw rows in memory for several hours
+// so the whole day's worth of searches reuse one fetch instead of re-paging
+// the whole table each time. A rejected fetch isn't cached, so the next call
+// retries immediately rather than being stuck with a failure for the TTL.
+const TABLE_CACHE_TTL_MS = 5 * 60 * 60 * 1000;
+let auditItemsCache = null; // { at, promise }
+let comparisonRowsCache = null; // { at, promise }
+
+function getCachedPriceAuditItems() {
+  const now = Date.now();
+  if (!auditItemsCache || now - auditItemsCache.at >= TABLE_CACHE_TTL_MS) {
+    const promise = getPriceAuditItems({ limit: AUDIT_ITEMS_SCAN_LIMIT });
+    auditItemsCache = { at: now, promise };
+    promise.catch(() => { auditItemsCache = null; });
+  }
+  return auditItemsCache.promise;
+}
+
+function getCachedComparisonRows() {
+  const now = Date.now();
+  if (!comparisonRowsCache || now - comparisonRowsCache.at >= TABLE_CACHE_TTL_MS) {
+    const promise = allComparisonRows();
+    comparisonRowsCache = { at: now, promise };
+    promise.catch(() => { comparisonRowsCache = null; });
+  }
+  return comparisonRowsCache.promise;
+}
+
 // scoreCandidate() requires >=2 shared distinctive words before it'll even
 // consider a candidate (MIN_INTERSECTION in audit-scoring.js) — a query with
 // fewer words than that can never clear it, no matter how many products
@@ -53,8 +91,23 @@ function searchTokens(name) {
   return all.slice(0, 2);
 }
 
-function toIndexed(name) {
+// Matching still only ever CONTAINS-checks the product NAME (see the file
+// header) -- a stray descriptive word not on the competitor's own title
+// would otherwise trip scoreCandidate's strict containment check and reject
+// an otherwise-correct match. But a strong model/SKU code is different: it's
+// never treated as noise (scoreCandidate's low-bar "codes >= 1" branch
+// exists precisely because a shared code is stronger evidence than name
+// overlap), and the code identifying a product is often only mentioned in
+// its longer description, not the short name a user types/pastes. So fold
+// codes extracted from the description into the query's code set (NOT its
+// token set) -- this can only help a match go through the code path that
+// name-only indexing would have missed, never make the containment check
+// stricter.
+function toIndexed(name, description = '') {
   const [row] = index([{ name, url: 'query' }], false);
+  if (description) {
+    for (const c of extractModelCodes(description)) row._codes.add(c);
+  }
   return row;
 }
 
@@ -85,7 +138,7 @@ function resultRow({ site, domain, title, url, price, matchRate, sourceTable }) 
 // Table 1: price_audit_items — identify which (if any) already-audited
 // Kapruka product the query refers to, then return all of its site matches.
 async function searchPriceAuditItems(qIndexed) {
-  const rows = await getPriceAuditItems({ limit: AUDIT_ITEMS_SCAN_LIMIT });
+  const rows = await getCachedPriceAuditItems();
   if (!rows.length) return [];
 
   const byKapruka = new Map();
@@ -136,7 +189,7 @@ function broadTokenMatch(queryTokens, candidateTokens) {
 }
 
 async function searchPriceAuditItemsBroad(qIndexed) {
-  const rows = await getPriceAuditItems({ limit: AUDIT_ITEMS_SCAN_LIMIT });
+  const rows = await getCachedPriceAuditItems();
   if (!rows.length) return [];
 
   const byKapruka = new Map();
@@ -182,10 +235,18 @@ async function searchPriceAuditItemsBroad(qIndexed) {
 }
 
 // Table 2: competitor_products — raw scraped catalogue, matched live.
-async function searchCompetitorProductsTable(qIndexed, name) {
+async function searchCompetitorProductsTable(qIndexed, name, description = '') {
   const tokens = searchTokens(name);
   if (!tokens.length) return [];
-  const rows = await searchCompetitorProductsByTokens(tokens, COMPETITOR_SEARCH_LIMIT);
+  let rows = await searchCompetitorProductsByTokens(tokens, COMPETITOR_SEARCH_LIMIT);
+  // The name's own tokens found nothing at the SQL level -- try again with
+  // the description's most distinctive tokens (e.g. a brand/model the short
+  // "name" field left out). Only fired when the fast path is empty, so the
+  // common case pays no extra round trip.
+  if (!rows.length && description) {
+    const descTokens = searchTokens(description);
+    if (descTokens.length) rows = await searchCompetitorProductsByTokens(descTokens, COMPETITOR_SEARCH_LIMIT);
+  }
   if (!rows.length) return [];
 
   const indexed = index(
@@ -222,7 +283,7 @@ async function searchCompetitorProductsTable(qIndexed, name) {
 
 // Table 3: comparison_runs — the older single-partner tool's stored payloads.
 async function searchComparisonRunsTable(qIndexed) {
-  const rows = await allComparisonRows();
+  const rows = await getCachedComparisonRows();
   if (!rows.length) return [];
 
   const bestPerPartner = new Map();
@@ -276,16 +337,17 @@ function byBestValue(a, b) {
   return (a.price ?? Infinity) - (b.price ?? Infinity);
 }
 
-export async function searchDatabase({ name }) {
+export async function searchDatabase({ name, description }) {
   const cleanName = String(name || '').trim();
+  const cleanDescription = String(description || '').trim();
   if (!cleanName) return { hasMatch: false, mode: null };
-  const qIndexed = toIndexed(cleanName);
+  const qIndexed = toIndexed(cleanName, cleanDescription);
 
   // 1) Strict identity search — unchanged behavior for a well-specified
   // query: merges all 3 tables into one product's site-by-site comparison.
   const [auditResults, competitorResults, comparisonResults] = await Promise.all([
     searchPriceAuditItems(qIndexed),
-    searchCompetitorProductsTable(qIndexed, cleanName),
+    searchCompetitorProductsTable(qIndexed, cleanName, cleanDescription),
     searchComparisonRunsTable(qIndexed),
   ]);
   const merged = mergeByDomain(auditResults, competitorResults, comparisonResults).sort(byBestValue);

@@ -28,9 +28,12 @@ function buildTable(list) {
   const rows = list
     .map((r) => {
       const st = STATUS_LABEL[r.status] || STATUS_LABEL.error;
-      const title = r.title
+      const overseasBadge = (r.flags || []).includes('overseas')
+        ? ` <span class="badge b-md" title="Ships from outside Sri Lanka">overseas</span>`
+        : '';
+      const title = (r.title
         ? `${r.url ? `<a href="${r.url}" target="_blank" rel="noopener">${escapeHtml(r.title)}</a>` : escapeHtml(r.title)}`
-        : (r.url ? `<a href="${r.url}" target="_blank" rel="noopener">view page</a>` : '—');
+        : (r.url ? `<a href="${r.url}" target="_blank" rel="noopener">view page</a>` : '—')) + overseasBadge;
       const ctx = r.priceContext ? `<div class="ctx">${escapeHtml(r.priceContext)}</div>` : '';
       const note = r.note ? `<div class="ctx">${escapeHtml(r.note)}</div>` : '';
       // Show the model's reasoning when the match is weak, so you know WHY.

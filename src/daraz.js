@@ -100,10 +100,11 @@ function parseItems(data) {
     const name = x.name || x.productTitle || '';
     if (!name) continue;
     // Foreign-seller ("overseas") listings ship from outside Sri Lanka and
-    // often carry different pricing/availability — same filter daraz_agent.py
-    // applies.
+    // often carry different pricing/availability/delivery time than a local
+    // seller — kept in the results (rather than dropped, as before) but
+    // flagged so the checker can badge them, since they're still a real,
+    // often cheaper, price point worth showing.
     const location = String(x.location || '').trim().toLowerCase();
-    if (location === 'overseas') continue;
     const image = x.image || x.mainImage || '';
     out.push({
       name,
@@ -111,6 +112,7 @@ function parseItems(data) {
       price: cleanPrice(x.price ?? x.priceShow),
       image: image.startsWith('//') ? `https:${image}` : image,
       seller: x.sellerName || x.shopName || '',
+      overseas: location === 'overseas',
     });
   }
   return out;
@@ -183,8 +185,8 @@ async function fetchCandidates(query) {
 }
 
 const MAX_VARIATIONS = 5;
-const TARGET_MATCHES = 3; // stop trying more variations once we have this many
-const MAX_RESULTS = 5;
+const TARGET_MATCHES = 8; // stop trying more variations once we have this many
+const MAX_RESULTS = 15;
 
 /**
  * Look up `productName` directly on Daraz: try the literal query plus a
@@ -255,14 +257,15 @@ export async function searchDaraz(productName) {
       currency: 'LKR',
       priceContext: c.seller ? `sold by ${c.seller}` : '',
       reasoning: 'Matched from a live search on Daraz.lk — a third-party marketplace listing, verify the seller before buying.',
-      flags: ['marketplace'],
+      flags: c.overseas ? ['marketplace', 'overseas'] : ['marketplace'],
+      overseas: !!c.overseas,
       status: Math.round(sc.overlap * 100) < 50 ? 'low_confidence' : c.price == null ? 'price_not_found' : 'ok',
     }));
   }
 
   // No confident match anywhere in the pool — fall back to the closest
   // same-brand/category listings rather than reporting nothing.
-  const approx = closestMatches(qIndexed, pool, 2);
+  const approx = closestMatches(qIndexed, pool, MAX_RESULTS);
   return approx.map((c) => ({
     ...base,
     title: c.name,
@@ -273,7 +276,8 @@ export async function searchDaraz(productName) {
     currency: 'LKR',
     priceContext: c.seller ? `sold by ${c.seller}` : '',
     reasoning: `No exact match for "${productName}" on Daraz — this is the closest same-brand/category listing found, not necessarily the same model. Verify before relying on this price.`,
-    flags: ['marketplace', 'approximate_match'],
+    flags: c.overseas ? ['marketplace', 'approximate_match', 'overseas'] : ['marketplace', 'approximate_match'],
+    overseas: !!c.overseas,
     status: 'low_confidence',
   }));
 }

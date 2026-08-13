@@ -39,6 +39,28 @@ function extractQty(name) {
   return m ? parseInt(m[1], 10) : 1;
 }
 
+// Generic quality/marketing descriptors that a listing may drop or add
+// without being a different product ("Organic Apple Cider Vinegar" vs
+// "Apple Cider Vinegar" is the same item, just described differently).
+const DESCRIPTOR_WORDS = new Set(['organic', 'natural', 'pure', 'premium', 'fresh', 'virgin', 'raw']);
+
+// A leftover token in `a` that ISN'T in `b` and isn't a mere descriptor is a
+// real ingredient/variant difference (e.g. "... With The Mother 500ml" vs
+// "... With The Mother And Organic Honey 500ml" -- "honey" names an added
+// second ingredient, a genuinely different product, not just a wording
+// difference). Two near-duplicate names differing by exactly one such word
+// can still clear NAME_ONLY_JACCARD (only a couple of tokens out of many),
+// and worse, the variant WITH the extra word can score a *higher* jaccard
+// than the correct match if the competitor listing itself omits a
+// descriptor -- so this can't be left to the jaccard threshold alone.
+function unmatchedToken(aTokens, bTokens) {
+  for (const t of aTokens) {
+    if (DESCRIPTOR_WORDS.has(t)) continue;
+    if (!bTokens.has(t)) return t;
+  }
+  return null;
+}
+
 // Prices within this fraction of each other are treated as "same".
 const SAME_PRICE_TOLERANCE = 0.01;
 // Pure-name matches (no shared model code) need at least this token overlap.
@@ -115,7 +137,11 @@ export function score(k, s) {
   // code match — so a conflicting spec still vetoes those.
   const conflict = specsConflict(k._specs, s._specs);
   const codeMatch = codes >= 1 && jac >= CODE_MATCH_MIN_JACCARD && (nativeCodes >= 1 || !conflict);
-  const nameMatch = jac >= NAME_ONLY_JACCARD && !conflict;
+  const nameMatch =
+    jac >= NAME_ONLY_JACCARD &&
+    !conflict &&
+    !unmatchedToken(k._tokens, s._tokens) &&
+    !unmatchedToken(s._tokens, k._tokens);
   if (!codeMatch && !nameMatch) return null;
   if ((isAdultToyName(k.name) || isAdultToyName(s.name)) && extractQty(k.name) !== extractQty(s.name)) {
     return null;
