@@ -56,12 +56,23 @@ function singularize(t) {
   return t;
 }
 
+// A quantity count glued straight to its unit word ("30pcs", "30Pack") vs.
+// the same count with a space ("30 Pcs") tokenized to two different things:
+// the spaced form drops "pcs" as a stopword and keeps bare "30", while the
+// glued form survived stopword-stripping intact and got singularized to
+// "30pc" instead -- so a query written one way could never token-match a
+// listing written the other way, losing a real shared token over nothing
+// but formatting. Strip the unit off a glued quantity token the same way
+// the standalone word is already dropped, so both forms end up as plain "30".
+const QTY_SUFFIX = /^(\d+)(?:pcs?|pieces?|packs?|sets?)$/;
+
 // Descriptive token set (model codes included), minus stopwords and 1-char noise.
 export function tokenize(s) {
   const out = new Set();
-  for (const t of normalizeName(s).split(' ')) {
-    if (t.length < 2 || STOPWORDS.has(t)) continue;
-    out.add(singularize(t));
+  for (const raw of normalizeName(s).split(' ')) {
+    if (raw.length < 2 || STOPWORDS.has(raw)) continue;
+    const qty = raw.match(QTY_SUFFIX);
+    out.add(qty ? qty[1] : singularize(raw));
   }
   return out;
 }

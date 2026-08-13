@@ -209,17 +209,18 @@ const MAX_RESULTS = 15;
 export async function searchDaraz(productName) {
   const base = { site: 'Daraz', domain: 'daraz.lk' };
   const [qIndexed] = index([{ name: productName, url: 'query' }], false);
-  // scoreCandidate()'s no-code fallback path accepts any candidate that
-  // merely CONTAINS every query token — fine for curated single-product
-  // catalogues (its usual callers), but an open marketplace is full of
-  // accessory listings that stuff several device names into one SEO title
-  // ("JBL Tune 700BT Tune 510BT Tune 760BT..." for a bluetooth-headphone
-  // case, or "...Screen Protector" naming a dozen phone models) — those
-  // trivially contain a short device-name query and would otherwise score
-  // a 100% match. Reject candidates whose title is disproportionately
-  // longer than the ORIGINAL query; a genuine match for a short model-name
-  // query doesn't need to double in length to describe the same product.
-  const maxTokens = qIndexed._tokens.size * 2 + 2;
+  // A tight title-length cap used to sit here to guard against an open
+  // marketplace's SEO-stuffed titles ("JBL Tune 700BT Tune 510BT Tune
+  // 760BT..." trivially containing a short "JBL Tune 710BT" query). But
+  // scoreCandidate() itself already rejects exactly that case today
+  // (unmatchedDistinctiveToken requires the query's OWN model number/word
+  // to appear verbatim, not just any overlap) -- and the old 2x+2 cap was
+  // rejecting genuinely matching listings by the dozen in categories that
+  // just write long titles by habit (hair accessories, toys, ...: a
+  // 4-token "Girls Hair Bands 30pcs" query against a completely on-topic
+  // but 16-token real listing title). Keep only a generous backstop against
+  // pathological spam, not a routine filter.
+  const maxTokens = Math.max(20, qIndexed._tokens.size * 5);
 
   const seenUrls = new Set();
   const pool = [];
