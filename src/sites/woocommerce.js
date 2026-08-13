@@ -127,7 +127,15 @@ export async function scrapeWoo(url, _opts = {}) {
     const v = parseAmount($(el).text());
     if (v != null) amounts.push(v);
   });
-  if (/\$|USD/i.test(root.text())) result.flags.push('currency_mismatch');
+  // Text-detected as a last resort (no JSON-LD currency reached this far) --
+  // still label it correctly, not just flag it: leaving `currency` at the
+  // 'LKR' default here would have the mismatch WARNING visible while the
+  // price itself is still displayed prefixed "LKR", the exact silent-wrong-
+  // label bug this is meant to catch.
+  if (/\$|USD/i.test(root.text())) {
+    result.currency = 'USD';
+    result.flags.push('currency_mismatch');
+  }
   if (amounts.length) {
     result.price = Math.min(...amounts);
     if (amounts.length > 1) {

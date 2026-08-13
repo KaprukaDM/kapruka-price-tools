@@ -78,6 +78,8 @@ function hasAgreeingSpec(a, b) {
 const COLOR_WORDS = new Set([
   'white', 'black', 'blue', 'red', 'green', 'silver', 'gold', 'grey', 'gray',
   'pink', 'purple', 'yellow', 'orange', 'brown', 'titanium', 'graphite',
+  'aqua', 'turquoise', 'teal', 'cyan', 'navy', 'maroon', 'beige', 'cream',
+  'lavender', 'mint', 'coral', 'ivory', 'magenta', 'violet',
 ]);
 function unmatchedDistinctiveToken(kTokens, cTokens) {
   for (const t of kTokens) {

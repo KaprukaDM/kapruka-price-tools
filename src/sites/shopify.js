@@ -26,6 +26,21 @@ async function fetchJson(url) {
   }
 }
 
+// The per-product .js endpoint used below carries no currency code at all,
+// so this adapter used to just assume LKR outright -- true for the curated
+// Sri Lankan Shopify stores it was originally written for, but this same
+// adapter also runs against ANY Shopify store the web-search discovery
+// fallback happens to turn up, including foreign (e.g. US) ones -- and a
+// foreign store's USD price was silently shown labeled "LKR", no warning at
+// all. /cart.json is a cheap, unauthenticated endpoint every Shopify store
+// exposes (even with an empty cart) that DOES report the store's real
+// currency -- ask it once per product lookup instead of guessing.
+async function fetchStoreCurrency(origin) {
+  const data = await fetchJson(`${origin}/cart.json`);
+  const cur = String(data?.currency || '').toUpperCase();
+  return cur || 'LKR';
+}
+
 // Build the .js endpoint from a product URL (handles /products/<handle> with
 // optional /collections/... prefix and query strings).
 function shopifyJsUrl(url) {
@@ -49,6 +64,9 @@ export async function scrapeShopify(url, opts = {}) {
   if (!jsUrl) return null;
   const data = await fetchJson(jsUrl);
   if (!data || !Array.isArray(data.variants) || data.variants.length === 0) return null;
+
+  const origin = new URL(url).origin;
+  const currency = await fetchStoreCurrency(origin);
 
   const requested = normalizeStorage(opts.storage);
   const variants = data.variants
@@ -84,13 +102,14 @@ export async function scrapeShopify(url, opts = {}) {
     price = pick.price;
     priceContext = variants.length > 1 ? `${pick.label} (cheapest of ${variants.length} variants)` : pick.label;
   }
+  if (currency !== 'LKR') flags.push('currency_mismatch');
 
   return {
     platform: 'shopify',
     url,
     title: data.title || null,
     image: data.featured_image ? `https:${String(data.featured_image).replace(/^https?:/, '')}` : null,
-    currency: 'LKR', // SL Shopify stores; .js carries no currency code
+    currency,
     requestedStorage: requested,
     availableStorages,
     variantPrices,

@@ -7,6 +7,33 @@
 
 import { allPriceCheckRows, allComparisonRows, getPriceAuditItems, removedUrlSet } from './db.js';
 
+// The Overpriced / All Products Overpriced / Stock Mismatch dashboards (and
+// their CSV exports) all re-scan the same handful of full tables on every
+// single page load -- data that only changes when a scheduled refresh/audit
+// run writes to it (compare/run.js, *-audit/match-local.js), not on every
+// view. Cache each read for a few hours so back-to-back dashboard loads
+// reuse one fetch instead of re-scanning the whole table each time -- same
+// fix already applied to the Price Checker's DB search (checker/db-search.js).
+// Every call site below uses identical (or no) arguments, so a single
+// args-blind cache per function is safe.
+const REPORT_CACHE_TTL_MS = 5 * 60 * 60 * 1000;
+function cached(fn) {
+  let entry = null;
+  return (...args) => {
+    const now = Date.now();
+    if (!entry || now - entry.at >= REPORT_CACHE_TTL_MS) {
+      const promise = fn(...args);
+      entry = { at: now, promise };
+      promise.catch(() => { entry = null; });
+    }
+    return entry.promise;
+  };
+}
+const cachedAllComparisonRows = cached(allComparisonRows);
+const cachedGetPriceAuditItems = cached(getPriceAuditItems);
+const cachedRemovedUrlSet = cached(removedUrlSet);
+const cachedAllPriceCheckRows = cached(allPriceCheckRows);
+
 function csvCell(v) {
   if (v == null) return '';
   const s = String(v);
@@ -43,7 +70,7 @@ const PRICE_CHECK_COLUMNS = [
 
 export async function exportPriceChecksCsv() {
   const rows = [];
-  for (const row of await allPriceCheckRows()) {
+  for (const row of await cachedAllPriceCheckRows()) {
     let payload;
     try {
       payload = JSON.parse(row.payload_json);
@@ -123,7 +150,7 @@ export async function productRows() {
   };
 
   // 1) Price Checker results (Category comes from the query; no Brand captured).
-  for (const r of await allPriceCheckRows()) {
+  for (const r of await cachedAllPriceCheckRows()) {
     let payload;
     try {
       payload = JSON.parse(r.payload_json);
@@ -149,7 +176,7 @@ export async function productRows() {
   }
 
   // 2) Comparison runs — both the Kapruka listing and the partner listing.
-  for (const r of await allComparisonRows()) {
+  for (const r of await cachedAllComparisonRows()) {
     let payload;
     try {
       payload = JSON.parse(r.payload_json);
@@ -243,7 +270,7 @@ function categoryFromKaprukaUrl(url) {
 // Latest stored comparison run per partner (newest by row id wins).
 async function latestRunPerPartner() {
   const latest = new Map(); // partnerId -> { created_at, payload }
-  for (const row of await allComparisonRows()) {
+  for (const row of await cachedAllComparisonRows()) {
     let payload;
     try {
       payload = JSON.parse(row.payload_json);
@@ -262,7 +289,7 @@ export async function overpricedReport() {
   const items = [];
   const partners = [];
   let lastUpdated = null;
-  const removed = await removedUrlSet();
+  const removed = await cachedRemovedUrlSet();
 
   for (const { created_at, payload } of (await latestRunPerPartner()).values()) {
     const p = payload.partner || {};
@@ -364,7 +391,7 @@ export async function stockMismatchReport() {
   const kaprukaOutOfStock = [];
   const bothOutOfStock = [];
   let lastUpdated = null;
-  const removed = await removedUrlSet();
+  const removed = await cachedRemovedUrlSet();
 
   for (const { created_at, payload } of (await latestRunPerPartner()).values()) {
     const p = payload.partner || {};
@@ -465,8 +492,8 @@ export async function allProductsOverpricedReport() {
     return p;
   }
 
-  const removed = await removedUrlSet();
-  const auditRows = await getPriceAuditItems({ limit: 20000 });
+  const removed = await cachedRemovedUrlSet();
+  const auditRows = await cachedGetPriceAuditItems({ limit: 20000 });
   for (const r of auditRows) {
     if (!r.kapruka_url || !r.matched_url || r.matched_price_lkr == null) continue;
     const p = getOrCreate(r.kapruka_url, r.category, r.kapruka_name, r.kapruka_price_lkr);
