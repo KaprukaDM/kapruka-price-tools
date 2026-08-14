@@ -617,23 +617,36 @@ const COMPARISON_COLUMNS = [
 ];
 
 // ---- Price Changes dashboard: competitor price moved between scrapes ------
-// Compares each partner's two most recent stored comparison runs (the
-// previous scrape vs the latest one) and flags every matched product where
-// the PARTNER'S (competitor) price differs between those two runs — either
-// up or down. Reuses the same bulk cached table scan as overpricedReport()/
-// stockMismatchReport() (cachedAllComparisonRows(), 5h cache) instead of
-// making a handful of Supabase round-trips per partner — with 100+ partners,
-// N sequential recentComparisonRuns()+getComparisonRun() calls each made this
-// dashboard take minutes to load.
+// Walks each partner's full stored scrape history and flags every matched
+// product whose PARTNER'S (competitor) price has genuinely moved from what
+// was last seen. A reported change stays visible across later scrapes that
+// just repeat the same (now current) price — it only gets replaced once the
+// price moves again — instead of disappearing the moment a fresh scrape
+// happens to match the latest price, which is what comparing only the two
+// most recent runs did. Reuses the same bulk cached table scan as
+// overpricedReport()/stockMismatchReport() (cachedAllComparisonRows(), 5h
+// cache) instead of making a handful of Supabase round-trips per partner —
+// with 100+ partners, N sequential recentComparisonRuns()+getComparisonRun()
+// calls each made this dashboard take minutes to load.
 //
 // Matched pairs are keyed by partnerUrl (stable across runs for the same
 // partner product) since kaprukaUrl alone doesn't guarantee the matcher
 // picked the same partner product both times, but partnerUrl does.
 
-// Rows come back ordered by id ascending, so walking them once and keeping a
-// rolling 2-entry window per partner naturally ends with [previous, latest].
-async function lastTwoRunsPerPartner() {
-  const map = new Map(); // partnerId -> [{created_at, payload}, ...] (<=2 entries)
+// Rows come back ordered by id ascending. For each partner+product (keyed by
+// partnerUrl) we walk its whole scrape history in order and track the last
+// price actually seen. Whenever a scrape's price differs from that tracked
+// price, it's a genuine change: record it as that product's "current event"
+// and move the tracked price forward. A later scrape that just repeats the
+// same (now current) price does NOT touch the event — it's not a new change,
+// so the event keeps showing until the price genuinely moves again, instead
+// of disappearing the moment the two-most-recent-runs comparison stops
+// seeing a diff.
+async function priceChangeEventsPerPartner() {
+  const products = new Map(); // partnerId -> Map<partnerUrl, state>
+  const partnerRunCounts = new Map(); // partnerId -> number of runs seen
+  const partnerMeta = new Map(); // partnerId -> latest {p, at}
+
   for (const row of await cachedAllComparisonRows()) {
     let payload;
     try {
@@ -641,14 +654,46 @@ async function lastTwoRunsPerPartner() {
     } catch {
       continue;
     }
-    const pid = payload.partner?.id || `row-${row.id}`;
-    const entry = { created_at: row.created_at, payload };
-    const arr = map.get(pid) || [];
-    arr.push(entry);
-    if (arr.length > 2) arr.shift();
-    map.set(pid, arr);
+    const p = payload.partner || {};
+    const pid = p.id || `row-${row.id}`;
+    const at = payload.generatedAt || row.created_at;
+
+    partnerRunCounts.set(pid, (partnerRunCounts.get(pid) || 0) + 1);
+    const prevMeta = partnerMeta.get(pid);
+    if (!prevMeta || at > prevMeta.at) partnerMeta.set(pid, { p, at });
+
+    let byUrl = products.get(pid);
+    if (!byUrl) products.set(pid, (byUrl = new Map()));
+
+    for (const m of payload.matched || []) {
+      if (!m.partnerUrl || m.partnerPrice == null || !m.kaprukaUrl) continue;
+      let state = byUrl.get(m.partnerUrl);
+      if (!state) {
+        // First time this product is seen — establishes the baseline, not a change.
+        state = { lastPrice: m.partnerPrice, lastAt: at, event: null };
+        byUrl.set(m.partnerUrl, state);
+        continue;
+      }
+      if (m.partnerPrice !== state.lastPrice) {
+        state.event = {
+          category: categoryFromKaprukaUrl(m.kaprukaUrl),
+          name: m.name ?? '',
+          partnerProductName: m.partnerName ?? '',
+          previousPrice: state.lastPrice,
+          currentPrice: m.partnerPrice,
+          kaprukaPrice: m.kaprukaPrice ?? null,
+          kaprukaUrl: m.kaprukaUrl,
+          partnerUrl: m.partnerUrl,
+          previousScrapedAt: state.lastAt,
+          currentScrapedAt: at,
+        };
+        state.lastPrice = m.partnerPrice;
+        state.lastAt = at;
+      }
+    }
   }
-  return map;
+
+  return { products, partnerRunCounts, partnerMeta };
 }
 
 // Temporarily hidden from the Price Changes dashboard only, per a one-off
@@ -662,48 +707,42 @@ async function priceChangesReportUncached() {
   let partnersChecked = 0;
   let lastUpdated = null;
 
-  const [byPartner, partners] = await Promise.all([lastTwoRunsPerPartner(), listPartners()]);
+  const [{ products, partnerRunCounts, partnerMeta }, partners] = await Promise.all([
+    priceChangeEventsPerPartner(),
+    listPartners(),
+  ]);
 
-  for (const [previous, latest] of byPartner.values()) {
-    if (!previous || !latest) continue;
-
-    const p = latest.payload.partner || {};
-    if (PRICE_CHANGES_HIDDEN_PARTNER_IDS.has(p.id)) continue;
+  for (const [pid, byUrl] of products) {
+    if (PRICE_CHANGES_HIDDEN_PARTNER_IDS.has(pid)) continue;
+    if ((partnerRunCounts.get(pid) || 0) < 2) continue; // needs at least 2 scrapes to compare
     partnersChecked++;
 
-    const at = latest.payload.generatedAt || latest.created_at;
-    if (!lastUpdated || at > lastUpdated) lastUpdated = at;
+    const meta = partnerMeta.get(pid);
+    const p = meta?.p || {};
+    if (meta && (!lastUpdated || meta.at > lastUpdated)) lastUpdated = meta.at;
 
-    const prevByUrl = new Map();
-    for (const m of previous.payload.matched || []) {
-      if (m.partnerUrl && m.partnerPrice != null) prevByUrl.set(m.partnerUrl, m);
-    }
+    for (const state of byUrl.values()) {
+      const ev = state.event;
+      if (!ev || removed.has(ev.kaprukaUrl)) continue;
 
-    for (const m of latest.payload.matched || []) {
-      if (!m.partnerUrl || m.partnerPrice == null || !m.kaprukaUrl) continue;
-      if (removed.has(m.kaprukaUrl)) continue;
-      const prev = prevByUrl.get(m.partnerUrl);
-      if (!prev || prev.partnerPrice == null) continue;
-      if (prev.partnerPrice === m.partnerPrice) continue;
-
-      const diff = m.partnerPrice - prev.partnerPrice;
+      const diff = ev.currentPrice - ev.previousPrice;
       items.push({
-        partnerId: p.id ?? '',
+        partnerId: pid,
         partner: p.name ?? '',
         partnerLabel: p.partnerLabel || p.partnerSite || '',
-        category: categoryFromKaprukaUrl(m.kaprukaUrl),
-        name: m.name ?? '',
-        partnerProductName: m.partnerName ?? '',
+        category: ev.category,
+        name: ev.name,
+        partnerProductName: ev.partnerProductName,
         direction: diff > 0 ? 'increased' : 'decreased',
-        previousPrice: prev.partnerPrice,
-        currentPrice: m.partnerPrice,
+        previousPrice: ev.previousPrice,
+        currentPrice: ev.currentPrice,
         diff,
-        pct: (diff / prev.partnerPrice) * 100,
-        kaprukaPrice: m.kaprukaPrice ?? null,
-        kaprukaUrl: m.kaprukaUrl,
-        partnerUrl: m.partnerUrl,
-        previousScrapedAt: previous.payload.generatedAt || previous.created_at,
-        currentScrapedAt: at,
+        pct: (diff / ev.previousPrice) * 100,
+        kaprukaPrice: ev.kaprukaPrice,
+        kaprukaUrl: ev.kaprukaUrl,
+        partnerUrl: ev.partnerUrl,
+        previousScrapedAt: ev.previousScrapedAt,
+        currentScrapedAt: ev.currentScrapedAt,
       });
     }
   }
