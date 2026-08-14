@@ -656,7 +656,7 @@ async function lastTwoRunsPerPartner() {
 // everywhere else).
 const PRICE_CHANGES_HIDDEN_PARTNER_IDS = new Set(['east-star-handlooms', 'ekko']);
 
-export async function priceChangesReport() {
+async function priceChangesReportUncached() {
   const removed = await removedUrlSet();
   const items = [];
   let partnersChecked = 0;
@@ -726,6 +726,8 @@ export async function priceChangesReport() {
     items,
   };
 }
+
+export const priceChangesReport = cached(priceChangesReportUncached);
 
 const PRICE_CHANGES_COLUMNS = [
   { key: 'category', label: 'Category' },

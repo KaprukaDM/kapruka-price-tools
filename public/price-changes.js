@@ -76,6 +76,7 @@ function wirePager(totalPages) {
 }
 
 const lkr = (v) => (v == null ? '—' : 'Rs.' + Number(v).toLocaleString('en-LK'));
+const shortDate = (iso) => (iso ? new Date(iso).toLocaleDateString('en-LK', { day: '2-digit', month: 'short', year: 'numeric' }) : '');
 function escapeHtml(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, (c) =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]),
@@ -167,8 +168,8 @@ function render() {
           <div class="prod-name">${link(m.kaprukaUrl, m.name)}</div>
           <div class="prod-name prod-partner">${link(m.partnerUrl, m.partnerProductName || '—')}</div>
         </td>
-        <td class="num">${lkr(m.previousPrice)}</td>
-        <td class="num price">${lkr(m.currentPrice)}</td>
+        <td class="num">${lkr(m.previousPrice)}<div class="ctx">${shortDate(m.previousScrapedAt)}</div></td>
+        <td class="num price">${lkr(m.currentPrice)}<div class="ctx">${shortDate(m.currentScrapedAt)}</div></td>
         <td class="num ${up ? 'move-up' : 'move-down'}">${up ? '+' : ''}${lkr(m.diff)}</td>
         <td class="num ${up ? 'move-up' : 'move-down'}">${pct}</td>
         <td><span class="dir-badge ${up ? 'up' : 'down'}">${up ? '▲ Up' : '▼ Down'}</span></td>
