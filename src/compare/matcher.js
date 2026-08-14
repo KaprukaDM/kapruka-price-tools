@@ -42,7 +42,10 @@ function extractQty(name) {
 // Generic quality/marketing descriptors that a listing may drop or add
 // without being a different product ("Organic Apple Cider Vinegar" vs
 // "Apple Cider Vinegar" is the same item, just described differently).
-const DESCRIPTOR_WORDS = new Set(['organic', 'natural', 'pure', 'premium', 'fresh', 'virgin', 'raw']);
+const DESCRIPTOR_WORDS = new Set([
+  'organic', 'natural', 'pure', 'premium', 'fresh', 'virgin', 'raw',
+  'scented', 'lp', // "lp" = vinyl record format (Torana Music Box catalogue)
+]);
 
 // A leftover token in `a` that ISN'T in `b` and isn't a mere descriptor is a
 // real ingredient/variant difference (e.g. "... With The Mother 500ml" vs
@@ -53,9 +56,18 @@ const DESCRIPTOR_WORDS = new Set(['organic', 'natural', 'pure', 'premium', 'fres
 // and worse, the variant WITH the extra word can score a *higher* jaccard
 // than the correct match if the competitor listing itself omits a
 // descriptor -- so this can't be left to the jaccard threshold alone.
-function unmatchedToken(aTokens, bTokens) {
+//
+// `brandTokens` (optional) additionally exempts the CURRENT partner's own
+// store-name tokens -- Kapruka's own listing repeats the partner's brand in
+// every product title ("Popix Cheese Flavoured Popcorn"), but the partner's
+// own site almost never does (browsing popix.lk, every product is already
+// obviously a Popix product) -- confirmed the single largest cause of
+// missed matches across the whole catalogue (found via a live scan: "omac",
+// "gmc", "popix", "philip", "foreconn" alone accounted for 100+ rejected
+// pairs that were otherwise identical products).
+function unmatchedToken(aTokens, bTokens, brandTokens) {
   for (const t of aTokens) {
-    if (DESCRIPTOR_WORDS.has(t)) continue;
+    if (DESCRIPTOR_WORDS.has(t) || brandTokens?.has(t)) continue;
     if (!bTokens.has(t)) return t;
   }
   return null;
@@ -126,8 +138,9 @@ export function index(products, withSku) {
 // that only have a small per-query candidate set (e.g. a competitor site's own
 // search results for one product, rather than that site's full catalogue) can
 // reuse the same code/name/spec-conflict scoring without building a full
-// matchCatalogs() index of both sides.
-export function score(k, s) {
+// matchCatalogs() index of both sides. `brandTokens` (optional) is the
+// tokenized partner store name -- see unmatchedToken() above.
+export function score(k, s, brandTokens) {
   const codes = sharedCodeCount(k._codes, s._codes);
   const nativeCodes = sharedCodeCount(k._nativeCodes, s._nativeCodes);
   const jac = jaccard(k._tokens, s._tokens);
@@ -148,8 +161,8 @@ export function score(k, s) {
   const nameMatch =
     jac >= NAME_ONLY_JACCARD &&
     !conflict &&
-    !unmatchedToken(k._tokens, s._tokens) &&
-    !unmatchedToken(s._tokens, k._tokens);
+    !unmatchedToken(k._tokens, s._tokens, brandTokens) &&
+    !unmatchedToken(s._tokens, k._tokens, brandTokens);
   if (!codeMatch && !nameMatch) return null;
   if ((isAdultToyName(k.name) || isAdultToyName(s.name)) && extractQty(k.name) !== extractQty(s.name)) {
     return null;
@@ -187,9 +200,14 @@ export function summarize({ matched, onlyKapruka, onlyPartner }) {
   };
 }
 
-export function matchCatalogs(kapruka, partner) {
+export function matchCatalogs(kapruka, partner, partnerName) {
   const kIndexed = index(kapruka, false);
   const pIndexed = index(partner, true);
+  // See unmatchedToken()'s comment above -- Kapruka's own listing repeats
+  // the partner's brand in every title, the partner's own site almost never
+  // does. `partnerName` is optional so existing callers/tests that don't
+  // pass it just get the old (stricter) behavior, never an error.
+  const brandTokens = partnerName ? tokenize(partnerName) : undefined;
 
   // Every (Kapruka product, partner product) pair that clears score()'s bar
   // is a *candidate*, not a match yet. Picking each Kapruka product's best
@@ -202,7 +220,7 @@ export function matchCatalogs(kapruka, partner) {
   const candidates = [];
   for (const k of kIndexed) {
     for (const p of pIndexed) {
-      const sc = score(k, p);
+      const sc = score(k, p, brandTokens);
       if (sc) candidates.push({ k, p, sc });
     }
   }

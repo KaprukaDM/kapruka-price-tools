@@ -93,7 +93,7 @@ async function compute(partner, log) {
     })
   ]);
 
-  const result = matchCatalogs(kapruka, partnerCat.products);
+  const result = matchCatalogs(kapruka, partnerCat.products, partner.name);
 
   const stock = await hydrateKaprukaStock(result.matched, log);
   if (stock.checked) {
