@@ -37,9 +37,75 @@
 // the ORIGINAL full query, so a broader variation only adds recall, never a
 // weaker match bar.
 
+import OpenAI from 'openai';
 import { cleanQuery } from './serp.js';
 import { index } from './compare/matcher.js';
-import { scoreCandidate, MIN_INTERSECTION, accessoryMismatch } from './compare/audit-scoring.js';
+import { scoreCandidate, MIN_INTERSECTION, isAccessoryListing } from './compare/audit-scoring.js';
+
+// A long, SEO-stuffed product name ("Zootopia Bunny Kids Toothbrush 9cm To
+// 12cm Retractable Travel Toothbrush With Cute Cover") makes a poor Daraz
+// search string as-is — the heuristic queryVariations() below (drop
+// first/last word, brand-only, ...) was built for short branded names
+// ("Axor Apex Helmet") and doesn't know which of a dozen words is the
+// actual product noun. Ask the model to distill the core searchable
+// identity first (main product type + the one or two most distinctive
+// descriptive words), and try that ahead of the heuristic chain — cheap
+// (one small structured-output call per checker search), same OpenAI
+// pattern as matcher.js's scoreIdentity/scoreMatch.
+const MODEL = process.env.MATCH_MODEL || 'gpt-4o-mini';
+let client = null;
+function getClient() {
+  if (!client) client = new OpenAI();
+  return client;
+}
+const KEYWORDS_FN = {
+  name: 'report_search_keywords',
+  description: 'Report the single best short search phrase to find this product on a marketplace.',
+  parameters: {
+    type: 'object',
+    properties: {
+      keywords: {
+        type: 'string',
+        description:
+          'EXACTLY ONE search phrase, 2-4 words, plain text with NO commas and no alternatives — ' +
+          'not a list of options. The core product type (usually the LAST noun in the name, e.g. ' +
+          '"toothbrush", "helmet") plus its single most distinctive descriptive word (character/' +
+          'theme/brand — usually the FIRST word). Drop exact measurements, sizes, colours, ' +
+          'quantities, and generic marketing filler ("retractable", "travel", "with cute cover", ' +
+          '"portable", "premium"). Example: "Zootopia Bunny Kids Toothbrush 9cm To 12cm ' +
+          'Retractable Travel Toothbrush With Cute Cover" -> "zootopia kids toothbrush" ' +
+          '(NOT "zootopia bunny kids toothbrush, retractable travel toothbrush, cute cover").',
+      },
+    },
+    required: ['keywords'],
+    additionalProperties: false,
+  },
+};
+
+async function extractSearchKeywords(productName) {
+  try {
+    const res = await getClient().chat.completions.create({
+      model: MODEL,
+      messages: [{
+        role: 'user',
+        content: `Distill the single best marketplace search phrase for this product name:\n\n"${productName}"\n\nCall report_search_keywords.`,
+      }],
+      tools: [{ type: 'function', function: KEYWORDS_FN }],
+      tool_choice: { type: 'function', function: { name: 'report_search_keywords' } },
+    });
+    const call = res.choices?.[0]?.message?.tool_calls?.[0];
+    if (!call) return null;
+    const { keywords } = JSON.parse(call.function.arguments);
+    if (!keywords) return null;
+    // Defensive cleanup regardless of what the model actually returned: only
+    // the first comma/pipe-separated segment (in case it ignored "exactly
+    // one phrase"), capped to 5 words.
+    const cleaned = keywords.split(/[,|]/)[0].trim().split(/\s+/).slice(0, 5).join(' ');
+    return cleaned || null;
+  } catch {
+    return null; // best-effort — the heuristic chain below still runs either way
+  }
+}
 
 const HEADERS = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
@@ -174,7 +240,7 @@ function queryVariations(name) {
 function closestMatches(qIndexed, pool, limit) {
   const scored = [];
   for (const c of index(pool, false)) {
-    if (accessoryMismatch(qIndexed._tokens, c._tokens)) continue;
+    if (isAccessoryListing(c._tokens)) continue;
     let shared = 0;
     for (const t of qIndexed._tokens) if (c._tokens.has(t)) shared++;
     if (shared < MIN_INTERSECTION) continue;
@@ -227,7 +293,19 @@ export async function searchDaraz(productName) {
   let anySucceeded = false;
   let accepted = [];
 
-  for (const variation of queryVariations(productName).slice(0, MAX_VARIATIONS)) {
+  // Try the AI-distilled core keywords first (best for long/SEO-stuffed
+  // names — see extractSearchKeywords() above), then the heuristic chain
+  // (which already includes the literal full query) as broadening/fallback.
+  const aiKeywords = await extractSearchKeywords(productName);
+  const seenVariations = new Set();
+  const variations = [aiKeywords, ...queryVariations(productName)].filter((v) => {
+    const key = (v || '').trim().toLowerCase();
+    if (!key || seenVariations.has(key)) return false;
+    seenVariations.add(key);
+    return true;
+  });
+
+  for (const variation of variations.slice(0, MAX_VARIATIONS + 1)) {
     try {
       const items = await fetchCandidates(variation);
       anySucceeded = true;

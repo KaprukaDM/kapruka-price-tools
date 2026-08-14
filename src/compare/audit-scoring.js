@@ -139,6 +139,27 @@ export function accessoryMismatch(kTokens, cTokens) {
   return false;
 }
 
+// True if the candidate is an accessory listing at all, ignoring whether the
+// query happens to share that word. accessoryMismatch()'s query-side
+// exemption exists for a real case (a query that IS for the accessory,
+// "iPhone 15 case"), but backfires when the query's own product just
+// happens to use an accessory word to describe ITSELF ("kids toothbrush
+// ... with cute cover" — "cover" here is the toothbrush's own cap, not a
+// request for phone covers) — the exemption then waves through every
+// phone-case-type listing that also contains "cover" as an unrelated
+// low-confidence "closest match". Use this stricter check instead of
+// accessoryMismatch() in contexts that don't independently verify the
+// query and candidate are even the same product (e.g. a same-brand/
+// category fallback when nothing scored a confident match) — a genuine
+// accessory query almost always matches confidently in the normal path
+// anyway, so this rarely costs real recall there.
+export function isAccessoryListing(cTokens) {
+  for (const w of ACCESSORY_WORDS) {
+    if (cTokens.has(w)) return true;
+  }
+  return false;
+}
+
 // k/c are indexed products (see matcher.js's index()) with ._tokens,
 // ._codes, ._specs already computed. Returns null (reject) or
 // { value, codes, overlap } for ranking candidates against one Kapruka

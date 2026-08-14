@@ -76,6 +76,20 @@ function detectCurrencyFromText(text) {
   return null;
 }
 
+// A JSON-LD `offer.priceCurrency` or an og-style `product:price:currency`
+// meta tag is supposed to carry a proper ISO 4217 code ("LKR"), but some
+// sites (chu.lk confirmed) instead put the same loose "Rs"/"Rs." shorthand
+// a human would type — which flowed straight into the LKR comparison below
+// unnormalized, so a genuinely-LKR Sri Lankan site got flagged
+// currency_mismatch for spelling its own currency "wrong". Reuses the same
+// CURRENCY_SYMBOLS table detectCurrencyFromText() already trusts for
+// DOM-scraped price text, so both paths agree on what counts as LKR.
+function normalizeCurrencyCode(raw) {
+  if (!raw) return raw;
+  const trimmed = String(raw).trim();
+  return CURRENCY_SYMBOLS[trimmed.toLowerCase()] || trimmed;
+}
+
 // ---------------------------------------------------------------------------
 // Extractors (operate on an HTML string)
 
@@ -369,6 +383,7 @@ function finalize(result) {
     const withCur = result.prices.find((p) => p.currency);
     if (withCur) result.currency = withCur.currency;
   }
+  result.currency = normalizeCurrencyCode(result.currency);
   if (!result.currency) {
     result.flags.push('currency_unknown');
   } else if (result.currency.toUpperCase() !== 'LKR') {
