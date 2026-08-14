@@ -7,6 +7,7 @@ const COLUMNS = [
   { key: 'category', label: 'Category' },
   { key: 'partner', label: 'Store' },
   { key: 'name', label: 'Product' },
+  { key: 'kaprukaPrice', label: 'Kapruka Price', num: true },
   { key: 'previousPrice', label: 'Previous', num: true },
   { key: 'currentPrice', label: 'Current', num: true },
   { key: 'diff', label: 'Change', num: true },
@@ -86,6 +87,17 @@ function link(url, text) {
   return url ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener">${escapeHtml(text)}</a>` : escapeHtml(text);
 }
 
+// Only a partner CUTTING their price is competitively alarming — a partner
+// raising their price isn't, so only "decreased" rows get colored at all.
+// The shade of red scales with how big the cut is, so a 2% trim and a 50%
+// slash are visibly different at a glance instead of both just being "red".
+function reducedShade(pctAbs) {
+  if (pctAbs >= 50) return { bg: '#7a170f', fg: '#fff' };
+  if (pctAbs >= 25) return { bg: '#c0392b', fg: '#fff' };
+  if (pctAbs >= 10) return { bg: '#e8897d', fg: '#4a120c' };
+  return { bg: '#fbdedb', fg: '#5c1912' };
+}
+
 function statCards(d) {
   const card = (n, l, cls = '') => `<div class="stat ${cls}"><div class="n">${n}</div><div class="l">${l}</div></div>`;
   $('cards').innerHTML =
@@ -161,13 +173,18 @@ function render() {
     .map((m) => {
       const up = m.direction === 'increased';
       const pct = m.pct == null ? '' : `${up ? '+' : ''}${m.pct.toFixed(1)}%`;
-      return `<tr class="${up ? 'up' : 'down'}">
+      const rowStyle = up ? '' : (() => {
+        const { bg, fg } = reducedShade(Math.abs(m.pct ?? 0));
+        return ` style="background:${bg};color:${fg};"`;
+      })();
+      return `<tr class="${up ? 'up' : 'down'}"${rowStyle}>
         <td>${escapeHtml(m.category)}</td>
         <td><span class="store-pill">${escapeHtml(m.partner)}</span>${m.partnerLabel ? `<div class="ctx">${escapeHtml(m.partnerLabel)}</div>` : ''}</td>
         <td class="col-product">
           <div class="prod-name">${link(m.kaprukaUrl, m.name)}</div>
           <div class="prod-name prod-partner">${link(m.partnerUrl, m.partnerProductName || '—')}</div>
         </td>
+        <td class="num">${lkr(m.kaprukaPrice)}</td>
         <td class="num">${lkr(m.previousPrice)}<div class="ctx">${shortDate(m.previousScrapedAt)}</div></td>
         <td class="num price">${lkr(m.currentPrice)}<div class="ctx">${shortDate(m.currentScrapedAt)}</div></td>
         <td class="num ${up ? 'move-up' : 'move-down'}">${up ? '+' : ''}${lkr(m.diff)}</td>

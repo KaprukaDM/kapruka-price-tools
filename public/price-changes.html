@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="theme-color" content="#402970" />
   <link rel="icon" href="https://www.kapruka.com/static/icons/favicon.ico" />
-  <title>Kapruka · Competitor Price Changes</title>
+  <title>Kapruka · Partner Price Update Change</title>
   <link rel="stylesheet" href="theme.css" />
   <style>
     .wrap { max-width: 1320px; }
@@ -21,18 +21,22 @@
     .toolbar select { max-width:220px; }
     .toolbar .right { margin-left:auto; display:flex; gap:10px; align-items:center; }
     button { margin-top:0; }
-    tr.up td { background:#fdeceb; } tr.up td:first-child { box-shadow: inset 3px 0 var(--bad); }
-    tr.down td { background:#e9f7ef; } tr.down td:first-child { box-shadow: inset 3px 0 var(--ok); }
+    /* Only a partner CUTTING their price is colored -- shade is set inline per
+       row (public/price-changes.js reducedShade()) scaled to how big the cut
+       is. A partner raising their price stays plain -- not competitively
+       alarming, so it gets no red/green treatment either way. */
+    tr.down .ctx, tr.down .prod-partner { color: inherit; opacity: .75; }
+    tr.down .price { color: inherit; }
     .meta { font-size:12px; color:var(--mut); margin: 10px 0 0; }
     .store-pill { display:inline-block; background:var(--tint); border:1px solid var(--line);
                   color:var(--purple-dk); border-radius:999px; padding:2px 10px; font-size:12px; font-weight:600; }
-    .move-up { color:var(--bad); font-weight:700; }
-    .move-down { color:var(--ok); font-weight:700; }
+    .move-up { font-weight:700; }
+    .move-down { font-weight:700; }
     th.sortable { cursor:pointer; user-select:none; white-space:nowrap; }
     th.sortable:hover { color: var(--purple-dk, #402970); }
     .dir-badge { display:inline-block; padding:2px 9px; border-radius:999px; font-size:11px; font-weight:700; }
-    .dir-badge.up { background:#fae5e4; color:var(--bad); }
-    .dir-badge.down { background:#e3f5ea; color:var(--ok); }
+    .dir-badge.up { background:var(--tint); color:var(--mut); }
+    .dir-badge.down { background:#7a170f; color:#fff; }
   </style>
 </head>
 <body>
@@ -41,13 +45,13 @@
       <img class="logo-mark" src="https://www.kapruka.com/static/icons/apple-touch-icon-180x180.png?v2"
            alt="Kapruka" onerror="this.style.display='none'" />
       <span class="logo">kapruka<span class="dot">.</span></span>
-      <span class="pill">Competitor Price Changes</span>
+      <span class="pill">Partner Price Update Change</span>
       <span class="tag"><a href="index.html">← Menu</a></span>
     </div>
   </header>
 
   <div class="wrap">
-    <h1>Competitor price changes — previous scrape vs latest scrape</h1>
+    <h1>Partner Price Update Change — previous scrape vs latest scrape</h1>
     <p class="sub">For every configured partner store, compares its <strong>two most recently stored scrapes</strong>
        and flags every matched product where the <strong>competitor's own price moved</strong> — up or down —
        between those two runs. A partner needs at least two stored runs to show up here.</p>
