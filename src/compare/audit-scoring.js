@@ -19,7 +19,19 @@ export const FALLBACK_MIN_OVERLAP = 0.65;
 // — token containment is the sole safeguard then, so a short generic name
 // ("Kitchen Rack", 2 tokens) needs a higher bar than the general MIN_INTERSECTION
 // to actually mean something.
-export const SPEC_LESS_MIN_INTERSECTION = 4;
+//
+// Was 4 — but that floor is mathematically unreachable for any 3-token query
+// (intersection can never exceed the smaller side's token count), so every
+// spec-less 3-word query ("kids study table") got silently rejected against
+// real, verbose marketplace titles no matter how good the match was — only
+// escaping via the exactSameTokens case, i.e. pure luck that a candidate's
+// title happened to tokenize to exactly 3 words too. Lowered to 3: still
+// unreachable for a 2-token query like "Kitchen Rack" (the case this const
+// was introduced for — confirmed it still rejects "Wall Mounted Kitchen And
+// Bathroom Metal Shelf Rack"), while letting a genuinely specific 3-word
+// query match a full-containment candidate instead of requiring a 4th word
+// that doesn't exist anywhere in the query.
+export const SPEC_LESS_MIN_INTERSECTION = 3;
 
 export function overlapCoefficient(a, b) {
   if (a.size === 0 || b.size === 0) return { overlap: 0, intersection: 0 };
