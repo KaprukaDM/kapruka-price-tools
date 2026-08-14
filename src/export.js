@@ -651,6 +651,11 @@ async function lastTwoRunsPerPartner() {
   return map;
 }
 
+// Temporarily hidden from the Price Changes dashboard only, per a one-off
+// request — not a permanent partner removal (they still get scraped/compared
+// everywhere else).
+const PRICE_CHANGES_HIDDEN_PARTNER_IDS = new Set(['east-star-handlooms', 'ekko']);
+
 export async function priceChangesReport() {
   const removed = await removedUrlSet();
   const items = [];
@@ -661,9 +666,11 @@ export async function priceChangesReport() {
 
   for (const [previous, latest] of byPartner.values()) {
     if (!previous || !latest) continue;
-    partnersChecked++;
 
     const p = latest.payload.partner || {};
+    if (PRICE_CHANGES_HIDDEN_PARTNER_IDS.has(p.id)) continue;
+    partnersChecked++;
+
     const at = latest.payload.generatedAt || latest.created_at;
     if (!lastUpdated || at > lastUpdated) lastUpdated = at;
 
@@ -710,7 +717,7 @@ export async function priceChangesReport() {
   return {
     lastUpdated,
     partnersChecked,
-    partnersTotal: partners.length,
+    partnersTotal: partners.filter((p) => !PRICE_CHANGES_HIDDEN_PARTNER_IDS.has(p.id)).length,
     count: items.length,
     increasedCount: increased.length,
     decreasedCount: decreased.length,
