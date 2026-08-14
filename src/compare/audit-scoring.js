@@ -130,7 +130,7 @@ function qualifierMismatch(a, b) {
 const ACCESSORY_WORDS = new Set([
   'case', 'cover', 'pouch', 'sleeve', 'skin', 'sticker', 'decal', 'tempered',
   'protector', 'charger', 'cable', 'adapter', 'holder', 'mount', 'stand',
-  'strap', 'bumper', 'magsafe', 'lanyard',
+  'strap', 'bumper', 'magsafe', 'lanyard', 'shell', 'casing',
 ]);
 export function accessoryMismatch(kTokens, cTokens) {
   for (const w of ACCESSORY_WORDS) {
