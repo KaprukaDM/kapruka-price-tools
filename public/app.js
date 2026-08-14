@@ -150,6 +150,16 @@ function render(data) {
       Marketplace listings from third-party sellers, matched by name — not our own catalogue.
       Verify the seller and stock before buying.
     </p>`;
+  } else {
+    // Previously this whole section just silently vanished when the Daraz
+    // lookup failed (network error, Daraz blocking the request, or every
+    // query variation striking out), leaving no way to tell "nothing
+    // matched" apart from "the lookup itself broke". Surface it instead.
+    const darazError = (data.daraz || []).find((r) => r.status === 'error');
+    if (darazError) {
+      html += `<h3 style="margin:24px 0 4px">Daraz.lk (live marketplace search)</h3>
+        <p class="note" style="margin-top:0">⚠️ Daraz search failed: ${escapeHtml(darazError.note || 'unknown error')}</p>`;
+    }
   }
   out.innerHTML = html;
 }
