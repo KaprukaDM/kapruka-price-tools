@@ -129,13 +129,40 @@ function toTagSlug(name) {
 // A nonexistent tag serves Daraz's normal HTML page (200 OK, not JSON) rather
 // than erroring, so JSON-ness is the actual signal for "this tag exists" —
 // checking res.ok alone isn't enough.
+//
+// This silently returned null on every non-JSON/non-ok response with no
+// trace anywhere — meaning "Daraz doesn't have this" and "Daraz blocked/
+// rate-limited this request" were indistinguishable from the outside,
+// which took a long back-and-forth to even narrow down once. Log the
+// distinguishing case (got a response, but not usable JSON) so it shows up
+// in server logs instead of vanishing.
 async function fetchJson(url) {
-  const res = await fetch(url, { headers: HEADERS });
-  if (!res.ok) return null;
-  if (!(res.headers.get('content-type') || '').includes('application/json')) return null;
+  let res;
+  try {
+    res = await fetch(url, { headers: HEADERS });
+  } catch (err) {
+    console.warn(`[daraz] fetch failed for ${url}: ${err.message}`);
+    return null;
+  }
+  if (!res.ok) {
+    console.warn(`[daraz] non-OK status ${res.status} for ${url}`);
+    return null;
+  }
+  const contentType = res.headers.get('content-type') || '';
+  if (!contentType.includes('application/json')) {
+    // A /tag/ URL serving HTML just means that tag doesn't exist — routine,
+    // happens on most long/specific queries (see comment above), not worth
+    // logging. The /catalog/ search endpoint doing the same is the real
+    // signal (Daraz blocking/rate-limiting/challenge-paging the request).
+    if (!url.includes('/tag/')) {
+      console.warn(`[daraz] unexpected content-type "${contentType}" for ${url} (likely blocked/rate-limited/challenge page)`);
+    }
+    return null;
+  }
   try {
     return await res.json();
-  } catch {
+  } catch (err) {
+    console.warn(`[daraz] JSON parse failed for ${url}: ${err.message}`);
     return null;
   }
 }
@@ -326,6 +353,8 @@ export async function searchDaraz(productName) {
     }
     if (accepted.length >= TARGET_MATCHES) break;
   }
+
+  console.log(`[daraz] "${productName}" -> ${variations.length} variation(s) tried, pool=${pool.length}, accepted=${accepted.length}`);
 
   if (!anySucceeded && !pool.length) {
     return [{ ...base, status: 'error', flags: ['daraz_failed'], note: 'Daraz did not respond to any query variation.' }];
