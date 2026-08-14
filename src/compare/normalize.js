@@ -35,6 +35,13 @@ export function normalizeName(s) {
   return decodeEntities(s)
     .split('|')[0]
     .toLowerCase()
+    // A mid-word "*" self-censoring a brand/word ("Org*e", "F*ck") gets
+    // removed WITHOUT inserting a space, unlike every other punctuation
+    // mark below -- the general rule would split it into two fragments
+    // ("org"/"e"), which never token-matches the SAME product's name on a
+    // site that shows the word uncensored ("Orge"). Every other symbol
+    // still becomes a space as before; this only strips the asterisk itself.
+    .replace(/\*/g, '')
     .replace(/[^a-z0-9]+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
@@ -66,13 +73,41 @@ function singularize(t) {
 // the standalone word is already dropped, so both forms end up as plain "30".
 const QTY_SUFFIX = /^(\d+)(?:pcs?|pieces?|packs?|sets?)$/;
 
+// Same class of bug as QTY_SUFFIX above, but for an ordinary measurement
+// unit (ml, kg, w, ...), where -- unlike "pcs"/"pack" -- the unit itself IS
+// meaningful (200ml and 200g are different products) so it can't just be
+// dropped. "220ml" (glued) needs to end up as the SAME two tokens {"220",
+// "ml"} that "220 Ml" (spaced) already naturally produces, or the two
+// listings share zero words on this token even though they mean the exact
+// same spec (confirmed case: "...220 Ml" vs "...220ml" scored a full word
+// apart purely from this formatting difference). Reuses SPEC_TOKEN's own
+// unit list below for consistency -- declared up here since it's needed
+// first; SPEC_TOKEN itself is built from it further down.
+const UNIT_NAMES = 'kwh|mah|ghz|mhz|inch|kw|wh|kg|mg|va|hz|gb|tb|mb|kb|mp|cm|mm|ml|in|w|l|g|v|k|p|th';
+const UNIT_SUFFIX = new RegExp(`^(\\d+)(${UNIT_NAMES})$`);
+
 // Descriptive token set (model codes included), minus stopwords and 1-char noise.
 export function tokenize(s) {
   const out = new Set();
   for (const raw of normalizeName(s).split(' ')) {
     if (raw.length < 2 || STOPWORDS.has(raw)) continue;
     const qty = raw.match(QTY_SUFFIX);
-    out.add(qty ? qty[1] : singularize(raw));
+    if (qty) {
+      out.add(qty[1]);
+      continue;
+    }
+    // Only split when the number itself is long enough to survive on its
+    // own (>=2 digits) -- splitting a short one like "6l" into "6"+"l"
+    // would drop BOTH halves as noise (each under the 2-char floor below),
+    // destroying an otherwise-meaningful fused token for no gain, since a
+    // literally-spaced "6 l" would lose the same information anyway.
+    const unit = raw.match(UNIT_SUFFIX);
+    if (unit && unit[1].length >= 2) {
+      out.add(unit[1]);
+      if (unit[2].length >= 2 && !STOPWORDS.has(unit[2])) out.add(unit[2]);
+      continue;
+    }
+    out.add(singularize(raw));
   }
   return out;
 }

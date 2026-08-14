@@ -97,18 +97,26 @@ function sharedCodeCount(aCodes, bCodes) {
   return n;
 }
 
-// Precompute tokens/codes once per product. stopnshop SKUs often embed the model
-// code (e.g. "Philips_BHD340"), so we fold the SKU into both signals. Exported
-// for the same reason as score() above — small per-query candidate sets need
-// the same precomputation as a full catalogue index.
+// Precompute tokens/codes once per product. stopnshop SKUs often embed the
+// model code (e.g. "Philips_BHD340"), so the SKU is folded into the CODE
+// signal. It's deliberately kept OUT of the descriptive-word token set,
+// though: an internal inventory SKU with no embedded code at all (e.g.
+// "GH/19/1474") still tokenizes into "gh"/"19"/"1474" noise words, which
+// dilutes the Jaccard word-overlap score -- for a short product name (2-3
+// words), a couple of extra SKU-derived tokens is enough to drag an exact,
+// identical-text match below NAME_ONLY_JACCARD and reject it outright
+// (verified: "Shapes Board" == "Shapes Board" scored a perfect 1.0 jaccard
+// on names alone, but null once "GH/19/1474" got folded into both sides'
+// tokens). Exported for the same reason as score() above — small per-query
+// candidate sets need the same precomputation as a full catalogue index.
 export function index(products, withSku) {
   return products.map((p) => {
-    const text = withSku ? `${p.name} ${p.sku || ''}` : p.name;
+    const codeText = withSku ? `${p.name} ${p.sku || ''}` : p.name;
     return {
       ...p,
-      _tokens: tokenize(text),
-      _codes: extractModelCodes(text),
-      _nativeCodes: extractNativeModelCodes(text),
+      _tokens: tokenize(p.name),
+      _codes: extractModelCodes(codeText),
+      _nativeCodes: extractNativeModelCodes(codeText),
       _specs: extractSpecs(p.name),
     };
   });
