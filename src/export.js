@@ -5,7 +5,7 @@
 // A UTF-8 BOM is prepended so Excel renders Sri Lankan/Unicode product names
 // correctly instead of mojibake.
 
-import { allPriceCheckRows, allComparisonRows, getPriceAuditItems, removedUrlSet, recentComparisonRuns, getComparisonRun } from './db.js';
+import { allPriceCheckRows, allComparisonRows, getPriceAuditItems, removedUrlSet } from './db.js';
 import { listPartners } from './compare/partners.js';
 
 // The Overpriced / All Products Overpriced / Stock Mismatch dashboards (and
@@ -620,42 +620,59 @@ const COMPARISON_COLUMNS = [
 // Compares each partner's two most recent stored comparison runs (the
 // previous scrape vs the latest one) and flags every matched product where
 // the PARTNER'S (competitor) price differs between those two runs — either
-// up or down. Unlike overpricedReport()/stockMismatchReport(), which only
-// ever look at the single latest run, this needs the run *before* it too, so
-// it pulls per-partner via recentComparisonRuns(2, partnerId) + a
-// getComparisonRun() fetch for each of those two payloads, rather than
-// scanning the (potentially huge) allComparisonRows() table.
+// up or down. Reuses the same bulk cached table scan as overpricedReport()/
+// stockMismatchReport() (cachedAllComparisonRows(), 5h cache) instead of
+// making a handful of Supabase round-trips per partner — with 100+ partners,
+// N sequential recentComparisonRuns()+getComparisonRun() calls each made this
+// dashboard take minutes to load.
 //
 // Matched pairs are keyed by partnerUrl (stable across runs for the same
 // partner product) since kaprukaUrl alone doesn't guarantee the matcher
 // picked the same partner product both times, but partnerUrl does.
+
+// Rows come back ordered by id ascending, so walking them once and keeping a
+// rolling 2-entry window per partner naturally ends with [previous, latest].
+async function lastTwoRunsPerPartner() {
+  const map = new Map(); // partnerId -> [{created_at, payload}, ...] (<=2 entries)
+  for (const row of await cachedAllComparisonRows()) {
+    let payload;
+    try {
+      payload = JSON.parse(row.payload_json);
+    } catch {
+      continue;
+    }
+    const pid = payload.partner?.id || `row-${row.id}`;
+    const entry = { created_at: row.created_at, payload };
+    const arr = map.get(pid) || [];
+    arr.push(entry);
+    if (arr.length > 2) arr.shift();
+    map.set(pid, arr);
+  }
+  return map;
+}
+
 export async function priceChangesReport() {
   const removed = await removedUrlSet();
   const items = [];
   let partnersChecked = 0;
   let lastUpdated = null;
 
-  const partners = await listPartners();
-  for (const partner of partners) {
-    const runs = await recentComparisonRuns(2, partner.id); // newest first
-    if (runs.length < 2) continue;
+  const [byPartner, partners] = await Promise.all([lastTwoRunsPerPartner(), listPartners()]);
+
+  for (const [previous, latest] of byPartner.values()) {
+    if (!previous || !latest) continue;
     partnersChecked++;
 
-    const [latest, previous] = await Promise.all([
-      getComparisonRun(runs[0].id),
-      getComparisonRun(runs[1].id),
-    ]);
-    if (!latest || !previous) continue;
-
-    const at = latest.generatedAt || runs[0].created_at;
+    const p = latest.payload.partner || {};
+    const at = latest.payload.generatedAt || latest.created_at;
     if (!lastUpdated || at > lastUpdated) lastUpdated = at;
 
     const prevByUrl = new Map();
-    for (const m of previous.matched || []) {
+    for (const m of previous.payload.matched || []) {
       if (m.partnerUrl && m.partnerPrice != null) prevByUrl.set(m.partnerUrl, m);
     }
 
-    for (const m of latest.matched || []) {
+    for (const m of latest.payload.matched || []) {
       if (!m.partnerUrl || m.partnerPrice == null || !m.kaprukaUrl) continue;
       if (removed.has(m.kaprukaUrl)) continue;
       const prev = prevByUrl.get(m.partnerUrl);
@@ -664,9 +681,9 @@ export async function priceChangesReport() {
 
       const diff = m.partnerPrice - prev.partnerPrice;
       items.push({
-        partnerId: partner.id,
-        partner: partner.name,
-        partnerLabel: partner.partnerLabel || partner.partnerSite || '',
+        partnerId: p.id ?? '',
+        partner: p.name ?? '',
+        partnerLabel: p.partnerLabel || p.partnerSite || '',
         category: categoryFromKaprukaUrl(m.kaprukaUrl),
         name: m.name ?? '',
         partnerProductName: m.partnerName ?? '',
@@ -678,7 +695,7 @@ export async function priceChangesReport() {
         kaprukaPrice: m.kaprukaPrice ?? null,
         kaprukaUrl: m.kaprukaUrl,
         partnerUrl: m.partnerUrl,
-        previousScrapedAt: previous.generatedAt || runs[1].created_at,
+        previousScrapedAt: previous.payload.generatedAt || previous.created_at,
         currentScrapedAt: at,
       });
     }
