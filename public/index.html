@@ -93,6 +93,15 @@
            the partner, and vice versa.</p>
         <div class="go">Open Out of Stock Dashboard →</div>
       </a>
+
+      <a class="tool" id="linkPriceChanges" href="price-changes.html">
+        <div class="ico">📈</div>
+        <h2>Competitor Price Changes</h2>
+        <p>Compares each partner's previous scrape to its latest one and flags
+           every product where the competitor's own price moved — up or
+           down — since the last check.</p>
+        <div class="go">Open Price Changes Dashboard →</div>
+      </a>
     </div>
 
     <h1 style="margin-top:38px">Export data</h1>
@@ -114,7 +123,7 @@
     // itself. See render.yaml and .github/workflows/uae-compare-deploy-pages.yml.
     if (location.hostname.endsWith('github.io')) {
       const RENDER_BASE = 'https://kapruka-price-tools-1.onrender.com';
-      ['linkChecker', 'linkCompare', 'linkOverpriced', 'linkOverpricedAll', 'linkOutOfStock', 'linkExportCsv', 'linkExportJson'].forEach((id) => {
+      ['linkChecker', 'linkCompare', 'linkOverpriced', 'linkOverpricedAll', 'linkOutOfStock', 'linkPriceChanges', 'linkExportCsv', 'linkExportJson'].forEach((id) => {
         const el = document.getElementById(id);
         if (el) el.href = RENDER_BASE + '/' + el.getAttribute('href').replace(/^\//, '');
       });

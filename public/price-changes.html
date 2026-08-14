@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#402970" />
+  <link rel="icon" href="https://www.kapruka.com/static/icons/favicon.ico" />
+  <title>Kapruka · Competitor Price Changes</title>
+  <link rel="stylesheet" href="theme.css" />
+  <style>
+    .wrap { max-width: 1320px; }
+    .cards { display:flex; flex-wrap:wrap; gap:12px; margin: 6px 0 22px; }
+    .stat { background:#fff; border:1px solid var(--line); border-radius:12px; padding:14px 18px;
+            min-width:150px; box-shadow:0 1px 3px rgba(64,41,112,.06); }
+    .stat .n { font-size:26px; font-weight:800; color:var(--purple-dk); line-height:1.1; }
+    .stat .l { font-size:11px; color:var(--mut); text-transform:uppercase; letter-spacing:.04em; margin-top:3px; }
+    .stat.bad .n { color:var(--bad); }
+    .stat.good .n { color:var(--ok); }
+    .toolbar { display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin-bottom:14px; }
+    .toolbar input[type=search]{ max-width:260px; }
+    .toolbar select { max-width:220px; }
+    .toolbar .right { margin-left:auto; display:flex; gap:10px; align-items:center; }
+    button { margin-top:0; }
+    tr.up td { background:#fdeceb; } tr.up td:first-child { box-shadow: inset 3px 0 var(--bad); }
+    tr.down td { background:#e9f7ef; } tr.down td:first-child { box-shadow: inset 3px 0 var(--ok); }
+    .meta { font-size:12px; color:var(--mut); margin: 10px 0 0; }
+    .store-pill { display:inline-block; background:var(--tint); border:1px solid var(--line);
+                  color:var(--purple-dk); border-radius:999px; padding:2px 10px; font-size:12px; font-weight:600; }
+    .move-up { color:var(--bad); font-weight:700; }
+    .move-down { color:var(--ok); font-weight:700; }
+    th.sortable { cursor:pointer; user-select:none; white-space:nowrap; }
+    th.sortable:hover { color: var(--purple-dk, #402970); }
+    .dir-badge { display:inline-block; padding:2px 9px; border-radius:999px; font-size:11px; font-weight:700; }
+    .dir-badge.up { background:#fae5e4; color:var(--bad); }
+    .dir-badge.down { background:#e3f5ea; color:var(--ok); }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="bar">
+      <img class="logo-mark" src="https://www.kapruka.com/static/icons/apple-touch-icon-180x180.png?v2"
+           alt="Kapruka" onerror="this.style.display='none'" />
+      <span class="logo">kapruka<span class="dot">.</span></span>
+      <span class="pill">Competitor Price Changes</span>
+      <span class="tag"><a href="index.html">← Menu</a></span>
+    </div>
+  </header>
+
+  <div class="wrap">
+    <h1>Competitor price changes — previous scrape vs latest scrape</h1>
+    <p class="sub">For every configured partner store, compares its <strong>two most recently stored scrapes</strong>
+       and flags every matched product where the <strong>competitor's own price moved</strong> — up or down —
+       between those two runs. A partner needs at least two stored runs to show up here.</p>
+
+    <div id="status" class="card"><span class="spin"></span>Loading price changes…</div>
+
+    <div id="app" style="display:none">
+      <div class="cards" id="cards"></div>
+
+      <div class="toolbar">
+        <select id="direction">
+          <option value="">Increased or decreased</option>
+          <option value="increased">Increased only</option>
+          <option value="decreased">Decreased only</option>
+        </select>
+        <select id="category"><option value="">All categories</option></select>
+        <select id="store"><option value="">All stores</option></select>
+        <div class="right">
+          <input type="search" id="search" placeholder="Filter by product name…" />
+          <button class="ghost btn-link" id="exportCsv" type="button">⬇ Export CSV</button>
+        </div>
+      </div>
+
+      <div id="table"></div>
+      <p class="meta" id="footmeta"></p>
+    </div>
+  </div>
+
+  <script src="price-changes.js"></script>
+</body>
+</html>

@@ -5,7 +5,8 @@
 // A UTF-8 BOM is prepended so Excel renders Sri Lankan/Unicode product names
 // correctly instead of mojibake.
 
-import { allPriceCheckRows, allComparisonRows, getPriceAuditItems, removedUrlSet } from './db.js';
+import { allPriceCheckRows, allComparisonRows, getPriceAuditItems, removedUrlSet, recentComparisonRuns, getComparisonRun } from './db.js';
+import { listPartners } from './compare/partners.js';
 
 // The Overpriced / All Products Overpriced / Stock Mismatch dashboards (and
 // their CSV exports) all re-scan the same handful of full tables on every
@@ -614,6 +615,122 @@ const COMPARISON_COLUMNS = [
   { key: 'kapruka_url', label: 'Kapruka URL' },
   { key: 'partner_url', label: 'Partner URL' },
 ];
+
+// ---- Price Changes dashboard: competitor price moved between scrapes ------
+// Compares each partner's two most recent stored comparison runs (the
+// previous scrape vs the latest one) and flags every matched product where
+// the PARTNER'S (competitor) price differs between those two runs — either
+// up or down. Unlike overpricedReport()/stockMismatchReport(), which only
+// ever look at the single latest run, this needs the run *before* it too, so
+// it pulls per-partner via recentComparisonRuns(2, partnerId) + a
+// getComparisonRun() fetch for each of those two payloads, rather than
+// scanning the (potentially huge) allComparisonRows() table.
+//
+// Matched pairs are keyed by partnerUrl (stable across runs for the same
+// partner product) since kaprukaUrl alone doesn't guarantee the matcher
+// picked the same partner product both times, but partnerUrl does.
+export async function priceChangesReport() {
+  const removed = await removedUrlSet();
+  const items = [];
+  let partnersChecked = 0;
+  let lastUpdated = null;
+
+  const partners = await listPartners();
+  for (const partner of partners) {
+    const runs = await recentComparisonRuns(2, partner.id); // newest first
+    if (runs.length < 2) continue;
+    partnersChecked++;
+
+    const [latest, previous] = await Promise.all([
+      getComparisonRun(runs[0].id),
+      getComparisonRun(runs[1].id),
+    ]);
+    if (!latest || !previous) continue;
+
+    const at = latest.generatedAt || runs[0].created_at;
+    if (!lastUpdated || at > lastUpdated) lastUpdated = at;
+
+    const prevByUrl = new Map();
+    for (const m of previous.matched || []) {
+      if (m.partnerUrl && m.partnerPrice != null) prevByUrl.set(m.partnerUrl, m);
+    }
+
+    for (const m of latest.matched || []) {
+      if (!m.partnerUrl || m.partnerPrice == null || !m.kaprukaUrl) continue;
+      if (removed.has(m.kaprukaUrl)) continue;
+      const prev = prevByUrl.get(m.partnerUrl);
+      if (!prev || prev.partnerPrice == null) continue;
+      if (prev.partnerPrice === m.partnerPrice) continue;
+
+      const diff = m.partnerPrice - prev.partnerPrice;
+      items.push({
+        partnerId: partner.id,
+        partner: partner.name,
+        partnerLabel: partner.partnerLabel || partner.partnerSite || '',
+        category: categoryFromKaprukaUrl(m.kaprukaUrl),
+        name: m.name ?? '',
+        partnerProductName: m.partnerName ?? '',
+        direction: diff > 0 ? 'increased' : 'decreased',
+        previousPrice: prev.partnerPrice,
+        currentPrice: m.partnerPrice,
+        diff,
+        pct: (diff / prev.partnerPrice) * 100,
+        kaprukaPrice: m.kaprukaPrice ?? null,
+        kaprukaUrl: m.kaprukaUrl,
+        partnerUrl: m.partnerUrl,
+        previousScrapedAt: previous.generatedAt || runs[1].created_at,
+        currentScrapedAt: at,
+      });
+    }
+  }
+
+  // Biggest absolute rupee move first.
+  items.sort((a, b) => Math.abs(b.diff) - Math.abs(a.diff));
+
+  const increased = items.filter((i) => i.direction === 'increased');
+  const decreased = items.filter((i) => i.direction === 'decreased');
+
+  return {
+    lastUpdated,
+    partnersChecked,
+    partnersTotal: partners.length,
+    count: items.length,
+    increasedCount: increased.length,
+    decreasedCount: decreased.length,
+    totalIncrease: increased.reduce((sum, i) => sum + i.diff, 0),
+    totalDecrease: decreased.reduce((sum, i) => sum + i.diff, 0),
+    items,
+  };
+}
+
+const PRICE_CHANGES_COLUMNS = [
+  { key: 'category', label: 'Category' },
+  { key: 'partner', label: 'Store' },
+  { key: 'name', label: 'Kapruka product' },
+  { key: 'partnerProductName', label: 'Partner product' },
+  { key: 'direction', label: 'Direction' },
+  { key: 'previousPrice', label: 'Previous partner price' },
+  { key: 'currentPrice', label: 'Current partner price' },
+  { key: 'diff', label: 'Change (Rs.)' },
+  { key: 'pct_out', label: 'Change %' },
+  { key: 'kaprukaPrice', label: 'Current Kapruka price' },
+  { key: 'previousScrapedAt', label: 'Previous scrape' },
+  { key: 'currentScrapedAt', label: 'Latest scrape' },
+  { key: 'kaprukaUrl', label: 'Kapruka URL' },
+  { key: 'partnerUrl', label: 'Partner URL' },
+];
+
+export async function exportPriceChangesCsv(partnerId = null, direction = null) {
+  const { items } = await priceChangesReport();
+  const filtered = items.filter(
+    (i) => (!partnerId || i.partnerId === partnerId) && (!direction || i.direction === direction),
+  );
+  const rows = filtered.map((i) => ({
+    ...i,
+    pct_out: i.pct != null ? Math.round(i.pct * 10) / 10 : '',
+  }));
+  return buildCsv(PRICE_CHANGES_COLUMNS, rows);
+}
 
 export async function exportComparisonCsv(partnerId = null) {
   const rows = [];

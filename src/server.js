@@ -39,6 +39,8 @@ import {
   exportAllProductsOverpricedCsv,
   stockMismatchReport,
   exportStockMismatchCsv,
+  priceChangesReport,
+  exportPriceChangesCsv,
   productRows,
 } from './export.js';
 import { uaeCompareApiRouter } from './uae-compare/routes.js';
@@ -541,6 +543,32 @@ app.get('/api/export/stock-mismatch.csv', async (req, res) => {
     const category = req.query.category || null;
     const suffix = [direction, partnerId, category].filter(Boolean).join('-');
     sendCsv(res, `stock-${suffix}.csv`, await exportStockMismatchCsv(direction, partnerId, category));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---- Price Changes dashboard — competitor price moved between the previous
+// and latest stored scrape for a partner. See priceChangesReport() in
+// export.js. Always computed live (needs the two most recent runs per
+// partner, not just the latest), so there's no separate cache to bust — it
+// updates automatically as refresh-all-partners.js / the daily refresh below
+// store new runs.
+app.get('/api/price-changes', async (_req, res) => {
+  try {
+    res.json({ ...(await priceChangesReport()), refreshing: REFRESH_STATE.running });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/export/price-changes.csv', async (req, res) => {
+  try {
+    const partnerId = req.query.partner || null;
+    const direction = ['increased', 'decreased'].includes(req.query.direction) ? req.query.direction : null;
+    const suffix = [partnerId, direction].filter(Boolean).join('-');
+    const name = suffix ? `price-changes-${suffix}.csv` : 'price-changes.csv';
+    sendCsv(res, name, await exportPriceChangesCsv(partnerId, direction));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
