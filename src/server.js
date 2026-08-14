@@ -108,7 +108,7 @@ app.post('/api/categories', async (req, res) => {
 // more than one match). Skipped for the DB "browse" mode (many candidate
 // products, no single query to match Daraz's results against).
 async function runCheckerSearch(query, onProgress = () => {}) {
-  const darazPromise = searchDaraz(query.name).catch((err) => [{
+  const darazPromise = searchDaraz(query.name, query.description).catch((err) => [{
     site: 'Daraz',
     domain: 'daraz.lk',
     status: 'error',

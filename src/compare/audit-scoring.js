@@ -160,6 +160,15 @@ export function isAccessoryListing(cTokens) {
   return false;
 }
 
+// Single-word version of the above check — used to avoid building a search
+// query anchored on an accessory word that's just describing the query's
+// OWN product ("kids toothbrush ... with cute cover" -> a naive "brand +
+// last word" heuristic would search "cover", which on a marketplace mostly
+// surfaces phone covers, not the toothbrush).
+export function isAccessoryWord(word) {
+  return ACCESSORY_WORDS.has(String(word || '').toLowerCase());
+}
+
 // k/c are indexed products (see matcher.js's index()) with ._tokens,
 // ._codes, ._specs already computed. Returns null (reject) or
 // { value, codes, overlap } for ranking candidates against one Kapruka

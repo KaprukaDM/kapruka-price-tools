@@ -40,7 +40,7 @@
 import OpenAI from 'openai';
 import { cleanQuery } from './serp.js';
 import { index } from './compare/matcher.js';
-import { scoreCandidate, MIN_INTERSECTION, isAccessoryListing } from './compare/audit-scoring.js';
+import { scoreCandidate, MIN_INTERSECTION, isAccessoryListing, isAccessoryWord } from './compare/audit-scoring.js';
 
 // A long, SEO-stuffed product name ("Zootopia Bunny Kids Toothbrush 9cm To
 // 12cm Retractable Travel Toothbrush With Cute Cover") makes a poor Daraz
@@ -104,6 +104,68 @@ async function extractSearchKeywords(productName) {
     return cleaned || null;
   } catch {
     return null; // best-effort — the heuristic chain below still runs either way
+  }
+}
+
+// Identity judge for the AI-review fallback (see searchDaraz()). Deliberately
+// NOT matcher.js's scoreIdentity() — that one is tuned for the general
+// web-search path, which treats a differing model qualifier as an acceptable
+// "partial match" (its own prompt: "Redmi 9" vs "Redmi 9 Lite" scores ~55-70,
+// isSameModel=true). That leniency is wrong here: caught live, it let a
+// "Samsung Galaxy A15" query accept "Samsung Galaxy A05s"/"A06" listings as
+// confident (status 'ok') matches — a different phone at a different price,
+// not a variant of the same one. A marketplace price lookup needs the
+// opposite bias from general identity confirmation: lenient about wording
+// for generic/descriptive products (toys, toothbrushes — no model number to
+// disagree on), but a HARD reject the moment two comparable model
+// numbers/codes actually differ.
+const MARKETPLACE_FN = {
+  name: 'report_marketplace_match',
+  description: 'Report whether this marketplace listing is genuinely the same product the user searched for.',
+  parameters: {
+    type: 'object',
+    properties: {
+      matchRate: {
+        type: 'integer',
+        description: 'Confidence 0-100 that the listing is the SAME product as the query.',
+      },
+      isSameProduct: { type: 'boolean' },
+      reasoning: { type: 'string', description: 'One sentence justifying the verdict.' },
+    },
+    required: ['matchRate', 'isSameProduct', 'reasoning'],
+    additionalProperties: false,
+  },
+};
+
+async function scoreMarketplaceIdentity(query, candidateTitle) {
+  const content =
+    `Decide whether this marketplace listing is the SAME product as the user's query.\n\n` +
+    `== USER QUERY ==\nName: ${query.name}\nDescription: ${query.description || '(none)'}\n\n` +
+    `== LISTING TITLE ==\n${candidateTitle}\n\n` +
+    `Rules:\n` +
+    `- For a GENERIC/descriptive product with no model number or code (a toy, toothbrush, kitchen item, ` +
+    `clothing item, etc.), be LENIENT: match on the core product/theme/character, ignore wording, size, ` +
+    `colour, and minor descriptive differences.\n` +
+    `- For a product identified by a MODEL NUMBER OR CODE (a phone, laptop, appliance, electronics model — ` +
+    `e.g. "A15", "iPhone 15", "RTX 4060", "WF-1000XM5"), that number/code is the product's identity, NOT a ` +
+    `qualifier to be lenient about. A DIFFERENT model number/code is a DIFFERENT product at a DIFFERENT ` +
+    `price, even from the exact same brand and product line (e.g. "Galaxy A15" and "Galaxy A05s" or ` +
+    `"Galaxy A06" are DIFFERENT phones — matchRate below 20, isSameProduct false). Only accept a match when ` +
+    `the SAME model number/code appears in both, or the query gives no model number/code at all.\n` +
+    `- The listing title being longer, SEO-stuffed, or worded differently is fine as long as the above holds.\n` +
+    `Call report_marketplace_match.`;
+  try {
+    const res = await getClient().chat.completions.create({
+      model: MODEL,
+      messages: [{ role: 'user', content }],
+      tools: [{ type: 'function', function: MARKETPLACE_FN }],
+      tool_choice: { type: 'function', function: { name: 'report_marketplace_match' } },
+    });
+    const call = res.choices?.[0]?.message?.tool_calls?.[0];
+    if (!call) return { matchRate: 0, isSameProduct: false, reasoning: 'no match report' };
+    return JSON.parse(call.function.arguments);
+  } catch (err) {
+    return { matchRate: 0, isSameProduct: false, reasoning: err.message };
   }
 }
 
@@ -229,12 +291,19 @@ function words(name) {
 function queryVariations(name) {
   const w = words(name);
   const variations = [String(name || '').trim()];
+  // "Brand + last word" assumes the last word names the product's own
+  // category ("Axor Apex Helmet" -> "axor helmet") — but a long descriptive
+  // title often ends on an accessory word describing the product's OWN
+  // feature ("... Retractable Travel Toothbrush With Cute Cover"), and
+  // searching that on a marketplace mostly surfaces phone cases/covers for
+  // an unrelated device, not the queried product. Skip anchoring on it.
+  const lastIsAccessory = w.length && isAccessoryWord(w[w.length - 1]);
   if (w.length >= 3) {
-    variations.push([w[0], w[w.length - 1]].join(' ')); // brand + category
+    if (!lastIsAccessory) variations.push([w[0], w[w.length - 1]].join(' ')); // brand + category
     variations.push(w.slice(0, -1).join(' ')); // drop trailing word
     variations.push(w.slice(1).join(' ')); // drop leading word
   }
-  if (w.length >= 4) {
+  if (w.length >= 4 && !lastIsAccessory) {
     variations.push([w[0], w[w.length - 2], w[w.length - 1]].join(' ')); // brand + last two words
   }
   if (w.length >= 2) {
@@ -251,19 +320,18 @@ function queryVariations(name) {
 
 // When nothing in the pool scores as a confident match (e.g. Daraz doesn't
 // stock the exact model — "Axor Apex Helmet" — but does stock the same
-// brand/category more generally — "Axor helmet"), surface the closest
-// listings instead of reporting nothing, so the search visibly did the
-// broadening it was asked to rather than going quiet. Still gated: requires
-// the same minimum shared-token floor scoreCandidate() itself uses
-// (MIN_INTERSECTION), so this can't degrade into "any random helmet counts"
-// — and every result from this path is explicitly flagged approximate,
-// never presented as if it were the exact product. Also excluded here for
-// the same reason scoreCandidate() rejects it outright: a search for a
-// device pools in every accessory listing for it too (a case/cover/charger
-// title always contains the device's own name), and without this a search
-// for "iPhone 15" that finds no genuine phone listing fell back to showing
-// phone CASES as the "closest match" -- never useful, and actively
-// misleading at a glance.
+// brand/category more generally — "Axor helmet"), this produces a shortlist
+// worth reviewing instead of giving up. It's a cheap PRE-filter only — the
+// real accept/reject decision for this path is the AI identity review in
+// searchDaraz() below (scoreMarketplaceIdentity()), not this function. Still gated:
+// requires the same minimum shared-token floor scoreCandidate() itself uses
+// (MIN_INTERSECTION), so the AI isn't wasted reviewing totally unrelated
+// junk. Also excluded here for the same reason scoreCandidate() rejects it
+// outright: a search for a device pools in every accessory listing for it
+// too (a case/cover/charger/shell title always contains the device's own
+// name), and without this a search for "iPhone 15" that finds no genuine
+// phone listing pools in phone CASES for the AI to review — cheaper and
+// cleaner to rule those out here.
 function closestMatches(qIndexed, pool, limit) {
   const scored = [];
   for (const c of index(pool, false)) {
@@ -287,6 +355,8 @@ async function fetchCandidates(query) {
 const MAX_VARIATIONS = 5;
 const TARGET_MATCHES = 8; // stop trying more variations once we have this many
 const MAX_RESULTS = 15;
+const AI_REVIEW_LIMIT = 12; // cap on AI identity-review calls per fallback search
+const AI_MATCH_THRESHOLD = 30; // mirrors pipeline.js's MATCH_THRESHOLD for the 'ok' vs 'low_confidence' cutoff
 
 /**
  * Look up `productName` directly on Daraz: try the literal query plus a
@@ -295,11 +365,18 @@ const MAX_RESULTS = 15;
  * and scoring each one against the ORIGINAL query with the same
  * identity-matching logic the catalogue-fallback path uses
  * (index() + scoreCandidate()). Stops early once enough matches are found.
+ * If nothing clears that heuristic bar, a shortlist of same-brand/category
+ * candidates (closestMatches()) gets a second pass through an AI identity
+ * judge (scoreMarketplaceIdentity()) instead of being shown blanket-labelled
+ * "approximate" — genuinely unrelated listings AND mismatched model
+ * numbers/codes get dropped there rather than surfaced with a generic
+ * disclaimer.
  * Returns an array of up to MAX_RESULTS matches in the standard pipeline
- * result shape (empty array if nothing scored as a plausible match; a
- * single error-flagged entry if every variation's request failed).
+ * result shape (empty array if nothing scored as a plausible match, AI or
+ * otherwise; a single error-flagged entry if every variation's request
+ * failed outright).
  */
-export async function searchDaraz(productName) {
+export async function searchDaraz(productName, description = '') {
   const base = { site: 'Daraz', domain: 'daraz.lk' };
   const [qIndexed] = index([{ name: productName, url: 'query' }], false);
   // A tight title-length cap used to sit here to guard against an open
@@ -378,21 +455,45 @@ export async function searchDaraz(productName) {
     }));
   }
 
-  // No confident match anywhere in the pool — fall back to the closest
-  // same-brand/category listings rather than reporting nothing.
-  const approx = closestMatches(qIndexed, pool, MAX_RESULTS);
-  return approx.map((c) => ({
+  // No confident match anywhere in the pool via the token-heuristic scorer.
+  // closestMatches() still does its cheap pre-filtering first (accessory
+  // words, minimum shared-token floor) to get a shortlist worth spending API
+  // calls on -- then each shortlisted candidate goes through
+  // scoreMarketplaceIdentity() (above), instead of blanket-labelling every
+  // same-brand/category listing "approximate" and showing it regardless.
+  // This is what actually eliminates genuinely unrelated listings (e.g. a
+  // phone-case search hit that slips past the accessory-word list) rather
+  // than just relabelling them all as unverified.
+  const shortlist = closestMatches(qIndexed, pool, AI_REVIEW_LIMIT);
+  if (!shortlist.length) return [];
+
+  const reviewed = await Promise.all(
+    shortlist.map(async (c) => {
+      const identity = await scoreMarketplaceIdentity({ name: productName, description }, c.name);
+      return { c, identity };
+    }),
+  );
+
+  if (process.env.DEBUG_DARAZ_AI) {
+    for (const r of reviewed) console.log(`[daraz][debug] ${r.identity.isSameProduct ? 'KEEP' : 'drop'} (${r.identity.matchRate}) "${r.c.name}" -- ${r.identity.reasoning}`);
+  }
+  const kept = reviewed.filter((r) => r.identity.isSameProduct);
+  console.log(`[daraz] AI review: ${shortlist.length} candidate(s) shortlisted, ${kept.length} kept as genuine matches`);
+  if (!kept.length) return [];
+
+  kept.sort((a, b) => (b.identity.matchRate || 0) - (a.identity.matchRate || 0));
+  return kept.slice(0, MAX_RESULTS).map(({ c, identity }) => ({
     ...base,
     title: c.name,
     url: c.url,
     image: c.image || null,
-    matchRate: null,
+    matchRate: identity.matchRate,
     price: c.price,
     currency: 'LKR',
     priceContext: c.seller ? `sold by ${c.seller}` : '',
-    reasoning: `No exact match for "${productName}" on Daraz — this is the closest same-brand/category listing found, not necessarily the same model. Verify before relying on this price.`,
-    flags: c.overseas ? ['marketplace', 'approximate_match', 'overseas'] : ['marketplace', 'approximate_match'],
+    reasoning: identity.reasoning || 'AI-reviewed marketplace match — verify before relying on this price.',
+    flags: c.overseas ? ['marketplace', 'ai_reviewed', 'overseas'] : ['marketplace', 'ai_reviewed'],
     overseas: !!c.overseas,
-    status: 'low_confidence',
+    status: (identity.matchRate ?? 0) < AI_MATCH_THRESHOLD ? 'low_confidence' : c.price == null ? 'price_not_found' : 'ok',
   }));
 }
