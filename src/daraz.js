@@ -40,7 +40,7 @@
 import OpenAI from 'openai';
 import { cleanQuery } from './serp.js';
 import { index } from './compare/matcher.js';
-import { scoreCandidate, MIN_INTERSECTION, isAccessoryListing, isAccessoryWord } from './compare/audit-scoring.js';
+import { scoreCandidate, MIN_INTERSECTION, accessoryMismatch, isAccessoryWord } from './compare/audit-scoring.js';
 
 // A long, SEO-stuffed product name ("Zootopia Bunny Kids Toothbrush 9cm To
 // 12cm Retractable Travel Toothbrush With Cute Cover") makes a poor Daraz
@@ -332,10 +332,22 @@ function queryVariations(name) {
 // name), and without this a search for "iPhone 15" that finds no genuine
 // phone listing pools in phone CASES for the AI to review — cheaper and
 // cleaner to rule those out here.
+//
+// MUST be query-aware (accessoryMismatch(), not the blind isAccessoryListing()):
+// a genuine accessory search ("iPhone 12 cover") reaches this exact fallback
+// whenever Daraz's own listings for it are worded too differently to clear
+// the strict scoreCandidate() bar on the first pass -- confirmed live, not a
+// rare edge case. A blind filter here strips every real cover/case candidate
+// out of the pool before the AI ever sees them, guaranteeing zero results
+// for the very queries this fallback exists to rescue. accessoryMismatch()
+// still protects the case that motivated a stricter filter in the first
+// place (a query whose OWN product just happens to use an accessory word to
+// describe itself, e.g. "...Toothbrush With Cute Cover" — "cover" there is
+// on the query's own side too, so it's exempted, not treated as absent).
 function closestMatches(qIndexed, pool, limit) {
   const scored = [];
   for (const c of index(pool, false)) {
-    if (isAccessoryListing(c._tokens)) continue;
+    if (accessoryMismatch(qIndexed._tokens, c._tokens)) continue;
     let shared = 0;
     for (const t of qIndexed._tokens) if (c._tokens.has(t)) shared++;
     if (shared < MIN_INTERSECTION) continue;

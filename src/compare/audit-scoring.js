@@ -132,11 +132,23 @@ const ACCESSORY_WORDS = new Set([
   'protector', 'charger', 'cable', 'adapter', 'holder', 'mount', 'stand',
   'strap', 'bumper', 'magsafe', 'lanyard', 'shell', 'casing',
 ]);
-export function accessoryMismatch(kTokens, cTokens) {
-  for (const w of ACCESSORY_WORDS) {
-    if (cTokens.has(w) && !kTokens.has(w)) return true;
-  }
+// Per-word exemption ("query has 'cover', candidate also has 'cover'" ->
+// fine) missed the common case of two DIFFERENT accessory words meaning the
+// same kind of thing -- a "iPhone 12 cover" query against a listing titled
+// "...Armor Case" still rejected, since "cover" exempts only itself, not
+// "case" (confirmed live: this alone was reducing real cover searches to
+// zero results). Once the query names ANY accessory word at all, treat it
+// as accessory-shopping intent and stop rejecting on this category
+// entirely -- the query is for *an* accessory, matching on the specific
+// wording of which kind is what the rest of scoreCandidate()'s overlap/
+// jaccard checks are for, not this veto.
+function hasAnyAccessoryWord(tokens) {
+  for (const w of ACCESSORY_WORDS) if (tokens.has(w)) return true;
   return false;
+}
+export function accessoryMismatch(kTokens, cTokens) {
+  if (hasAnyAccessoryWord(kTokens)) return false;
+  return hasAnyAccessoryWord(cTokens);
 }
 
 // True if the candidate is an accessory listing at all, ignoring whether the
