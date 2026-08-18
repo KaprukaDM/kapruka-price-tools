@@ -5,8 +5,7 @@
 // A UTF-8 BOM is prepended so Excel renders Sri Lankan/Unicode product names
 // correctly instead of mojibake.
 
-import { allPriceCheckRows, allComparisonRows, getPriceAuditItems, removedUrlSet, listFairnessReviews, upsertFairnessReview } from './db.js';
-import { reviewFairness } from './fairness-review.js';
+import { allPriceCheckRows, allComparisonRows, getPriceAuditItems, removedUrlSet } from './db.js';
 import { listPartners } from './compare/partners.js';
 
 // The Overpriced / All Products Overpriced / Stock Mismatch dashboards (and
@@ -292,20 +291,6 @@ export async function overpricedReport() {
   const partners = [];
   let lastUpdated = null;
   const removed = await cachedRemovedUrlSet();
-  // Not cached with the 5-hour TTL like the rest of this file's reads --
-  // this table is small and gets written to on demand (the "Run AI Fairness
-  // Review" button), so a stale cache would hide a verdict the user just
-  // asked for until the TTL happened to expire. Tolerates the table not
-  // existing yet (a fresh deploy before the migration SQL has been run) --
-  // the whole Overpriced dashboard would otherwise break on this alone.
-  const fairnessByKey = new Map();
-  try {
-    for (const r of await listFairnessReviews()) {
-      fairnessByKey.set(`${r.kaprukaUrl}|${r.partnerUrl}`, { verdict: r.verdict, reasoning: r.reasoning });
-    }
-  } catch {
-    // Table not migrated yet -- every item just shows "not reviewed".
-  }
 
   for (const { created_at, payload } of (await latestRunPerPartner()).values()) {
     const p = payload.partner || {};
@@ -342,7 +327,6 @@ export async function overpricedReport() {
         kaprukaUrl: m.kaprukaUrl ?? '',
         partnerUrl: m.partnerUrl ?? '',
         generatedAt: at,
-        fairness: fairnessByKey.get(`${m.kaprukaUrl}|${m.partnerUrl}`) || null,
       });
     }
   }
@@ -358,29 +342,6 @@ export async function overpricedReport() {
     partners,
     items,
   };
-}
-
-const FAIRNESS_REVIEW_MAX = 50; // hard cap per call -- one LLM call per item, keep a single request bounded
-
-// Reviews up to `limit` not-yet-reviewed overpriced items (biggest overcharge
-// first, since those are the most worth a human's attention), persists each
-// verdict, and returns the count actually reviewed. Called from the
-// dashboard's "Run AI Fairness Review" button -- deliberately NOT run
-// automatically on every page load/refresh, since it's an LLM call per item
-// and the whole point of caching in overpriced_fairness_reviews is to only
-// ever pay that cost once per (Kapruka product, partner product) pair.
-export async function runFairnessReview(limit = 20) {
-  const capped = Math.max(1, Math.min(FAIRNESS_REVIEW_MAX, limit));
-  const { items } = await overpricedReport();
-  const unreviewed = items.filter((i) => !i.fairness && i.kaprukaUrl && i.partnerUrl).slice(0, capped);
-
-  let reviewed = 0;
-  for (const item of unreviewed) {
-    const { verdict, reasoning } = await reviewFairness(item);
-    await upsertFairnessReview({ kaprukaUrl: item.kaprukaUrl, partnerUrl: item.partnerUrl, verdict, reasoning });
-    reviewed++;
-  }
-  return { reviewed, remaining: items.filter((i) => !i.fairness).length - reviewed };
 }
 
 const OVERPRICED_COLUMNS = [

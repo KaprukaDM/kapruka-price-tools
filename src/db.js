@@ -118,17 +118,6 @@ function rowToRemoved(r) {
   };
 }
 
-// Shared shape for an AI fairness-review row across all three backends.
-function rowToFairnessReview(r) {
-  return {
-    kaprukaUrl: r.kapruka_url,
-    partnerUrl: r.partner_url,
-    verdict: r.verdict,
-    reasoning: r.reasoning || '',
-    reviewedAt: r.reviewed_at,
-  };
-}
-
 // Shared shape for a discovered-site row across all three backends.
 function rowToDiscoveredSite(r) {
   return {
@@ -201,12 +190,6 @@ export async function removedUrlSet() {
   const rows = await listRemovedProducts();
   return new Set(rows.map((r) => r.kaprukaUrl));
 }
-
-// AI "is this overcharge actually a problem" verdicts for the Overpriced
-// dashboard — cached per (kaprukaUrl, partnerUrl) pair so re-loading the
-// dashboard doesn't re-spend an LLM call on every item every time.
-export const listFairnessReviews = () => backend.listFairnessReviews();
-export const upsertFairnessReview = (row) => backend.upsertFairnessReview(row);
 
 // Domains the web-search discovery step keeps turning up that aren't yet a
 // curated category site — a review queue (see discovered-sites.html) so a
@@ -340,15 +323,6 @@ async function makePostgresBackend(connectionString) {
       snapshot      JSONB
     );
     ALTER TABLE removed_products ADD COLUMN IF NOT EXISTS removed_by TEXT;
-    CREATE TABLE IF NOT EXISTS overpriced_fairness_reviews (
-      id             BIGSERIAL PRIMARY KEY,
-      kapruka_url    TEXT NOT NULL,
-      partner_url    TEXT NOT NULL,
-      verdict        TEXT NOT NULL,
-      reasoning      TEXT,
-      reviewed_at    TEXT NOT NULL,
-      UNIQUE (kapruka_url, partner_url)
-    );
     CREATE TABLE IF NOT EXISTS discovered_sites (
       id            BIGSERIAL PRIMARY KEY,
       domain        TEXT NOT NULL UNIQUE,
@@ -366,21 +340,6 @@ async function makePostgresBackend(connectionString) {
     async listRemovedProducts() {
       const { rows } = await pool.query(`SELECT * FROM removed_products ORDER BY created_at DESC`);
       return rows.map(rowToRemoved);
-    },
-
-    async listFairnessReviews() {
-      const { rows } = await pool.query(`SELECT * FROM overpriced_fairness_reviews`);
-      return rows.map(rowToFairnessReview);
-    },
-
-    async upsertFairnessReview({ kaprukaUrl, partnerUrl, verdict, reasoning }) {
-      await pool.query(
-        `INSERT INTO overpriced_fairness_reviews (kapruka_url, partner_url, verdict, reasoning, reviewed_at)
-         VALUES ($1,$2,$3,$4,$5)
-         ON CONFLICT (kapruka_url, partner_url) DO UPDATE SET
-           verdict = EXCLUDED.verdict, reasoning = EXCLUDED.reasoning, reviewed_at = EXCLUDED.reviewed_at`,
-        [kaprukaUrl, partnerUrl, verdict, reasoning || null, nowIso()],
-      );
     },
 
     async upsertDiscoveredSite({ domain, category, sampleUrl, sampleQuery }) {
@@ -822,15 +781,6 @@ async function makePostgresBackend(connectionString) {
 //   );
 //   -- Already had a removed_products table before removed_by existed? Run:
 //   -- ALTER TABLE removed_products ADD COLUMN IF NOT EXISTS removed_by TEXT;
-//   CREATE TABLE IF NOT EXISTS overpriced_fairness_reviews (
-//     id             BIGSERIAL PRIMARY KEY,
-//     kapruka_url    TEXT NOT NULL,
-//     partner_url    TEXT NOT NULL,
-//     verdict        TEXT NOT NULL,
-//     reasoning      TEXT,
-//     reviewed_at    TEXT NOT NULL,
-//     UNIQUE (kapruka_url, partner_url)
-//   );
 //   CREATE TABLE IF NOT EXISTS discovered_sites (
 //     id            BIGSERIAL PRIMARY KEY,
 //     domain        TEXT NOT NULL UNIQUE,
@@ -933,25 +883,6 @@ async function makeSupabaseRestBackend(baseUrl, serviceKey) {
 
     async deleteRemovedProduct(id) {
       await restFetch(`/removed_products?id=eq.${encodeURIComponent(id)}`, { method: 'DELETE' });
-    },
-
-    async listFairnessReviews() {
-      const rows = await restFetch('/overpriced_fairness_reviews?select=*');
-      return rows.map(rowToFairnessReview);
-    },
-
-    async upsertFairnessReview({ kaprukaUrl, partnerUrl, verdict, reasoning }) {
-      await restFetch('/overpriced_fairness_reviews?on_conflict=kapruka_url,partner_url', {
-        method: 'POST',
-        headers: { Prefer: 'resolution=merge-duplicates' },
-        body: JSON.stringify({
-          kapruka_url: kaprukaUrl,
-          partner_url: partnerUrl,
-          verdict,
-          reasoning: reasoning || null,
-          reviewed_at: nowIso(),
-        }),
-      });
     },
 
     // PostgREST has no server-side "increment on conflict" for a plain
@@ -1408,15 +1339,6 @@ async function makeSqliteBackend() {
       source_page   TEXT,
       snapshot_json TEXT
     );
-    CREATE TABLE IF NOT EXISTS overpriced_fairness_reviews (
-      id             INTEGER PRIMARY KEY AUTOINCREMENT,
-      kapruka_url    TEXT NOT NULL,
-      partner_url    TEXT NOT NULL,
-      verdict        TEXT NOT NULL,
-      reasoning      TEXT,
-      reviewed_at    TEXT NOT NULL,
-      UNIQUE (kapruka_url, partner_url)
-    );
     CREATE TABLE IF NOT EXISTS discovered_sites (
       id            INTEGER PRIMARY KEY AUTOINCREMENT,
       domain        TEXT NOT NULL UNIQUE,
@@ -1452,13 +1374,6 @@ async function makeSqliteBackend() {
       partner_name = excluded.partner_name, reason = excluded.reason, removed_by = excluded.removed_by,
       source_page = excluded.source_page, snapshot_json = excluded.snapshot_json`);
   const delRemoved = db.prepare(`DELETE FROM removed_products WHERE id = ?`);
-
-  const selFairnessReviews = db.prepare(`SELECT * FROM overpriced_fairness_reviews`);
-  const upsertFairness = db.prepare(`
-    INSERT INTO overpriced_fairness_reviews (kapruka_url, partner_url, verdict, reasoning, reviewed_at)
-    VALUES (?, ?, ?, ?, ?)
-    ON CONFLICT (kapruka_url, partner_url) DO UPDATE SET
-      verdict = excluded.verdict, reasoning = excluded.reasoning, reviewed_at = excluded.reviewed_at`);
 
   const selDiscoveredByDomain = db.prepare(`SELECT * FROM discovered_sites WHERE domain = ?`);
   const selDiscoveredAll = db.prepare(`SELECT * FROM discovered_sites ORDER BY times_seen DESC`);
@@ -1550,14 +1465,6 @@ async function makeSqliteBackend() {
 
     async deleteRemovedProduct(id) {
       delRemoved.run(id);
-    },
-
-    async listFairnessReviews() {
-      return selFairnessReviews.all().map(rowToFairnessReview);
-    },
-
-    async upsertFairnessReview({ kaprukaUrl, partnerUrl, verdict, reasoning }) {
-      upsertFairness.run(kaprukaUrl, partnerUrl, verdict, reasoning || null, nowIso());
     },
 
     async upsertDiscoveredSite({ domain, category, sampleUrl, sampleQuery }) {

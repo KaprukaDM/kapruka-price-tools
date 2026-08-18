@@ -1,9 +1,8 @@
 // AI "what should Kapruka's price actually be" step for the Price Checker.
 // Runs automatically on every single-product search that has both a Kapruka
-// price and at least one competitor price to compare against -- unlike
-// fairness-review.js (the Overpriced dashboard's batch reviewer, run
-// on-demand for cost reasons), this is per-search and cheap enough (one
-// call per search a person actually makes) to just always run.
+// price and at least one competitor price to compare against -- Checker-only
+// by design, and cheap enough (one call per search a person actually makes)
+// to just always run, with no manual trigger needed.
 
 import OpenAI from 'openai';
 

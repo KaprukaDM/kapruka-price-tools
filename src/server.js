@@ -38,7 +38,6 @@ import {
   exportProductsCsv,
   exportOverpricedCsv,
   overpricedReport,
-  runFairnessReview,
   allProductsOverpricedReport,
   exportAllProductsOverpricedCsv,
   stockMismatchReport,
@@ -165,10 +164,9 @@ async function runCheckerSearch(query, onProgress = () => {}) {
   if (db.hasMatch && db.mode === 'single') {
     // Automatic "ideal price to set" insight -- runs on every single-product
     // search that has both a Kapruka price and at least one real competitor
-    // price, no manual trigger (unlike the Overpriced dashboard's batch
-    // fairness review, which is deliberately on-demand for cost reasons —
-    // this is one call per search a person actually makes, not one per item
-    // across the whole catalogue).
+    // price, no manual trigger. Checker-only by design: one call per search
+    // a person actually makes, not something that'd scale to reviewing an
+    // entire dashboard's worth of items unattended.
     const competitors = db.results
       .filter((r) => r.price != null && (r.status === 'ok' || r.status === 'low_confidence'))
       .map((r) => ({ site: r.site, price: r.price, matchRate: r.matchRate }));
@@ -556,21 +554,6 @@ app.post('/api/overpriced/refresh', async (_req, res) => {
         ? `This host doesn't scrape live (bad Kapruka geo-pricing) — queued ${result.queued} stores for the trusted machine's scheduled job to pick up within 15 minutes.`
         : null,
     });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// AI fairness review — judges whether an overpriced item is a genuine
-// problem or has a plausible explanation (partner clearance sale, bundle,
-// questionable match). Reviews a batch of not-yet-reviewed items (biggest
-// overcharge first) and persists each verdict, so repeat calls only ever
-// pay for the items still unreviewed. See fairness-review.js.
-app.post('/api/overpriced/fairness-review', async (req, res) => {
-  try {
-    const limit = Number(req.body?.limit) || 20;
-    const result = await runFairnessReview(limit);
-    res.json({ ...result, ...(await overpricedReport()) });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

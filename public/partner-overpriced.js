@@ -13,25 +13,7 @@ const COLUMNS = [
   { key: 'partnerPrice', label: 'Partner site', num: true },
   { key: 'diff', label: 'Overcharge', num: true },
   { key: 'pct', label: '%', num: true },
-  { key: 'fairnessSort', label: 'AI Fairness', num: true },
 ];
-
-const FAIRNESS_LABEL = {
-  genuine_problem: { text: '⚠️ Needs attention', cls: 'status-warn' },
-  explainable: { text: '✓ Explainable', cls: 'status-ok' },
-  uncertain_match: { text: '❔ Uncertain match', cls: 'status-warn' },
-};
-// Sort weight, HIGHEST first — clicking the column header defaults to
-// descending for numeric columns, so "needs attention" naturally floats to
-// the top on first click, and unreviewed items (nothing to show yet) sort
-// to the very bottom rather than mixing in with real verdicts.
-const FAIRNESS_SORT_WEIGHT = { genuine_problem: 3, uncertain_match: 2, explainable: 1 };
-function fairnessCell(m) {
-  if (!m.fairness) return `<span class="ctx">not reviewed</span>`;
-  const label = FAIRNESS_LABEL[m.fairness.verdict] || FAIRNESS_LABEL.uncertain_match;
-  const reasoning = m.fairness.reasoning ? `<div class="ctx">${escapeHtml(m.fairness.reasoning)}</div>` : '';
-  return `<span class="${label.cls}">${label.text}</span>${reasoning}`;
-}
 let SORT = { key: 'diff', dir: 'desc' };
 
 function sortRows(rows) {
@@ -199,7 +181,6 @@ function render() {
         <td class="num">${lkr(m.partnerPrice)}${discountBadge(m.partnerRegularPrice, m.partnerPrice)}</td>
         <td class="num over-amt">+${lkr(m.diff)}</td>
         <td class="num over-amt">${pct}</td>
-        <td>${fairnessCell(m)}</td>
         <td><button type="button" class="row-remove" data-idx="${(PAGE - 1) * PAGE_SIZE + i}" title="Remove from dashboard">🗑 Remove</button></td>
       </tr>`;
     })
@@ -260,11 +241,6 @@ function paint() {
   $('status').style.display = 'none';
   $('app').style.display = '';
   refreshRemovedCount();
-  const btn = $('fairnessReview');
-  btn.textContent = DATA.unreviewedCount > 0
-    ? `🤖 Run AI Fairness Review (${DATA.unreviewedCount} unreviewed)`
-    : '🤖 AI Fairness Review — all caught up';
-  btn.disabled = DATA.unreviewedCount === 0;
 }
 
 async function refreshRemovedCount() {
@@ -288,24 +264,12 @@ function toggleRemovedSection() {
   }
 }
 
-// Flatten each item's nested `fairness` object into a sortable field, and
-// count how many still need a review so the button can show progress.
-function annotateFairness(data) {
-  let unreviewed = 0;
-  for (const m of data.items) {
-    m.fairnessSort = m.fairness ? FAIRNESS_SORT_WEIGHT[m.fairness.verdict] ?? 2 : 0;
-    if (!m.fairness) unreviewed++;
-  }
-  data.unreviewedCount = unreviewed;
-  return data;
-}
-
 async function load() {
   try {
     const res = await fetch('/api/overpriced');
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'request failed');
-    DATA = annotateFairness(data);
+    DATA = data;
     paint();
   } catch (err) {
     $('status').innerHTML = `Error: ${escapeHtml(err.message)} <button class="ghost" onclick="location.reload()">Retry</button>`;
@@ -321,7 +285,7 @@ async function refreshNow() {
     const res = await fetch('/api/overpriced/refresh', { method: 'POST' });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'refresh failed');
-    DATA = annotateFairness(data);
+    DATA = data;
     paint();
     if (data.message) alert(data.message);
   } catch (err) {
@@ -329,32 +293,6 @@ async function refreshNow() {
   } finally {
     btn.disabled = false;
     btn.textContent = prev;
-  }
-}
-
-// Reviews a batch of not-yet-reviewed items (see /api/overpriced/fairness-
-// review) and repaints with the results. One batch at a time (not "review
-// everything") since it's an LLM call per item — the button just shows how
-// many are left and can be clicked again.
-async function runFairnessReviewBatch() {
-  const btn = $('fairnessReview');
-  btn.disabled = true;
-  const prev = btn.textContent;
-  btn.innerHTML = '<span class="spin"></span>Reviewing…';
-  try {
-    const res = await fetch('/api/overpriced/fairness-review', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ limit: 20 }),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'review failed');
-    DATA = annotateFairness(data);
-    paint();
-  } catch (err) {
-    alert('Fairness review failed: ' + err.message);
-    btn.textContent = prev;
-    btn.disabled = false;
   }
 }
 
@@ -386,7 +324,6 @@ $('category').addEventListener('change', () => { PAGE = 1; storeOptions(); rende
 $('store').addEventListener('change', () => { PAGE = 1; render(); });
 $('exportCsv').addEventListener('click', exportCsv);
 $('refresh').addEventListener('click', refreshNow);
-$('fairnessReview').addEventListener('click', runFairnessReviewBatch);
 $('toggleRemoved').addEventListener('click', toggleRemovedSection);
 
 load();
