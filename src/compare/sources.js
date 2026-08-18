@@ -1069,6 +1069,90 @@ async function fetchJhstoreCatalog(shopUrl, log, fetchTextFn = fetchText) {
   return [...byUrl.values()];
 }
 
+// -- limitededition.lk -- OpenCart (Journal theme). The Store-API probes both
+// miss it (it's neither Woo nor Shopify) and it publishes no XML sitemap or
+// product feed, so there's no single endpoint listing the whole catalogue.
+// The category pages only cover part of it (several products sit solely in
+// month "collection" categories that aren't linked from the main nav), so
+// instead this drives OpenCart's own search route, which does span every
+// category, and unions the results of a few single-letter queries. Nearly
+// every product name contains at least one of these, and each letter
+// independently returns ~the full 109-product catalogue -- the union is
+// belt-and-braces against a name that happens to miss one.
+const LIMITEDEDITION_SEARCH_TERMS = ['a', 'e', 'i', 'o', 'u', 's'];
+
+function parseLimitedEditionPage(html, origin) {
+  const $ = cheerio.load(html);
+  const out = [];
+  const seen = new Set();
+  $('div.product-thumb').each((_, el) => {
+    const $card = $(el);
+    const $a = $card.find('h4.name a').first();
+    let href = $a.attr('href');
+    if (!href) return;
+    if (!href.startsWith('http')) href = new URL(href, origin).toString();
+    // Listing links carry the paging params through (…?limit=100) -- strip the
+    // query so the same product found via two different searches dedupes.
+    href = href.split('?')[0];
+    if (seen.has(href)) return;
+    const $price = $card.find('div.price').first();
+    // On a discounted product the theme renders both the struck-through
+    // original (.price-old) and the live one (.price-new); undiscounted
+    // products just have the bare text. Take .price-new when present so a
+    // sale price isn't misread as the regular price, and keep .price-old as
+    // regularPrice so the dashboard's discount badge works the same way it
+    // does for Woo's regular_price / Shopify's compare_at_price.
+    const $new = $price.find('.price-new').first();
+    const parsed = parsePriceMaybeForeign($new.length ? $new.text() : $price.clone().children().remove().end().text());
+    if (!parsed) return;
+    const $old = $price.find('.price-old').first();
+    const regular = $old.length ? parsePriceLKR($old.text()) : null;
+    const title = fixMojibake(decodeEntities($a.text())).replace(/\s+/g, ' ').trim();
+    if (!title) return;
+    seen.add(href);
+    out.push({
+      id: `limitededition-${href}`,
+      name: title,
+      price: parsed.price,
+      regularPrice: regular,
+      url: href,
+      _currency: parsed.currency,
+    });
+  });
+  return convertForeignItems(out);
+}
+
+async function fetchLimitedEditionCatalog(shopUrl, log, fetchTextFn = fetchText) {
+  const origin = toOrigin(shopUrl);
+  const byUrl = new Map();
+  for (const term of LIMITEDEDITION_SEARCH_TERMS) {
+    for (let page = 1; page <= 20; page++) {
+      const url = `${origin}/index.php?route=product/search&search=${term}&limit=100&page=${page}`;
+      let html;
+      for (let attempt = 0; ; attempt++) {
+        try { html = await fetchTextFn(url); break; }
+        catch (e) {
+          if (TRANSIENT_STATUS.test(e.message) && attempt < 3) { await sleep(4000 * (attempt + 1)); continue; }
+          html = null;
+          break;
+        }
+      }
+      if (html == null) break;
+      const products = await parseLimitedEditionPage(html, origin);
+      if (products.length === 0) break;
+      let added = 0;
+      for (const p of products) { if (!byUrl.has(p.url)) { byUrl.set(p.url, p); added++; } }
+      log(`  partner (limitededition) search=${term} page ${page}: ${products.length} cards (${added} new), total ${byUrl.size}`);
+      // "Showing 1 to 100 of 109 (2 Pages)" -- stop once this term is exhausted
+      // rather than fetching a page that's guaranteed empty.
+      const shown = html.match(/Showing\s+\d+\s+to\s+(\d+)\s+of\s+(\d+)/i);
+      if (shown && Number(shown[1]) >= Number(shown[2])) break;
+      await sleep(400);
+    }
+  }
+  return [...byUrl.values()];
+}
+
 // -- foreverskinnaturals.com -- static-exported Next.js shell with no
 // server-rendered content at all; the frontend's own backend API returns
 // the full catalogue as clean JSON, one entry per size/price variant.
@@ -1136,6 +1220,10 @@ export async function fetchPartnerCatalog(site, { log = () => {}, platform = 'au
   if (platform === 'jhstore') {
     const products = await fetchJhstoreCatalog(site, log);
     return { products, platform: 'jhstore' };
+  }
+  if (platform === 'limitededition') {
+    const products = await fetchLimitedEditionCatalog(site, log);
+    return { products, platform: 'limitededition' };
   }
   if (platform === 'foreverskin') {
     const products = await fetchForeverskinCatalog(fetchJson);
