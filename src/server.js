@@ -181,7 +181,10 @@ async function runCheckerSearch(query, onProgress = () => {}) {
       .filter((r) => r.price != null && (r.status === 'ok' || r.status === 'low_confidence'))
       .map((r) => ({ site: r.site, price: r.price, matchRate: r.matchRate }));
     const kaprukaRef = db.kaprukaRef?.price ? db.kaprukaRef : await kaprukaRefPromise;
-    const priceInsightPromise = kaprukaRef?.price && competitors.length
+    // Runs even when Kapruka doesn't carry the product (kaprukaRef null) --
+    // recommendPrice() falls back to a market-only launch-price suggestion,
+    // so every search with at least one competitor price gets an insight.
+    const priceInsightPromise = competitors.length
       ? recommendPrice(kaprukaRef, competitors)
       : Promise.resolve(null);
     const [daraz, priceInsight] = await Promise.all([darazPromise, priceInsightPromise]);
@@ -199,7 +202,7 @@ async function runCheckerSearch(query, onProgress = () => {}) {
     .filter((r) => r.price != null && (r.status === 'ok' || r.status === 'low_confidence'))
     .map((r) => ({ site: r.site, price: r.price, matchRate: r.matchRate }));
   const kaprukaRef = competitors.length ? await kaprukaRefPromise : null;
-  const priceInsight = kaprukaRef?.price ? await recommendPrice(kaprukaRef, competitors) : null;
+  const priceInsight = competitors.length ? await recommendPrice(kaprukaRef, competitors) : null;
   return { ...out, source: 'web', mode: 'web', daraz, kaprukaRef, priceInsight };
 }
 

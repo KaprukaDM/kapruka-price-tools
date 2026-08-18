@@ -80,13 +80,15 @@ function kaprukaRefBlock(ref) {
 }
 
 // Automatic AI "what should Kapruka's price actually be" call -- runs
-// server-side on every single-product database match with a real Kapruka
-// price and at least one competitor price (see price-insight.js), so this
-// just renders whatever the response already carries, no separate request.
+// server-side on every search that turns up at least one competitor price,
+// whether or not Kapruka already sells the product (see price-insight.js),
+// so this just renders whatever the response already carries, no separate
+// request.
 const PRICE_INSIGHT_LABEL = {
   overpriced: { text: '⚠️ Overpriced vs market', cls: 'status-warn' },
   competitive: { text: '✓ Competitive', cls: 'status-ok' },
   underpriced: { text: '💰 Underpriced vs market', cls: 'status-ok' },
+  not_listed: { text: '🆕 Not currently sold on Kapruka', cls: 'status-warn' },
 };
 function priceInsightBlock(insight) {
   if (!insight) return '';
@@ -94,10 +96,11 @@ function priceInsightBlock(insight) {
   const ideal = insight.idealPriceLkr != null
     ? `LKR ${Number(insight.idealPriceLkr).toLocaleString('en-LK')}`
     : '—';
+  const priceLabel = insight.verdict === 'not_listed' ? 'suggested launch price' : 'suggested price';
   return `<div class="card" style="margin-bottom:16px">
     <div class="ctx">🤖 AI price insight</div>
     <div style="margin-top:2px"><span class="${label.cls}">${label.text}</span>
-      — suggested price: <strong><span class="price">${ideal}</span></strong></div>
+      — ${priceLabel}: <strong><span class="price">${ideal}</span></strong></div>
     ${insight.reasoning ? `<div class="ctx" style="margin-top:6px">${escapeHtml(insight.reasoning)}</div>` : ''}
   </div>`;
 }
