@@ -33,6 +33,11 @@
 //                         found, or the site blocks automated requests). Nothing
 //                         reads this at runtime; it's a worklist for building
 //                         one-off custom scrapers for these sites later.
+//   bulk_refresh_log   - append-only log of "Refresh all stores" clicks, one row
+//                         per click (from any instance). Lets the server enforce
+//                         a daily cap on the bulk-refresh button regardless of
+//                         which host it was clicked from — see BULK_REFRESH_
+//                         DAILY_LIMIT in src/server.js.
 //   price_audit_items  - one row per (Kapruka product, competitor site) pair from
 //                         the local product-price audit (src/electronics-audit/).
 //                         Unlike comparison_runs (one partner's full catalogue vs
@@ -170,6 +175,11 @@ export const getIntlGiftSnapshot = (country) => backend.getIntlGiftSnapshot(coun
 export const setIntlGiftSnapshot = (country, payload) => backend.setIntlGiftSnapshot(country, payload);
 export const listUnsupportedPartners = () => backend.listUnsupportedPartners();
 export const addUnsupportedPartner = (row) => backend.addUnsupportedPartner(row);
+// Daily cap on the "Refresh all stores" button — see BULK_REFRESH_DAILY_LIMIT
+// in src/server.js. sinceIso marks the start of "today" in whatever timezone
+// the caller cares about (Sri Lanka time, for the business-day boundary).
+export const countBulkRefreshesSince = (sinceIso) => backend.countBulkRefreshesSince(sinceIso);
+export const logBulkRefreshRequest = () => backend.logBulkRefreshRequest();
 export const upsertPriceAuditItem = (item) => backend.upsertPriceAuditItem(item);
 export const getPriceAuditItems = (opts) => backend.getPriceAuditItems(opts);
 export const deletePriceAuditItemsByCategory = (category) => backend.deletePriceAuditItemsByCategory(category);
@@ -275,6 +285,10 @@ async function makePostgresBackend(connectionString) {
       partner_site  TEXT NOT NULL,
       reason        TEXT,
       detail        TEXT
+    );
+    CREATE TABLE IF NOT EXISTS bulk_refresh_log (
+      id            BIGSERIAL PRIMARY KEY,
+      requested_at  TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS price_audit_items (
       id                 BIGSERIAL PRIMARY KEY,
@@ -487,6 +501,18 @@ async function makePostgresBackend(connectionString) {
          VALUES ($1,$2,$3,$4,$5,$6)`,
         [nowIso(), name || null, kaprukaUrl || null, partnerSite, reason || null, detail || null],
       );
+    },
+
+    async countBulkRefreshesSince(sinceIso) {
+      const { rows } = await pool.query(
+        `SELECT COUNT(*)::int AS n FROM bulk_refresh_log WHERE requested_at >= $1`,
+        [sinceIso],
+      );
+      return rows[0].n;
+    },
+
+    async logBulkRefreshRequest() {
+      await pool.query(`INSERT INTO bulk_refresh_log (requested_at) VALUES ($1)`, [nowIso()]);
     },
 
     async listPartnerRows() {
@@ -734,6 +760,10 @@ async function makePostgresBackend(connectionString) {
 //     partner_site  TEXT NOT NULL,
 //     reason        TEXT,
 //     detail        TEXT
+//   );
+//   CREATE TABLE IF NOT EXISTS bulk_refresh_log (
+//     id            BIGSERIAL PRIMARY KEY,
+//     requested_at  TEXT NOT NULL
 //   );
 //   CREATE TABLE IF NOT EXISTS price_audit_items (
 //     id                 BIGSERIAL PRIMARY KEY,
@@ -1052,6 +1082,18 @@ async function makeSupabaseRestBackend(baseUrl, serviceKey) {
       });
     },
 
+    async countBulkRefreshesSince(sinceIso) {
+      const rows = await restFetch(`/bulk_refresh_log?select=id&requested_at=gte.${encodeURIComponent(sinceIso)}`);
+      return rows.length;
+    },
+
+    async logBulkRefreshRequest() {
+      await restFetch('/bulk_refresh_log', {
+        method: 'POST',
+        body: JSON.stringify({ requested_at: nowIso() }),
+      });
+    },
+
     async listPartnerRows() {
       const rows = await restFetch(
         '/partners?select=id,name,kapruka_url,kapruka_slug,partner_site,partner_label,platform,via_browser,refresh_requested_at' +
@@ -1294,6 +1336,10 @@ async function makeSqliteBackend() {
       reason        TEXT,
       detail        TEXT
     );
+    CREATE TABLE IF NOT EXISTS bulk_refresh_log (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      requested_at  TEXT NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS price_audit_items (
       id                 INTEGER PRIMARY KEY AUTOINCREMENT,
       category           TEXT NOT NULL,
@@ -1436,6 +1482,8 @@ async function makeSqliteBackend() {
   const insUnsupported = db.prepare(`
     INSERT INTO unsupported_partners (created_at, name, kapruka_url, partner_site, reason, detail)
     VALUES (?, ?, ?, ?, ?, ?)`);
+  const selBulkRefreshCount = db.prepare(`SELECT COUNT(*) AS n FROM bulk_refresh_log WHERE requested_at >= ?`);
+  const insBulkRefresh = db.prepare(`INSERT INTO bulk_refresh_log (requested_at) VALUES (?)`);
   const upsertAuditItem = db.prepare(`
     INSERT INTO price_audit_items
       (category, kapruka_url, kapruka_name, kapruka_price_lkr, site_domain, site_name,
@@ -1549,6 +1597,14 @@ async function makeSqliteBackend() {
 
     async addUnsupportedPartner({ name, kaprukaUrl, partnerSite, reason, detail }) {
       insUnsupported.run(nowIso(), name || null, kaprukaUrl || null, partnerSite, reason || null, detail || null);
+    },
+
+    async countBulkRefreshesSince(sinceIso) {
+      return selBulkRefreshCount.get(sinceIso).n;
+    },
+
+    async logBulkRefreshRequest() {
+      insBulkRefresh.run(nowIso());
     },
 
     async listPartnerRows() {

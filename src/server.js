@@ -30,6 +30,8 @@ import {
   removedUrlSet,
   listDiscoveredSites,
   setDiscoveredSiteStatus,
+  countBulkRefreshesSince,
+  logBulkRefreshRequest,
 } from './db.js';
 import { summarize } from './compare/matcher.js';
 import {
@@ -543,8 +545,31 @@ app.get('/api/overpriced', async (_req, res) => {
   }
 });
 
+// "Refresh all stores" is a full-catalogue live scrape (127 partners' worth
+// of Kapruka + partner-site fetches) once the trusted machine's scheduled job
+// picks it up — capped to avoid someone repeatedly mashing the button and
+// tripping Kapruka's rate limiting (see the 429-handling notes in
+// src/compare/sources.js) or just hammering every partner site needlessly.
+// Counted from bulk_refresh_log (shared Supabase table, so a click on either
+// instance counts against the same daily total), reset at Sri Lanka midnight
+// since that's the actual business day this app runs against.
+const BULK_REFRESH_DAILY_LIMIT = 2;
+const SRI_LANKA_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+function startOfTodaySriLanka() {
+  const nowSL = new Date(Date.now() + SRI_LANKA_OFFSET_MS);
+  const midnightSL = Date.UTC(nowSL.getUTCFullYear(), nowSL.getUTCMonth(), nowSL.getUTCDate());
+  return new Date(midnightSL - SRI_LANKA_OFFSET_MS).toISOString();
+}
+
 app.post('/api/overpriced/refresh', async (_req, res) => {
   try {
+    const usedToday = await countBulkRefreshesSince(startOfTodaySriLanka());
+    if (usedToday >= BULK_REFRESH_DAILY_LIMIT) {
+      return res.status(429).json({
+        error: `Daily limit reached (${BULK_REFRESH_DAILY_LIMIT}/${BULK_REFRESH_DAILY_LIMIT}) for "Refresh all stores" — try again tomorrow.`,
+      });
+    }
+    await logBulkRefreshRequest();
     const result = await refreshAllPartners('manual');
     res.json({
       ...(await overpricedReport()),
