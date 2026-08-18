@@ -137,26 +137,32 @@ function resultRow({ site, domain, title, url, price, matchRate, sourceTable }) 
 
 // Table 1: price_audit_items — identify which (if any) already-audited
 // Kapruka product the query refers to, then return all of its site matches.
+// Also surfaces the identified Kapruka product itself (url/name/price) as
+// `kaprukaRef`, not just its competitor matches -- the price-insight step
+// (see server.js's runCheckerSearch) needs Kapruka's OWN price to recommend
+// anything, and a plain name-typed search otherwise never carries it (only
+// the URL-search mode did, via /api/kapruka/resolve).
 async function searchPriceAuditItems(qIndexed) {
   const rows = await getCachedPriceAuditItems();
-  if (!rows.length) return [];
+  if (!rows.length) return { kaprukaRef: null, results: [] };
 
   const byKapruka = new Map();
   for (const r of rows) {
     if (!r.kapruka_url || !r.kapruka_name) continue;
-    if (!byKapruka.has(r.kapruka_url)) byKapruka.set(r.kapruka_url, { name: r.kapruka_name, rows: [] });
+    if (!byKapruka.has(r.kapruka_url)) byKapruka.set(r.kapruka_url, { name: r.kapruka_name, price: r.kapruka_price_lkr, rows: [] });
     byKapruka.get(r.kapruka_url).rows.push(r);
   }
 
   let best = null;
-  for (const group of byKapruka.values()) {
+  let bestUrl = null;
+  for (const [url, group] of byKapruka) {
     const kIndexed = toIndexed(group.name);
     const sc = scoreCandidate(qIndexed, kIndexed);
-    if (sc && (!best || sc.value > best.sc.value)) best = { group, sc };
+    if (sc && (!best || sc.value > best.sc.value)) { best = { group, sc }; bestUrl = url; }
   }
-  if (!best) return [];
+  if (!best) return { kaprukaRef: null, results: [] };
 
-  return best.group.rows
+  const results = best.group.rows
     .filter((r) => r.matched_url)
     .map((r) =>
       resultRow({
@@ -169,6 +175,8 @@ async function searchPriceAuditItems(qIndexed) {
         sourceTable: 'price_audit_items',
       }),
     );
+  const kaprukaRef = { url: bestUrl, name: best.group.name, price: best.group.price ?? null };
+  return { kaprukaRef, results };
 }
 
 // Broad/browse search — used only when the strict identity search above
@@ -367,14 +375,14 @@ export async function searchDatabase({ name, description }) {
 
   // 1) Strict identity search — unchanged behavior for a well-specified
   // query: merges all 3 tables into one product's site-by-site comparison.
-  const [auditResults, competitorResults, comparisonResults] = await Promise.all([
+  const [audit, competitorResults, comparisonResults] = await Promise.all([
     searchPriceAuditItems(qIndexed),
     searchCompetitorProductsTable(qIndexed, cleanName, cleanDescription),
     searchComparisonRunsTable(qIndexed),
   ]);
-  const merged = mergeByDomain(auditResults, competitorResults, comparisonResults).sort(byBestValue);
+  const merged = mergeByDomain(audit.results, competitorResults, comparisonResults).sort(byBestValue);
   if (merged.length > 0) {
-    return { hasMatch: true, mode: 'single', results: merged };
+    return { hasMatch: true, mode: 'single', results: merged, kaprukaRef: audit.kaprukaRef };
   }
 
   // 2) Broad/browse fallback — only reached for a short, generic query where

@@ -68,14 +68,37 @@ function buildTable(list) {
 // prices. Cleared whenever a plain name/description search runs instead.
 let kaprukaRef = null;
 
-function kaprukaRefBlock() {
-  if (!kaprukaRef) return '';
-  const priceHtml = kaprukaRef.price != null ? fmtPrice(kaprukaRef) : 'price not found';
+function kaprukaRefBlock(ref) {
+  if (!ref) return '';
+  const priceHtml = ref.price != null ? fmtPrice(ref) : 'price not found';
   return `<div class="card" style="margin-bottom:16px">
     <div class="ctx">Kapruka price</div>
     <div><strong><span class="price">${priceHtml}</span></strong>
-      — <a href="${escapeHtml(kaprukaRef.url)}" target="_blank" rel="noopener">${escapeHtml(kaprukaRef.name || 'view on Kapruka')}</a>
+      — <a href="${escapeHtml(ref.url)}" target="_blank" rel="noopener">${escapeHtml(ref.name || 'view on Kapruka')}</a>
     </div>
+  </div>`;
+}
+
+// Automatic AI "what should Kapruka's price actually be" call -- runs
+// server-side on every single-product database match with a real Kapruka
+// price and at least one competitor price (see price-insight.js), so this
+// just renders whatever the response already carries, no separate request.
+const PRICE_INSIGHT_LABEL = {
+  overpriced: { text: '⚠️ Overpriced vs market', cls: 'status-warn' },
+  competitive: { text: '✓ Competitive', cls: 'status-ok' },
+  underpriced: { text: '💰 Underpriced vs market', cls: 'status-ok' },
+};
+function priceInsightBlock(insight) {
+  if (!insight) return '';
+  const label = PRICE_INSIGHT_LABEL[insight.verdict] || PRICE_INSIGHT_LABEL.competitive;
+  const ideal = insight.idealPriceLkr != null
+    ? `LKR ${Number(insight.idealPriceLkr).toLocaleString('en-LK')}`
+    : '—';
+  return `<div class="card" style="margin-bottom:16px">
+    <div class="ctx">🤖 AI price insight</div>
+    <div style="margin-top:2px"><span class="${label.cls}">${label.text}</span>
+      — suggested price: <strong><span class="price">${ideal}</span></strong></div>
+    ${insight.reasoning ? `<div class="ctx" style="margin-top:6px">${escapeHtml(insight.reasoning)}</div>` : ''}
   </div>`;
 }
 
@@ -116,15 +139,20 @@ function render(data) {
 
   const dbResults = data.results || [];
   const discovered = data.discovered || [];
+  // Prefer the ref resolved server-side for this search (a plain name-typed
+  // query that hit a database single-mode match) over the client-tracked
+  // one (set only when the user pasted a Kapruka URL) -- both represent the
+  // same thing, this just covers the case the server can now also supply it.
+  const ref = data.kaprukaRef || kaprukaRef;
   // searchDaraz() tries several query variations and can return several
   // matches (e.g. the same helmet from more than one seller) — filter out
   // the error/no_result placeholder entries, everything else is a real row.
   const darazRows = (data.daraz || []).filter((r) => r.status && r.status !== 'error' && r.status !== 'no_result');
   if (dbResults.length === 0 && discovered.length === 0 && darazRows.length === 0) {
-    out.innerHTML = kaprukaRefBlock() + '<p class="empty">No results.</p>';
+    out.innerHTML = kaprukaRefBlock(ref) + '<p class="empty">No results.</p>';
     return;
   }
-  let html = kaprukaRefBlock();
+  let html = kaprukaRefBlock(ref) + priceInsightBlock(data.priceInsight);
   if (data.source === 'database') {
     html += '<h3 style="margin:24px 0 4px">Matched from our database</h3>' + buildTable(dbResults);
     html += `<p class="note" style="margin-top:14px">

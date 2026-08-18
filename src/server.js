@@ -7,6 +7,7 @@ import { loadCategories, runMatch, addCategorySites, OTHER_CATEGORY } from './pi
 import { searchDatabase } from './checker/db-search.js';
 import { searchDaraz } from './daraz.js';
 import { runComparison } from './compare/run.js';
+import { recommendPrice } from './price-insight.js';
 import { listPartners, addPartner, siteLabel, getPartner, requestRefresh } from './compare/partners.js';
 import {
   probeKaprukaSource,
@@ -162,9 +163,22 @@ async function runCheckerSearch(query, onProgress = () => {}) {
   }]);
   const db = await searchDatabase(query);
   if (db.hasMatch && db.mode === 'single') {
+    // Automatic "ideal price to set" insight -- runs on every single-product
+    // search that has both a Kapruka price and at least one real competitor
+    // price, no manual trigger (unlike the Overpriced dashboard's batch
+    // fairness review, which is deliberately on-demand for cost reasons —
+    // this is one call per search a person actually makes, not one per item
+    // across the whole catalogue).
+    const competitors = db.results
+      .filter((r) => r.price != null && (r.status === 'ok' || r.status === 'low_confidence'))
+      .map((r) => ({ site: r.site, price: r.price, matchRate: r.matchRate }));
+    const priceInsightPromise = db.kaprukaRef?.price && competitors.length
+      ? recommendPrice(db.kaprukaRef, competitors)
+      : Promise.resolve(null);
+    const [daraz, priceInsight] = await Promise.all([darazPromise, priceInsightPromise]);
     return {
       category: 'Database', query, results: db.results, discovered: [],
-      source: 'database', mode: 'single', daraz: await darazPromise,
+      source: 'database', mode: 'single', daraz, kaprukaRef: db.kaprukaRef, priceInsight,
     };
   }
   if (db.hasMatch && db.mode === 'browse') {
