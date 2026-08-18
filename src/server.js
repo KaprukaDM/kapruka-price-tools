@@ -270,13 +270,16 @@ app.get('/api/partners', async (_req, res) => {
 const COMPARE_PROGRESS = new Map(); // partnerId -> { lines: string[], startedAt: number }
 
 // Only this local machine (confirmed to get correct LKR pricing from
-// Kapruka) should ever scrape live. Set SCRAPE_ON_ADD=1 in .env on a
-// confirmed-good-geo host to have adding a partner kick off an immediate
-// background scrape for faster turnaround; leave it unset everywhere else
-// (e.g. the VPS, confirmed to get USD pricing) so a new partner there just
-// waits for the scheduled job (src/tools/refresh-all-partners.js) to pick it
-// up from the good host instead.
+// Kapruka) should ever scrape live. SCRAPE_ON_ADD=1 in .env marks a host as
+// that confirmed-good-geo machine — used both to have adding a partner kick
+// off an immediate background scrape (below), and as the general gate on
+// refreshAllPartners() doing any live scraping at all (see there). Leave it
+// unset everywhere else (e.g. the VPS, confirmed to get USD pricing) so that
+// host never scrapes live — a new partner, or a bulk refresh, added/requested
+// there just queues a `refresh_requested_at` for the scheduled job
+// (src/tools/refresh-all-partners.js) to pick up from the good host instead.
 const SCRAPE_ON_ADD = process.env.SCRAPE_ON_ADD === '1';
+const TRUSTED_SCRAPE_HOST = SCRAPE_ON_ADD;
 
 // Fire-and-forget: scrape one partner and save the result, tracking progress
 // under its id the same way /api/compare/progress already exposes. Used both
@@ -530,8 +533,15 @@ app.get('/api/overpriced', async (_req, res) => {
 
 app.post('/api/overpriced/refresh', async (_req, res) => {
   try {
-    await refreshAllPartners('manual');
-    res.json({ ...(await overpricedReport()), refreshing: false });
+    const result = await refreshAllPartners('manual');
+    res.json({
+      ...(await overpricedReport()),
+      refreshing: false,
+      queued: result?.queued ?? null,
+      message: result?.queued
+        ? `This host doesn't scrape live (bad Kapruka geo-pricing) — queued ${result.queued} stores for the trusted machine's scheduled job to pick up within 15 minutes.`
+        : null,
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -693,19 +703,34 @@ const DAILY_MS = 24 * 60 * 60 * 1000;
 const REFRESH_STATE = { running: false, lastRunAt: null };
 
 async function refreshAllPartners(reason) {
+  // Never live-scrape from a host that isn't confirmed-good-geo (see
+  // TRUSTED_SCRAPE_HOST above) — Kapruka would serve USD instead of LKR, and
+  // a force-refresh would silently overwrite good stored data with
+  // price-missing results for every partner. Instead, queue a refresh
+  // request per partner (the same Supabase flag the single-store Refresh
+  // button writes) so the scheduled job on the trusted host picks them up.
+  if (!TRUSTED_SCRAPE_HOST) {
+    const partners = await listPartners();
+    console.log(`↻ Not a trusted-geo host — queuing ${partners.length} refresh requests instead of scraping (${reason})`);
+    await Promise.all(partners.map((p) => requestRefresh(p.id)));
+    REFRESH_STATE.lastRunAt = new Date().toISOString();
+    return { queued: partners.length };
+  }
   if (REFRESH_STATE.running) {
     console.log('↻ refresh already in progress, skipping');
-    return;
+    return { skipped: true };
   }
   REFRESH_STATE.running = true;
   const startedAt = Date.now();
   try {
     const partners = await listPartners();
     console.log(`↻ Refreshing ${partners.length} partner comparisons (${reason})…`);
+    let refreshed = 0;
     for (const p of partners) {
       try {
         const data = await runComparison({ partnerId: p.id, force: true });
         if (!data.cached) await saveComparisonRun(data);
+        refreshed += 1;
         console.log(`  ✓ ${p.name}: ${data.summary.kaprukaHigher} overpriced of ${data.summary.matched} matched`);
       } catch (err) {
         console.warn(`  ! ${p.name}: ${err.message}`);
@@ -713,6 +738,7 @@ async function refreshAllPartners(reason) {
     }
     REFRESH_STATE.lastRunAt = new Date().toISOString();
     console.log(`↻ Refresh done in ${Math.round((Date.now() - startedAt) / 1000)}s`);
+    return { refreshed };
   } finally {
     REFRESH_STATE.running = false;
   }

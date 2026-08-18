@@ -323,6 +323,7 @@ async function refreshNow() {
     if (!res.ok) throw new Error(data.error || 'refresh failed');
     DATA = annotateFairness(data);
     paint();
+    if (data.message) alert(data.message);
   } catch (err) {
     alert('Refresh failed: ' + err.message);
   } finally {
