@@ -27,6 +27,8 @@ import {
   addRemovedProduct,
   deleteRemovedProduct,
   removedUrlSet,
+  listDiscoveredSites,
+  setDiscoveredSiteStatus,
 } from './db.js';
 import { summarize } from './compare/matcher.js';
 import {
@@ -35,6 +37,7 @@ import {
   exportProductsCsv,
   exportOverpricedCsv,
   overpricedReport,
+  runFairnessReview,
   allProductsOverpricedReport,
   exportAllProductsOverpricedCsv,
   stockMismatchReport,
@@ -83,6 +86,48 @@ app.post('/api/categories', async (req, res) => {
       return res.status(400).json({ error: 'Those links did not resolve to any new sites (invalid URL or already added).' });
     }
     res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---- Discovered-sites review queue ----------------------------------------
+// Domains the Price Checker's web-search discovery step (serp.js's
+// getShoppingCandidates(), logged from pipeline.js) keeps turning up that
+// aren't a curated category site yet. A human reviews and approves/rejects
+// each one here rather than it happening automatically — see
+// discovered-sites.html.
+app.get('/api/discovered-sites', async (req, res) => {
+  try {
+    res.json(await listDiscoveredSites(req.query.status || null));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Approve: add the site to the given category's curated scrape list (same
+// mechanism as /api/categories above) using its sample URL, then mark it
+// approved so it drops off the pending queue.
+app.post('/api/discovered-sites/:id/approve', async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const category = (req.body?.category || '').trim();
+    if (!category) return res.status(400).json({ error: 'A category is required.' });
+    const site = (await listDiscoveredSites()).find((s) => s.id === id);
+    if (!site) return res.status(404).json({ error: 'Discovered site not found.' });
+    const sampleLink = site.sampleUrl || `https://${site.domain}`;
+    const result = await addCategorySites(category, [sampleLink]);
+    await setDiscoveredSiteStatus(id, 'approved');
+    res.json({ ...result, domain: site.domain, category });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/discovered-sites/:id/reject', async (req, res) => {
+  try {
+    await setDiscoveredSiteStatus(Number(req.params.id), 'rejected');
+    res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -487,6 +532,21 @@ app.post('/api/overpriced/refresh', async (_req, res) => {
   try {
     await refreshAllPartners('manual');
     res.json({ ...(await overpricedReport()), refreshing: false });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// AI fairness review — judges whether an overpriced item is a genuine
+// problem or has a plausible explanation (partner clearance sale, bundle,
+// questionable match). Reviews a batch of not-yet-reviewed items (biggest
+// overcharge first) and persists each verdict, so repeat calls only ever
+// pay for the items still unreviewed. See fairness-review.js.
+app.post('/api/overpriced/fairness-review', async (req, res) => {
+  try {
+    const limit = Number(req.body?.limit) || 20;
+    const result = await runFairnessReview(limit);
+    res.json({ ...result, ...(await overpricedReport()) });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#402970" />
+  <link rel="icon" href="https://www.kapruka.com/static/icons/favicon.ico" />
+  <title>Kapruka · Discovered Sites</title>
+  <link rel="stylesheet" href="theme.css" />
+  <style>
+    .cards { display:flex; flex-wrap:wrap; gap:12px; margin: 6px 0 22px; }
+    .stat { background:#fff; border:1px solid var(--line); border-radius:12px; padding:14px 18px;
+            min-width:150px; box-shadow:0 1px 3px rgba(64,41,112,.06); }
+    .stat .n { font-size:26px; font-weight:800; color:var(--purple-dk); line-height:1.1; }
+    .stat .l { font-size:11px; color:var(--mut); text-transform:uppercase; letter-spacing:.04em; margin-top:3px; }
+    .tabs2 { display:flex; gap:8px; margin-bottom:14px; }
+    .tabs2 button { margin-top:0; }
+    .tabs2 button.active { background:var(--purple); color:#fff; }
+    .row-actions { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+    .row-actions input[type=text] { max-width:180px; }
+    td.domain { font-weight:700; }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="bar">
+      <img class="logo-mark" src="https://www.kapruka.com/static/icons/apple-touch-icon-180x180.png?v2"
+           alt="Kapruka" onerror="this.style.display='none'" />
+      <span class="logo">kapruka<span class="dot">.</span></span>
+      <span class="pill">Discovered Sites</span>
+      <span class="tag"><a href="index.html">← Menu</a></span>
+    </div>
+  </header>
+
+  <div class="wrap">
+    <h1>Discovered sites review queue</h1>
+    <p class="sub">Every time the Price Checker's web-search discovery finds a Sri Lankan shop that isn't already a
+       curated scrape target, it gets logged here instead of being added automatically. Approve the useful ones —
+       that adds the domain to the given category's permanent scrape list (same as the "Add category" flow) — or
+       reject noise (marketplaces, one-off pages, irrelevant sites).</p>
+
+    <div id="status" class="card"><span class="spin"></span>Loading discovered sites…</div>
+
+    <div id="app" style="display:none">
+      <div class="cards" id="cards"></div>
+      <div class="tabs2">
+        <button type="button" class="ghost" id="tabPending" data-status="pending">Pending</button>
+        <button type="button" class="ghost" id="tabApproved" data-status="approved">Approved</button>
+        <button type="button" class="ghost" id="tabRejected" data-status="rejected">Rejected</button>
+      </div>
+      <div id="table"></div>
+    </div>
+  </div>
+
+  <script src="discovered-sites.js"></script>
+</body>
+</html>

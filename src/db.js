@@ -118,6 +118,32 @@ function rowToRemoved(r) {
   };
 }
 
+// Shared shape for an AI fairness-review row across all three backends.
+function rowToFairnessReview(r) {
+  return {
+    kaprukaUrl: r.kapruka_url,
+    partnerUrl: r.partner_url,
+    verdict: r.verdict,
+    reasoning: r.reasoning || '',
+    reviewedAt: r.reviewed_at,
+  };
+}
+
+// Shared shape for a discovered-site row across all three backends.
+function rowToDiscoveredSite(r) {
+  return {
+    id: r.id,
+    domain: r.domain,
+    category: r.category || '',
+    sampleUrl: r.sample_url || '',
+    sampleQuery: r.sample_query || '',
+    timesSeen: r.times_seen,
+    firstSeen: r.first_seen,
+    lastSeen: r.last_seen,
+    status: r.status,
+  };
+}
+
 // Shared shape for a partner row across all three backends.
 function rowToPartner(r) {
   return {
@@ -175,6 +201,20 @@ export async function removedUrlSet() {
   const rows = await listRemovedProducts();
   return new Set(rows.map((r) => r.kaprukaUrl));
 }
+
+// AI "is this overcharge actually a problem" verdicts for the Overpriced
+// dashboard — cached per (kaprukaUrl, partnerUrl) pair so re-loading the
+// dashboard doesn't re-spend an LLM call on every item every time.
+export const listFairnessReviews = () => backend.listFairnessReviews();
+export const upsertFairnessReview = (row) => backend.upsertFairnessReview(row);
+
+// Domains the web-search discovery step keeps turning up that aren't yet a
+// curated category site — a review queue (see discovered-sites.html) so a
+// human decides whether to promote one to the permanent scrape list, rather
+// than it happening automatically.
+export const upsertDiscoveredSite = (row) => backend.upsertDiscoveredSite(row);
+export const listDiscoveredSites = (status) => backend.listDiscoveredSites(status);
+export const setDiscoveredSiteStatus = (id, status) => backend.setDiscoveredSiteStatus(id, status);
 
 // ---------------------------------------------------------------------------
 // Postgres (Supabase) backend
@@ -300,12 +340,70 @@ async function makePostgresBackend(connectionString) {
       snapshot      JSONB
     );
     ALTER TABLE removed_products ADD COLUMN IF NOT EXISTS removed_by TEXT;
+    CREATE TABLE IF NOT EXISTS overpriced_fairness_reviews (
+      id             BIGSERIAL PRIMARY KEY,
+      kapruka_url    TEXT NOT NULL,
+      partner_url    TEXT NOT NULL,
+      verdict        TEXT NOT NULL,
+      reasoning      TEXT,
+      reviewed_at    TEXT NOT NULL,
+      UNIQUE (kapruka_url, partner_url)
+    );
+    CREATE TABLE IF NOT EXISTS discovered_sites (
+      id            BIGSERIAL PRIMARY KEY,
+      domain        TEXT NOT NULL UNIQUE,
+      category      TEXT,
+      sample_url    TEXT,
+      sample_query  TEXT,
+      times_seen    INTEGER NOT NULL DEFAULT 1,
+      first_seen    TEXT NOT NULL,
+      last_seen     TEXT NOT NULL,
+      status        TEXT NOT NULL DEFAULT 'pending'
+    );
   `);
 
   return {
     async listRemovedProducts() {
       const { rows } = await pool.query(`SELECT * FROM removed_products ORDER BY created_at DESC`);
       return rows.map(rowToRemoved);
+    },
+
+    async listFairnessReviews() {
+      const { rows } = await pool.query(`SELECT * FROM overpriced_fairness_reviews`);
+      return rows.map(rowToFairnessReview);
+    },
+
+    async upsertFairnessReview({ kaprukaUrl, partnerUrl, verdict, reasoning }) {
+      await pool.query(
+        `INSERT INTO overpriced_fairness_reviews (kapruka_url, partner_url, verdict, reasoning, reviewed_at)
+         VALUES ($1,$2,$3,$4,$5)
+         ON CONFLICT (kapruka_url, partner_url) DO UPDATE SET
+           verdict = EXCLUDED.verdict, reasoning = EXCLUDED.reasoning, reviewed_at = EXCLUDED.reviewed_at`,
+        [kaprukaUrl, partnerUrl, verdict, reasoning || null, nowIso()],
+      );
+    },
+
+    async upsertDiscoveredSite({ domain, category, sampleUrl, sampleQuery }) {
+      const now = nowIso();
+      await pool.query(
+        `INSERT INTO discovered_sites (domain, category, sample_url, sample_query, times_seen, first_seen, last_seen, status)
+         VALUES ($1,$2,$3,$4,1,$5,$5,'pending')
+         ON CONFLICT (domain) DO UPDATE SET
+           times_seen = discovered_sites.times_seen + 1, last_seen = EXCLUDED.last_seen,
+           category = COALESCE(discovered_sites.category, EXCLUDED.category)`,
+        [domain, category || null, sampleUrl || null, sampleQuery || null, now],
+      );
+    },
+
+    async listDiscoveredSites(status) {
+      const { rows } = status
+        ? await pool.query(`SELECT * FROM discovered_sites WHERE status = $1 ORDER BY times_seen DESC`, [status])
+        : await pool.query(`SELECT * FROM discovered_sites ORDER BY times_seen DESC`);
+      return rows.map(rowToDiscoveredSite);
+    },
+
+    async setDiscoveredSiteStatus(id, status) {
+      await pool.query(`UPDATE discovered_sites SET status = $1 WHERE id = $2`, [status, id]);
     },
 
     async addRemovedProduct({ kaprukaUrl, name, category, partnerName, reason, removedBy, sourcePage, snapshot }) {
@@ -724,6 +822,26 @@ async function makePostgresBackend(connectionString) {
 //   );
 //   -- Already had a removed_products table before removed_by existed? Run:
 //   -- ALTER TABLE removed_products ADD COLUMN IF NOT EXISTS removed_by TEXT;
+//   CREATE TABLE IF NOT EXISTS overpriced_fairness_reviews (
+//     id             BIGSERIAL PRIMARY KEY,
+//     kapruka_url    TEXT NOT NULL,
+//     partner_url    TEXT NOT NULL,
+//     verdict        TEXT NOT NULL,
+//     reasoning      TEXT,
+//     reviewed_at    TEXT NOT NULL,
+//     UNIQUE (kapruka_url, partner_url)
+//   );
+//   CREATE TABLE IF NOT EXISTS discovered_sites (
+//     id            BIGSERIAL PRIMARY KEY,
+//     domain        TEXT NOT NULL UNIQUE,
+//     category      TEXT,
+//     sample_url    TEXT,
+//     sample_query  TEXT,
+//     times_seen    INTEGER NOT NULL DEFAULT 1,
+//     first_seen    TEXT NOT NULL,
+//     last_seen     TEXT NOT NULL,
+//     status        TEXT NOT NULL DEFAULT 'pending'
+//   );
 //   -- The static dashboard (GitHub Pages) reads this table directly with a
 //   -- public anon key, so it needs RLS enabled with a public SELECT policy:
 //   ALTER TABLE intl_gift_snapshots ENABLE ROW LEVEL SECURITY;
@@ -815,6 +933,67 @@ async function makeSupabaseRestBackend(baseUrl, serviceKey) {
 
     async deleteRemovedProduct(id) {
       await restFetch(`/removed_products?id=eq.${encodeURIComponent(id)}`, { method: 'DELETE' });
+    },
+
+    async listFairnessReviews() {
+      const rows = await restFetch('/overpriced_fairness_reviews?select=*');
+      return rows.map(rowToFairnessReview);
+    },
+
+    async upsertFairnessReview({ kaprukaUrl, partnerUrl, verdict, reasoning }) {
+      await restFetch('/overpriced_fairness_reviews?on_conflict=kapruka_url,partner_url', {
+        method: 'POST',
+        headers: { Prefer: 'resolution=merge-duplicates' },
+        body: JSON.stringify({
+          kapruka_url: kaprukaUrl,
+          partner_url: partnerUrl,
+          verdict,
+          reasoning: reasoning || null,
+          reviewed_at: nowIso(),
+        }),
+      });
+    },
+
+    // PostgREST has no server-side "increment on conflict" for a plain
+    // upsert (no arbitrary SQL expressions in the request body), so this is
+    // read-then-write: low-stakes, low-frequency (one call per newly-
+    // discovered domain per search), so the tiny race window on a
+    // simultaneous first-sighting from two concurrent searches isn't worth
+    // the complexity of a real atomic increment.
+    async upsertDiscoveredSite({ domain, category, sampleUrl, sampleQuery }) {
+      const now = nowIso();
+      const existing = await restFetch(`/discovered_sites?select=id,times_seen,category&domain=eq.${encodeURIComponent(domain)}&limit=1`);
+      if (existing.length) {
+        await restFetch(`/discovered_sites?id=eq.${existing[0].id}`, {
+          method: 'PATCH',
+          body: JSON.stringify({
+            times_seen: existing[0].times_seen + 1,
+            last_seen: now,
+            category: existing[0].category || category || null,
+          }),
+        });
+      } else {
+        await restFetch('/discovered_sites', {
+          method: 'POST',
+          body: JSON.stringify({
+            domain, category: category || null, sample_url: sampleUrl || null, sample_query: sampleQuery || null,
+            times_seen: 1, first_seen: now, last_seen: now, status: 'pending',
+          }),
+        });
+      }
+    },
+
+    async listDiscoveredSites(status) {
+      const filter = status ? `&status=eq.${encodeURIComponent(status)}` : '';
+      const rows = await restFetch(`/discovered_sites?select=*&order=times_seen.desc${filter}`);
+      return rows.map(rowToDiscoveredSite);
+    },
+
+    async setDiscoveredSiteStatus(id, status) {
+      await restFetch(`/discovered_sites?id=eq.${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status }),
+      });
     },
 
     async upsertCompetitorProducts(siteDomain, products, category = null) {
@@ -1229,6 +1408,26 @@ async function makeSqliteBackend() {
       source_page   TEXT,
       snapshot_json TEXT
     );
+    CREATE TABLE IF NOT EXISTS overpriced_fairness_reviews (
+      id             INTEGER PRIMARY KEY AUTOINCREMENT,
+      kapruka_url    TEXT NOT NULL,
+      partner_url    TEXT NOT NULL,
+      verdict        TEXT NOT NULL,
+      reasoning      TEXT,
+      reviewed_at    TEXT NOT NULL,
+      UNIQUE (kapruka_url, partner_url)
+    );
+    CREATE TABLE IF NOT EXISTS discovered_sites (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      domain        TEXT NOT NULL UNIQUE,
+      category      TEXT,
+      sample_url    TEXT,
+      sample_query  TEXT,
+      times_seen    INTEGER NOT NULL DEFAULT 1,
+      first_seen    TEXT NOT NULL,
+      last_seen     TEXT NOT NULL,
+      status        TEXT NOT NULL DEFAULT 'pending'
+    );
   `);
 
   const rowToRemovedSqlite = (r) => ({
@@ -1253,6 +1452,23 @@ async function makeSqliteBackend() {
       partner_name = excluded.partner_name, reason = excluded.reason, removed_by = excluded.removed_by,
       source_page = excluded.source_page, snapshot_json = excluded.snapshot_json`);
   const delRemoved = db.prepare(`DELETE FROM removed_products WHERE id = ?`);
+
+  const selFairnessReviews = db.prepare(`SELECT * FROM overpriced_fairness_reviews`);
+  const upsertFairness = db.prepare(`
+    INSERT INTO overpriced_fairness_reviews (kapruka_url, partner_url, verdict, reasoning, reviewed_at)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT (kapruka_url, partner_url) DO UPDATE SET
+      verdict = excluded.verdict, reasoning = excluded.reasoning, reviewed_at = excluded.reviewed_at`);
+
+  const selDiscoveredByDomain = db.prepare(`SELECT * FROM discovered_sites WHERE domain = ?`);
+  const selDiscoveredAll = db.prepare(`SELECT * FROM discovered_sites ORDER BY times_seen DESC`);
+  const selDiscoveredByStatus = db.prepare(`SELECT * FROM discovered_sites WHERE status = ? ORDER BY times_seen DESC`);
+  const insDiscovered = db.prepare(`
+    INSERT INTO discovered_sites (domain, category, sample_url, sample_query, times_seen, first_seen, last_seen, status)
+    VALUES (?, ?, ?, ?, 1, ?, ?, 'pending')`);
+  const updDiscoveredSeen = db.prepare(`
+    UPDATE discovered_sites SET times_seen = times_seen + 1, last_seen = ?, category = COALESCE(category, ?) WHERE domain = ?`);
+  const updDiscoveredStatus = db.prepare(`UPDATE discovered_sites SET status = ? WHERE id = ?`);
 
   const upsertCompetitorProduct = db.prepare(`
     INSERT INTO competitor_products (site_domain, site_name, product_url, product_name, price_lkr, scraped_at, category)
@@ -1334,6 +1550,32 @@ async function makeSqliteBackend() {
 
     async deleteRemovedProduct(id) {
       delRemoved.run(id);
+    },
+
+    async listFairnessReviews() {
+      return selFairnessReviews.all().map(rowToFairnessReview);
+    },
+
+    async upsertFairnessReview({ kaprukaUrl, partnerUrl, verdict, reasoning }) {
+      upsertFairness.run(kaprukaUrl, partnerUrl, verdict, reasoning || null, nowIso());
+    },
+
+    async upsertDiscoveredSite({ domain, category, sampleUrl, sampleQuery }) {
+      const now = nowIso();
+      const existing = selDiscoveredByDomain.get(domain);
+      if (existing) {
+        updDiscoveredSeen.run(now, category || null, domain);
+      } else {
+        insDiscovered.run(domain, category || null, sampleUrl || null, sampleQuery || null, now, now);
+      }
+    },
+
+    async listDiscoveredSites(status) {
+      return (status ? selDiscoveredByStatus.all(status) : selDiscoveredAll.all()).map(rowToDiscoveredSite);
+    },
+
+    async setDiscoveredSiteStatus(id, status) {
+      updDiscoveredStatus.run(status, id);
     },
 
     async upsertCompetitorProducts(siteDomain, products, category = null) {

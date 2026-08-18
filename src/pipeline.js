@@ -11,6 +11,7 @@ import { scoreMatch, scoreIdentity } from './matcher.js';
 import { getSiteScraper, scrapeByPlatform } from './sites/index.js';
 import { parseStorage } from './variant.js';
 import { tryCatalogFallback } from './catalog-fallback.js';
+import { upsertDiscoveredSite } from './db.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CATEGORIES_PATH = join(__dirname, '..', 'config', 'categories.json');
@@ -317,6 +318,18 @@ export async function runMatch(category, query, onProgress = () => {}) {
     discoveryLimit,
   ).then(({ sites: shops }) => {
     onProgress({ type: 'discoveredTotal', count: shops.length });
+    // Best-effort logging for the discovered-sites review queue (see
+    // discovered-sites.html) — a human decides whether a site that keeps
+    // turning up is worth promoting to a permanent curated scrape target.
+    // Fire-and-forget: never let a logging failure affect the actual search.
+    for (const s of shops) {
+      upsertDiscoveredSite({
+        domain: s.domain,
+        category: isOther ? null : category,
+        sampleUrl: s.url,
+        sampleQuery: matchQuery.name,
+      }).catch(() => {});
+    }
     return Promise.all(
       shops.map((s) => {
         const site = { name: prettyName(s.domain), domain: s.domain };
