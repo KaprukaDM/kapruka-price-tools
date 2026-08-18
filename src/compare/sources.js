@@ -16,6 +16,7 @@
 import * as cheerio from 'cheerio';
 import { decodeEntities } from './normalize.js';
 import { convertToLkr } from './fx.js';
+import { index } from './matcher.js';
 
 // Some product names are mojibake: real UTF-8 punctuation got mis-decoded
 // (sometimes twice), leaving clusters like [A-hat|a-hat]+euro+quote. The lead
@@ -368,6 +369,71 @@ function parseKaprukaPage(html) {
     out.push({ name, price, url: href, inStock });
   });
   return out;
+}
+
+// How much of the query's own tokens show up in a candidate title. One-
+// directional and deliberately not run through matcher.js's score() or
+// audit-scoring.js's scoreCandidate() -- both are tuned for cross-site
+// IDENTITY matching (near-duplicate SKU across two catalogues) and reject
+// on any of several narrower grounds that don't apply here: matcher.js's
+// score() requires the CANDIDATE's tokens be near-fully contained in the
+// query too (fails on any real listing, which always carries extra words
+// like "MagSafe"/"Clear"/"Sri Lanka"), and scoreCandidate()'s
+// accessoryMismatch() treats "case" and "cover" as different accessory
+// categories (rejects "iPhone 12 cover" against a real "...Clear Case"
+// listing, confirmed live). This just ranks Kapruka's OWN already-
+// relevance-sorted search results by query-token coverage -- Kapruka's own
+// search engine did the hard filtering; this only needs to pick the best
+// of what it already returned.
+function queryCoverage(qTokens, cTokens) {
+  if (!qTokens.size) return 0;
+  let matched = 0;
+  for (const t of qTokens) if (cTokens.has(t)) matched++;
+  return matched / qTokens.size;
+}
+
+// Live search of Kapruka's OWN site (kapruka.com/lk/find_online/<query>) for
+// a product by name -- same server-rendered catalogue-card markup as a
+// partner's storefront page, so parseKaprukaPage() above reads it directly,
+// no separate parser needed.
+//
+// Built for the Price Checker's price-insight step: that needs Kapruka's
+// OWN current price for whatever was typed, but price_audit_items (the
+// pre-scraped/audited table) only has a price for products someone has
+// already run a category audit against -- a plain, never-audited query
+// (e.g. "iPhone 12 cover") had no Kapruka price to compare against at all,
+// so no recommendation could ever be shown for it. This covers every
+// search, not just ones that happen to already be in that table.
+// Full containment, not "most" tokens -- a partial-coverage bar let "iPhone
+// 17 MagSafe Cover" satisfy a "iPhone 12 cover" query at 2/3 (iphone+cover)
+// purely off two generic words, without the model number "12" itself ever
+// matching. For a short query every word carries weight, especially the
+// one that's actually a model number -- require all of them.
+const KAPRUKA_MATCH_MIN_COVERAGE = 1;
+
+export async function findKaprukaProduct(name) {
+  const url = `https://www.kapruka.com/lk/find_online/${encodeURIComponent(name)}`;
+  let html;
+  try {
+    html = await fetchText(url);
+  } catch {
+    return null;
+  }
+  const candidates = parseKaprukaPage(html).filter((p) => p.price != null);
+  if (!candidates.length) return null;
+
+  const [qIndexed] = index([{ name, url: 'query' }], false);
+  const indexed = index(candidates, false);
+  // Kapruka's own search already relevance-sorts its results -- take the
+  // first one clearing the coverage floor, not the "best-scoring" one
+  // (maximizing token overlap can prefer a longer, coincidentally-wordier
+  // listing over the genuinely most relevant top result).
+  for (const c of indexed) {
+    if (queryCoverage(qIndexed._tokens, c._tokens) >= KAPRUKA_MATCH_MIN_COVERAGE) {
+      return { name: c.name, url: c.url.startsWith('http') ? c.url : `https://www.kapruka.com${c.url}`, price: c.price };
+    }
+  }
+  return null;
 }
 
 // `source` is a descriptor from parseKaprukaSource(), or a raw link/slug string.

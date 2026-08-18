@@ -14,6 +14,7 @@ import {
   detectPartnerPlatform,
   parseKaprukaSource,
   fetchKaprukaProduct,
+  findKaprukaProduct,
 } from './compare/sources.js';
 import {
   savePriceCheck,
@@ -162,6 +163,13 @@ async function runCheckerSearch(query, onProgress = () => {}) {
     flags: ['daraz_failed'],
     note: err.message,
   }]);
+  // Live fallback for Kapruka's own current price -- price_audit_items (the
+  // pre-scraped/audited table, used below for a database match) only has a
+  // price for products someone has already run a category audit against, so
+  // a query that's never been audited (most of them) had no Kapruka price to
+  // recommend against at all. Started eagerly alongside Daraz so it costs no
+  // extra latency on whichever branch below ends up needing it.
+  const kaprukaRefPromise = findKaprukaProduct(query.name).catch(() => null);
   const db = await searchDatabase(query);
   if (db.hasMatch && db.mode === 'single') {
     // Automatic "ideal price to set" insight -- runs on every single-product
@@ -172,20 +180,27 @@ async function runCheckerSearch(query, onProgress = () => {}) {
     const competitors = db.results
       .filter((r) => r.price != null && (r.status === 'ok' || r.status === 'low_confidence'))
       .map((r) => ({ site: r.site, price: r.price, matchRate: r.matchRate }));
-    const priceInsightPromise = db.kaprukaRef?.price && competitors.length
-      ? recommendPrice(db.kaprukaRef, competitors)
+    const kaprukaRef = db.kaprukaRef?.price ? db.kaprukaRef : await kaprukaRefPromise;
+    const priceInsightPromise = kaprukaRef?.price && competitors.length
+      ? recommendPrice(kaprukaRef, competitors)
       : Promise.resolve(null);
     const [daraz, priceInsight] = await Promise.all([darazPromise, priceInsightPromise]);
     return {
       category: 'Database', query, results: db.results, discovered: [],
-      source: 'database', mode: 'single', daraz, kaprukaRef: db.kaprukaRef, priceInsight,
+      source: 'database', mode: 'single', daraz, kaprukaRef, priceInsight,
     };
   }
   if (db.hasMatch && db.mode === 'browse') {
     return { category: 'Database', query, products: db.products, source: 'database', mode: 'browse' };
   }
   const out = await runMatch(OTHER_CATEGORY, query, onProgress);
-  return { ...out, source: 'web', mode: 'web', daraz: await darazPromise };
+  const daraz = await darazPromise;
+  const competitors = [...out.results, ...out.discovered, ...daraz]
+    .filter((r) => r.price != null && (r.status === 'ok' || r.status === 'low_confidence'))
+    .map((r) => ({ site: r.site, price: r.price, matchRate: r.matchRate }));
+  const kaprukaRef = competitors.length ? await kaprukaRefPromise : null;
+  const priceInsight = kaprukaRef?.price ? await recommendPrice(kaprukaRef, competitors) : null;
+  return { ...out, source: 'web', mode: 'web', daraz, kaprukaRef, priceInsight };
 }
 
 // Run a price-checker match. Every query is persisted to the database.
