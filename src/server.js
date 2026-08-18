@@ -729,17 +729,28 @@ app.delete('/api/removed-products/:id', async (req, res) => {
   }
 });
 
-// ---- Daily auto-refresh of every partner comparison -----------------------
+// ---- Periodic auto-refresh of every partner comparison ---------------------
 // The Overpriced dashboard reads stored runs, so something must keep them
-// fresh. Once a day (and on startup if the newest run is stale) we re-run every
-// partner's reconciliation and persist it. Set DISABLE_AUTO_REFRESH=1 to turn
-// this off (e.g. in dev, or when a separate scheduled job owns the refresh).
+// fresh. On a fixed interval (and on startup if the newest run is stale) we
+// re-run every partner's reconciliation and persist it. Set
+// DISABLE_AUTO_REFRESH=1 to turn this off (e.g. in dev, or when a separate
+// scheduled job owns the refresh).
+//
+// Was once/24h, which meant a Kapruka price change could sit stale on the
+// dashboard for up to a day even though nothing else was wrong (see the
+// 2026-08-18 3000store/Mac Styler case — a price update on Kapruka's live
+// site simply hadn't been re-scraped yet). Default is now every few hours;
+// override with AUTO_REFRESH_HOURS. Kept well above the trusted host's 15-min
+// pending-request poll (src/tools/refresh-all-partners.js) since this sweep
+// queues/scrapes *every* partner regardless of pending requests, not just
+// the ones flagged — too short a value risks tripping Kapruka's rate limit
+// (see the 429-handling notes in src/compare/sources.js).
 //
 // NOTE: this fetches Kapruka live, so it only yields correct LKR prices when the
 // host is in Sri Lanka (or behind a SL proxy). From abroad Kapruka returns USD,
 // which the catalogue parser drops — those products show as "price missing", not
 // overpriced. See SCRAPE_PROXY in compare/sources.js.
-const DAILY_MS = 24 * 60 * 60 * 1000;
+const AUTO_REFRESH_MS = (Number(process.env.AUTO_REFRESH_HOURS) || 4) * 60 * 60 * 1000;
 const REFRESH_STATE = { running: false, lastRunAt: null };
 
 async function refreshAllPartners(reason) {
@@ -784,18 +795,18 @@ async function refreshAllPartners(reason) {
   }
 }
 
-// Kick a refresh on startup only if the newest stored run is older than a day,
-// so frequent dev restarts don't hammer the live sites. Runs in the background
-// (non-blocking) so the server starts serving immediately.
+// Kick a refresh on startup only if the newest stored run is older than the
+// sweep interval, so frequent dev restarts don't hammer the live sites. Runs
+// in the background (non-blocking) so the server starts serving immediately.
 async function refreshIfStale() {
   try {
     const [newest] = await recentComparisonRuns(1);
     const ageMs = newest ? Date.now() - new Date(newest.created_at).getTime() : Infinity;
-    if (ageMs >= DAILY_MS) {
+    if (ageMs >= AUTO_REFRESH_MS) {
       refreshAllPartners(newest ? 'startup: data is stale' : 'startup: no data yet');
     } else {
-      const hrs = Math.round(ageMs / 3600000);
-      console.log(`↻ Skipping startup refresh — newest run is ${hrs}h old (< 24h).`);
+      const mins = Math.round(ageMs / 60000);
+      console.log(`↻ Skipping startup refresh — newest run is ${mins}min old (< ${AUTO_REFRESH_MS / 3600000}h).`);
     }
   } catch (err) {
     console.warn('! startup refresh check failed:', err.message);
@@ -815,9 +826,10 @@ app.listen(PORT, () => {
   if (!process.env.SERP_API_KEY) console.warn('! SERP_API_KEY is not set');
 
   if (process.env.DISABLE_AUTO_REFRESH === '1') {
-    console.log('↻ Daily auto-refresh disabled (DISABLE_AUTO_REFRESH=1).');
+    console.log('↻ Auto-refresh disabled (DISABLE_AUTO_REFRESH=1).');
   } else {
+    console.log(`↻ Auto-refresh sweep every ${AUTO_REFRESH_MS / 3600000}h (override with AUTO_REFRESH_HOURS).`);
     refreshIfStale();
-    setInterval(() => refreshAllPartners('daily schedule'), DAILY_MS);
+    setInterval(() => refreshAllPartners('scheduled sweep'), AUTO_REFRESH_MS);
   }
 });
