@@ -18,8 +18,10 @@ import { listPartners } from './compare/partners.js';
 // Every call site below uses identical (or no) arguments, so a single
 // args-blind cache per function is safe.
 const REPORT_CACHE_TTL_MS = 5 * 60 * 60 * 1000;
+const REPORT_CACHES = []; // every cached() entry, so invalidateReportCache() can clear them all
 function cached(fn) {
   let entry = null;
+  REPORT_CACHES.push(() => { entry = null; });
   return (...args) => {
     const now = Date.now();
     if (!entry || now - entry.at >= REPORT_CACHE_TTL_MS) {
@@ -34,6 +36,15 @@ const cachedAllComparisonRows = cached(allComparisonRows);
 const cachedGetPriceAuditItems = cached(getPriceAuditItems);
 const cachedRemovedUrlSet = cached(removedUrlSet);
 const cachedAllPriceCheckRows = cached(allPriceCheckRows);
+
+// Removing/restoring a product changes removedUrlSet() immediately (it's a
+// direct DB write, not a scheduled scrape), so the 5h TTL above would leave
+// the Overpriced dashboard's counts/rows showing the removed product for up
+// to 5 hours otherwise. Call this right after a removed_products write so
+// the next dashboard load recomputes from fresh data.
+export function invalidateReportCache() {
+  for (const reset of REPORT_CACHES) reset();
+}
 
 function csvCell(v) {
   if (v == null) return '';

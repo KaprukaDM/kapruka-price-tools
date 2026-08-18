@@ -48,6 +48,7 @@ import {
   priceChangesReport,
   exportPriceChangesCsv,
   productRows,
+  invalidateReportCache,
 } from './export.js';
 import { uaeCompareApiRouter } from './uae-compare/routes.js';
 import { sendWhatsAppMessage, whatsappConfigured } from './notify/whatsapp.js';
@@ -714,6 +715,7 @@ app.post('/api/removed-products', async (req, res) => {
       sourcePage: sourcePage || '',
       snapshot: snapshot || {},
     });
+    invalidateReportCache();
     res.json(row);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -723,6 +725,7 @@ app.post('/api/removed-products', async (req, res) => {
 app.delete('/api/removed-products/:id', async (req, res) => {
   try {
     await deleteRemovedProduct(Number(req.params.id));
+    invalidateReportCache();
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
