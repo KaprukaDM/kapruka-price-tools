@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Kapruka Relevancy Sorter</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <h1>Kapruka Relevancy Sorter</h1>
+    <p class="sub">Paste a Kapruka <code>find_online</code> link, load the current listing, then let AI re-sort it by relevancy.</p>
+  </header>
+
+  <form id="loadForm" class="toolbar">
+    <input id="urlInput" type="url" placeholder="https://www.kapruka.com/lk/find_online/almond" required />
+    <button id="loadBtn" type="submit">Load</button>
+    <button id="sortBtn" type="button" disabled>✨ AI Sort by Relevancy</button>
+    <span id="status" class="status"></span>
+  </form>
+
+  <div id="grid" class="grid"></div>
+
+  <hr class="divider" />
+
+  <section class="bulk">
+    <h2>Bulk AI Sort</h2>
+    <p class="sub">Paste many <code>find_online</code> links (one per line). Each is loaded and AI-sorted; you get an overall relevancy score for the whole batch plus a per-link breakdown.</p>
+    <textarea id="bulkUrls" rows="6" placeholder="https://www.kapruka.com/lk/find_online/almond&#10;https://www.kapruka.com/lk/find_online/cashew&#10;https://www.kapruka.com/lk/find_online/walnut"></textarea>
+    <div class="toolbar">
+      <button id="bulkRunBtn" type="button">Run Bulk AI Sort</button>
+      <span id="bulkStatus" class="status"></span>
+    </div>
+
+    <div id="bulkOverall" class="overall-score" hidden>
+      <div class="score-value" id="bulkOverallValue">--</div>
+      <div class="score-label">overall relevancy score<br /><span id="bulkOverallSub"></span></div>
+    </div>
+
+    <table id="bulkTable" class="bulk-table" hidden>
+      <thead>
+        <tr>
+          <th>#</th><th>Term</th><th>Products</th><th>Avg Relevancy</th><th>High / Med / Low</th><th>Status</th>
+        </tr>
+      </thead>
+      <tbody id="bulkTbody"></tbody>
+    </table>
+
+    <div id="bulkDetail" class="grid"></div>
+  </section>
+
+  <script src="app.js"></script>
+</body>
+</html>

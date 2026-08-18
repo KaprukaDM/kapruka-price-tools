@@ -134,6 +134,24 @@ async function shopifyCatalog(domain) {
 // Union a few single-letter queries so a product missing one letter is still
 // caught (same approach as the limitededition.lk partner adapter).
 const OC_TERMS = ['a', 'e', 'i', 'o', 'u', 's'];
+
+// Listing links carry the current paging state through (…&search=a&limit=100),
+// so the same product reached from two different search terms would otherwise
+// look like two products. Strip ONLY those paging params -- not the whole
+// query string: OpenCart shops that haven't enabled SEO URLs identify the
+// product itself in the query (index.php?route=product/product&product_id=N),
+// so dropping it collapses the entire catalogue onto one URL.
+const OC_PAGING_PARAMS = ['search', 'limit', 'page', 'sort', 'order'];
+function stripOcPaging(href) {
+  try {
+    const u = new URL(href);
+    for (const p of OC_PAGING_PARAMS) u.searchParams.delete(p);
+    return u.toString();
+  } catch {
+    return href;
+  }
+}
+
 async function opencartCatalog(domain) {
   const byUrl = new Map();
   for (const term of OC_TERMS) {
@@ -146,11 +164,11 @@ async function opencartCatalog(domain) {
       let found = 0;
       $('div.product-thumb, div.product-layout').each((_, el) => {
         const $c = $(el);
-        const $a = $c.find('h4 a, .name a, .caption a').first();
+        const $a = $c.find('h4 a, .name a, .product-title a, .caption a').first();
         let href = $a.attr('href');
         if (!href) return;
         if (!href.startsWith('http')) href = new URL(href, `https://${domain}`).toString();
-        href = href.split('?')[0];
+        href = stripOcPaging(href);
         found++;
         if (byUrl.has(href)) return;
         const $price = $c.find('.price').first();
@@ -195,8 +213,12 @@ async function main() {
   const only = onlyArg ? new Set(onlyArg.split('=')[1].split(',')) : null;
 
   console.log(`Storage backend: ${storageKind}${dry ? '  [DRY RUN]' : ''}`);
-  let pending = await listDiscoveredSites('pending');
-  if (only) pending = pending.filter((d) => only.has(d.domain));
+  // Naming a site explicitly means "crawl this one", so look past the pending
+  // filter -- otherwise a site already approved (possibly with a bad partial
+  // catalogue) could never be re-crawled through this tool.
+  let pending = only
+    ? (await listDiscoveredSites()).filter((d) => only.has(d.domain))
+    : await listDiscoveredSites('pending');
   console.log(`Crawling ${pending.length} discovered site(s)…\n`);
 
   let approved = 0;

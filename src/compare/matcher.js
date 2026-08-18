@@ -224,7 +224,25 @@ export function matchCatalogs(kapruka, partner, partnerName) {
       if (sc) candidates.push({ k, p, sc });
     }
   }
-  candidates.sort((a, b) => b.sc.value - a.sc.value);
+  // Torana Music Box's catalogue is dominated by identically-worded listings
+  // (many songs/albums share the same "<Title>" phrasing, differing only by
+  // format/edition), so several partner candidates routinely tie on name
+  // score for one Kapruka product. Breaking that tie by price proximity
+  // (instead of leaving it to whatever order candidates happened to be
+  // pushed in) picks the edition that's actually the same release rather
+  // than a same-named but differently-priced one. Scoped to Torana only —
+  // other partners haven't shown this failure mode and a blanket price
+  // tie-break risks masking genuinely ambiguous name matches elsewhere.
+  const isTorana = partnerName && /torana/i.test(partnerName);
+  candidates.sort((a, b) => {
+    if (b.sc.value !== a.sc.value) return b.sc.value - a.sc.value;
+    if (isTorana) {
+      const da = a.k.price != null && a.p.price != null ? Math.abs(a.k.price - a.p.price) : Infinity;
+      const db = b.k.price != null && b.p.price != null ? Math.abs(b.k.price - b.p.price) : Infinity;
+      if (da !== db) return da - db;
+    }
+    return 0;
+  });
 
   const matched = [];
   const usedKapruka = new Set();
