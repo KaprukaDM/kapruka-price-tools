@@ -130,27 +130,48 @@ function storeOptions() {
   const current = sel.value;
   const category = $('category').value;
   const items = category ? DATA.items.filter((m) => m.category === category) : DATA.items;
-  const byPartner = new Map(); // partnerId -> { name, count }
+  const byPartner = new Map(); // partnerId -> { name, count, offline }
   for (const m of items) {
     if (!m.partnerId) continue;
-    const cur = byPartner.get(m.partnerId) || { name: m.partner, count: 0 };
+    const cur = byPartner.get(m.partnerId) || { name: m.partner, count: 0, offline: m.siteActive === false };
     cur.count++;
     byPartner.set(m.partnerId, cur);
   }
   const ids = [...byPartner.keys()].sort((a, b) => byPartner.get(b).count - byPartner.get(a).count);
   sel.innerHTML = '<option value="">All stores</option>' +
-    ids.map((id) => `<option value="${escapeHtml(id)}">${escapeHtml(byPartner.get(id).name)} · ${byPartner.get(id).count}</option>`).join('');
+    ids.map((id) => {
+      const p = byPartner.get(id);
+      const prefix = p.offline ? '⚠️ ' : '';
+      return `<option value="${escapeHtml(id)}">${prefix}${escapeHtml(p.name)} · ${p.count}</option>`;
+    }).join('');
   sel.value = byPartner.has(current) ? current : '';
+}
+
+// A store whose site was unreachable on its last refresh attempt (see
+// checkSiteActive() in compare/sources.js) -- its rows below are the last
+// known-good comparison, kept on display rather than dropped, but the price
+// may no longer be accurate so it's worth calling out and letting the team
+// filter them out if they'd rather not see possibly-stale data.
+function offlineBanner() {
+  const offline = DATA.partners.filter((p) => p.siteActive === false);
+  if (!offline.length) { $('offlineBanner').innerHTML = ''; return; }
+  const names = offline.map((p) => escapeHtml(p.partnerLabel || p.name)).join(', ');
+  $('offlineBanner').innerHTML = `<div class="offline-banner">
+    ⚠️ <strong>${offline.length} store${offline.length === 1 ? '' : 's'} appear offline</strong>
+    (site unreachable on last check) — showing their last known prices, which may be outdated: ${names}
+  </div>`;
 }
 
 function render() {
   const q = $('search').value.trim().toLowerCase();
   const store = $('store').value;
   const category = $('category').value;
+  const hideOffline = $('hideOffline').checked;
   let rows = DATA.items.filter(
     (m) =>
       (!category || m.category === category) &&
       (!store || m.partnerId === store) &&
+      (!hideOffline || m.siteActive !== false) &&
       (!q || m.name.toLowerCase().includes(q)),
   );
 
@@ -171,7 +192,7 @@ function render() {
       const pct = m.pct == null ? '' : `+${m.pct.toFixed(1)}%`;
       return `<tr class="over">
         <td>${escapeHtml(m.category)}</td>
-        <td><span class="store-pill">${escapeHtml(m.partner)}</span>${m.partnerLabel ? `<div class="ctx">${escapeHtml(m.partnerLabel)}</div>` : ''}</td>
+        <td><span class="store-pill">${escapeHtml(m.partner)}</span>${m.siteActive === false ? ' <span class="badge badge-offline" title="Site was unreachable on last check — prices below may be outdated">⚠️ offline</span>' : ''}${m.partnerLabel ? `<div class="ctx">${escapeHtml(m.partnerLabel)}</div>` : ''}</td>
         <td class="col-product">
           <div class="prod-name">${link(m.kaprukaUrl, m.name)}</div>
           <div class="prod-name prod-partner">${link(m.partnerUrl, m.partnerProductName || m.partnerLabel || '—')}</div>
@@ -234,6 +255,7 @@ function footmeta() {
 
 function paint() {
   statCards(DATA);
+  offlineBanner();
   categoryOptions();
   storeOptions();
   render();
@@ -322,6 +344,7 @@ function exportCsv() {
 $('search').addEventListener('input', () => { PAGE = 1; render(); });
 $('category').addEventListener('change', () => { PAGE = 1; storeOptions(); render(); });
 $('store').addEventListener('change', () => { PAGE = 1; render(); });
+$('hideOffline').addEventListener('change', () => { PAGE = 1; render(); });
 $('exportCsv').addEventListener('click', exportCsv);
 $('refresh').addEventListener('click', refreshNow);
 $('toggleRemoved').addEventListener('click', toggleRemovedSection);

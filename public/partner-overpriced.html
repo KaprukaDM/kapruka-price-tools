@@ -29,6 +29,10 @@
     .over-amt { color:var(--bad); font-weight:700; }
     th.sortable { cursor:pointer; user-select:none; white-space:nowrap; }
     th.sortable:hover { color: var(--purple-dk, #402970); }
+    .offline-banner { background:#fae5e4; border:1px solid var(--bad); color:var(--bad);
+                       border-radius:10px; padding:10px 14px; font-size:13px; margin-bottom:14px; }
+    .offline-banner strong { font-weight:700; }
+    .badge-offline { background:#fae5e4; color:var(--bad); }
   </style>
 </head>
 <body>
@@ -53,10 +57,14 @@
 
     <div id="app" style="display:none">
       <div class="cards" id="cards"></div>
+      <div id="offlineBanner"></div>
 
       <div class="toolbar">
         <select id="category"><option value="">All categories</option></select>
         <select id="store"><option value="">All stores</option></select>
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--mut);cursor:pointer">
+          <input type="checkbox" id="hideOffline" /> Hide offline stores
+        </label>
         <div class="right">
           <input type="search" id="search" placeholder="Filter by product name…" />
           <button class="ghost btn-link" id="exportCsv" type="button">⬇ Export CSV</button>

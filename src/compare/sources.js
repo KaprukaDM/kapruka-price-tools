@@ -165,6 +165,29 @@ function toOrigin(site) {
   return u.origin;
 }
 
+// Is the partner's own website reachable at all -- separate question from
+// "did our scraper understand the page." A catalogue fetch can fail for lots
+// of reasons (layout change, Cloudflare challenge, rate limit) while the site
+// itself is perfectly up; this only answers whether the domain resolves and
+// something answers the connection, so a comparison run can tell "site is
+// down" apart from "site is up but scraping it broke." Any HTTP response
+// (even an error page) means a server answered -- only a network-level
+// failure (DNS, connection refused/reset, TLS, timeout) counts as inactive.
+export async function checkSiteActive(site) {
+  try {
+    const c = new AbortController();
+    const t = setTimeout(() => c.abort(), 15000);
+    try {
+      const r = await fetch(toOrigin(site), { method: 'GET', headers: UA, redirect: 'follow', signal: c.signal });
+      return r.status < 500;
+    } finally {
+      clearTimeout(t);
+    }
+  } catch {
+    return false;
+  }
+}
+
 // ---- Kapruka -------------------------------------------------------------
 
 // Kapruka exposes the same product cards through two listing endpoints. We turn

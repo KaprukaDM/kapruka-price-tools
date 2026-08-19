@@ -311,6 +311,11 @@ export async function overpricedReport() {
     // Team-curated exclusions (e.g. the partner's higher price is explained
     // by a bundled add-on) — see removed_products in db.js.
     const over = (payload.matched || []).filter((m) => m.verdict === 'kapruka_higher' && !removed.has(m.kaprukaUrl));
+    // false only when the store's own website was confirmed unreachable on
+    // the last refresh attempt (see checkSiteActive() in compare/sources.js)
+    // -- the items below are that store's last known-good comparison, kept
+    // on display rather than dropped, but worth flagging as possibly stale.
+    const siteActive = p.siteActive !== false;
     partners.push({
       id: p.id ?? '',
       name: p.name ?? '',
@@ -318,6 +323,7 @@ export async function overpricedReport() {
       overpriced: over.length,
       matched: (payload.matched || []).length,
       generatedAt: at,
+      siteActive,
     });
 
     for (const m of over) {
@@ -338,6 +344,7 @@ export async function overpricedReport() {
         kaprukaUrl: m.kaprukaUrl ?? '',
         partnerUrl: m.partnerUrl ?? '',
         generatedAt: at,
+        siteActive,
       });
     }
   }

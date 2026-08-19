@@ -1,7 +1,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-import { fetchKaprukaCatalog, fetchPartnerCatalog, fetchKaprukaProduct, parseKaprukaSource } from "./sources.js";
+import { fetchKaprukaCatalog, fetchPartnerCatalog, fetchKaprukaProduct, parseKaprukaSource, checkSiteActive } from "./sources.js";
 import { matchCatalogs, summarize } from "./matcher.js";
 import { getPartner } from "./partners.js";
 import { hydrateComparisonResultFromMcp } from "./mcpPrices.js";
@@ -77,22 +77,45 @@ async function writeDiskCache(partnerId, payload) {
   await writeFile(cacheFile(partnerId), JSON.stringify(payload, null, 2), "utf8");
 }
 
-async function compute(partner, log) {
+async function compute(partner, log, previousPayload) {
   const src = parseKaprukaSource(partner.kaprukaUrl || partner.kaprukaSlug);
 
   if (!src) {
     throw new Error(`Partner "${partner.name}" has no valid Kapruka link configured.`);
   }
 
-  const [kapruka, partnerCat] = await Promise.all([
+  const [kapruka, partnerCatOutcome] = await Promise.all([
     fetchKaprukaCatalog(src, { log }),
     fetchPartnerCatalog(partner.partnerSite, {
       log,
       platform: partner.platform || "auto",
       viaBrowser: partner.viaBrowser || false
-    })
+    }).then(
+      (result) => ({ ok: true, result }),
+      (error) => ({ ok: false, error })
+    )
   ]);
 
+  const checkedAt = new Date().toISOString();
+
+  if (!partnerCatOutcome.ok) {
+    log(`✗ Partner catalog fetch failed for ${partner.name}: ${partnerCatOutcome.error.message}`);
+    // Distinguish "the site itself is down" from "the site is up but our
+    // scraper choked on it" -- only the former should fall back to stale
+    // data silently; the latter is a real bug that should keep failing loud.
+    const siteActive = await checkSiteActive(partner.partnerSite);
+    if (!siteActive && previousPayload) {
+      log(`  Site appears offline -- reusing last known comparison data for ${partner.name}.`);
+      return {
+        ...previousPayload,
+        partner: { ...previousPayload.partner, siteActive: false },
+        checkedAt,
+      };
+    }
+    throw partnerCatOutcome.error;
+  }
+
+  const partnerCat = partnerCatOutcome.result;
   const result = matchCatalogs(kapruka, partnerCat.products, partner.name);
 
   const stock = await hydrateKaprukaStock(result.matched, log);
@@ -104,6 +127,7 @@ async function compute(partner, log) {
 
   return {
     generatedAt: new Date().toISOString(),
+    checkedAt,
     partner: {
       id: partner.id,
       name: partner.name,
@@ -112,7 +136,8 @@ async function compute(partner, log) {
       kaprukaSourceType: src.type,
       partnerLabel: partner.partnerLabel || partner.partnerSite,
       partnerSite: partner.partnerSite,
-      platform: partnerCat.platform
+      platform: partnerCat.platform,
+      siteActive: true
     },
     catalogCounts: {
       kapruka: kapruka.length,
@@ -124,12 +149,12 @@ async function compute(partner, log) {
   };
 }
 
-async function refreshCache(partner, log) {
+async function refreshCache(partner, log, previousPayload) {
   if (refreshJobs.has(partner.id)) {
     return refreshJobs.get(partner.id);
   }
 
-  const job = compute(partner, log)
+  const job = compute(partner, log, previousPayload)
     .then(async (payload) => {
       const hit = { at: nowMs(), payload };
       memoryCache.set(partner.id, hit);
@@ -180,7 +205,7 @@ export async function runComparison({ partnerId, force = false, log = () => {} }
   // stale-but-unlabelled-as-such here would make `force: true` silently do
   // nothing (no rescrape, no save) forever once one cache entry exists.
   if (force) {
-    const payload = await refreshCache(partner, log);
+    const payload = await refreshCache(partner, log, hit?.payload);
     return { ...payload, cached: false, stale: false, refreshing: false, cacheAgeMs: 0 };
   }
 
@@ -188,7 +213,7 @@ export async function runComparison({ partnerId, force = false, log = () => {} }
   // serve it immediately and refresh in the background (stale-while-
   // revalidate) so an on-demand page view doesn't have to block.
   if (hit) {
-    refreshCache(partner, log).catch(() => {});
+    refreshCache(partner, log, hit.payload).catch(() => {});
 
     return {
       ...hit.payload,
