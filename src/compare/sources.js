@@ -1153,6 +1153,69 @@ async function fetchLimitedEditionCatalog(shopUrl, log, fetchTextFn = fetchText)
   return [...byUrl.values()];
 }
 
+// -- parkerpensrilanka.com -- the storefront isn't hosted platform code at
+// all, it's an embedded Ecwid widget (store id 85158655) rendered client-side
+// into the page. Ecwid's storefront-api.ecwid.com/.../catalog endpoint
+// returns the whole catalogue as one JSON payload, but a bare fetch() to it
+// 404s -- the browser resolves it through a region-specific host
+// (eu-fra2-storefront-api.ecwid.com here) via some session/discovery step
+// that isn't a header or cookie a plain request can replicate. Rather than
+// reverse-engineer that, a real headless browser page load is used to
+// capture the response directly off the network -- expensive per call, but
+// this is exactly one page load for the ENTIRE catalogue (Ecwid returns
+// everything in one response, no pagination), unlike a Cloudflare-challenge
+// browser fallback that's just one product's worth of relief.
+async function fetchEcwidCatalogViaBrowser(shopUrl, log = () => {}) {
+  if (BROWSER_DISABLED) return [];
+  const origin = toOrigin(shopUrl);
+  const { chromium } = await import('playwright');
+  const launchOpts = {};
+  if (SCRAPE_PROXY) launchOpts.proxy = { server: SCRAPE_PROXY };
+  const browser = await chromium.launch(launchOpts);
+  try {
+    const context = await browser.newContext({ userAgent: UA['User-Agent'] });
+    const page = await context.newPage();
+    const catalogPromise = page
+      .waitForResponse(
+        (res) => /storefront-api\.ecwid\.com\/.*\/catalog(\?|$)/.test(res.url()),
+        { timeout: 30000 },
+      )
+      .catch(() => null);
+    await page.goto(`${origin}/shop`, { waitUntil: 'domcontentloaded', timeout: 45000 });
+    const res = await catalogPromise;
+    if (!res) { log('  partner (ecwid) catalog response never arrived'); return []; }
+    const json = await res.json().catch(() => null);
+    if (!json) return [];
+
+    const out = [];
+    const walk = (cat) => {
+      for (const p of cat.products || []) {
+        const price = p.defaultOptionsOverrides?.pricesOverrides?.basePrice;
+        const path = p.urls?.directPageUrl;
+        // basePrice can be a genuine 0 for a not-currently-orderable listing
+        // (seen on this store's own catalogue) -- not a parsing failure, but
+        // not a usable price for comparison either.
+        if (!p.name || price == null || price <= 0 || !path) continue;
+        out.push({
+          id: `ecwid-${p.identifier || path}`,
+          name: fixMojibake(decodeEntities(p.name)).replace(/\s+/g, ' ').trim(),
+          price: Math.round(price),
+          url: path.startsWith('http') ? path : `${origin}${path}`,
+        });
+      }
+      for (const sub of cat.subcategories || []) walk(sub);
+    };
+    for (const cat of json.expandedCategories || []) walk(cat);
+    log(`  partner (ecwid) catalog: ${out.length} products`);
+    return out;
+  } catch (err) {
+    log(`  partner (ecwid) browser fetch failed: ${err.message}`);
+    return [];
+  } finally {
+    await browser.close();
+  }
+}
+
 // -- foreverskinnaturals.com -- static-exported Next.js shell with no
 // server-rendered content at all; the frontend's own backend API returns
 // the full catalogue as clean JSON, one entry per size/price variant.
@@ -1224,6 +1287,10 @@ export async function fetchPartnerCatalog(site, { log = () => {}, platform = 'au
   if (platform === 'limitededition') {
     const products = await fetchLimitedEditionCatalog(site, log);
     return { products, platform: 'limitededition' };
+  }
+  if (platform === 'ecwid') {
+    const products = await fetchEcwidCatalogViaBrowser(site, log);
+    return { products, platform: 'ecwid' };
   }
   if (platform === 'foreverskin') {
     const products = await fetchForeverskinCatalog(fetchJson);

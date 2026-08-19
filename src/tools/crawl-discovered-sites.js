@@ -189,9 +189,90 @@ async function opencartCatalog(domain) {
   return [...byUrl.values()];
 }
 
+// -- chu.lk -- custom Laravel storefront. Its own search endpoint
+// (/search-product, JSON when sent X-Requested-With) looked like the way in,
+// but it hard-caps at 35 results per query with no page param and no total
+// count -- ten single-letter searches only ever turned up 100 distinct
+// products out of a catalogue that goes far higher, so it can't be unioned
+// into completeness the way limitededition.lk's OpenCart search could.
+// /product/x/<id> resolves by id alone regardless of slug, and probing found
+// ids densely populated (~100% hit rate sampled) from 1 up to the current
+// max (~3998 as of writing) with a clean HTTP 500 past the end -- so plain
+// sequential enumeration is actually the complete and reliable path here,
+// unlike the search endpoint. Stops after a long run of consecutive misses
+// (observed gap rate was ~0%, so a real run of misses reliably means "past
+// the end", not "many deleted products").
+const CHU_MAX_CONSECUTIVE_MISSES = 40;
+const CHU_HARD_CAP = 20000; // safety backstop, well past any catalogue seen so far
+
+async function fetchChuProduct(id, fetchTextFn) {
+  const html = await fetchTextFn(`https://www.chu.lk/product/x/${id}`);
+  if (html == null) return null;
+  const $ = cheerio.load(html);
+  const name = decodeEntities($('title').first().text()).replace(/\s+/g, ' ').trim();
+  // The page carries TWO .current-price spans -- an empty template
+  // placeholder first, the actual price second -- so .first() silently grabs
+  // the blank one. Take the first one that actually has text instead.
+  let price = null;
+  $('.current-price').each((_, el) => {
+    if (price != null) return;
+    const p = parsePriceLKR($(el).text());
+    if (p != null) price = p;
+  });
+  if (!name || price == null) return null;
+  return { name, price };
+}
+
+async function chuCatalog(log = () => {}) {
+  // About 1 in 13 ids returns HTTP 500 -- confirmed by repeated re-fetching
+  // that it's the SAME ids failing every time (11, 13, 17, 27, ...), not
+  // random transient flakiness, so these are permanently broken product
+  // records on their end, not gaps worth waiting out. One retry only to
+  // absorb a genuine network blip; scattered (not clustered) so they never
+  // approach the consecutive-miss cutoff below.
+  const fetchTextFn = async (url) => {
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        const res = await fetch(url, {
+          headers: { 'User-Agent': UA, Referer: 'https://www.chu.lk/' },
+        });
+        if (res.status === 200) return await res.text();
+        return null;
+      } catch {
+        if (attempt === 2) return null;
+        await sleep(600);
+      }
+    }
+    return null;
+  };
+
+  const out = [];
+  let misses = 0;
+  for (let id = 1; id <= CHU_HARD_CAP; id++) {
+    const p = await fetchChuProduct(id, fetchTextFn);
+    if (p) {
+      out.push({ name: p.name, url: `https://www.chu.lk/product/x/${id}`, priceLKR: p.price });
+      misses = 0;
+    } else {
+      misses++;
+      if (misses >= CHU_MAX_CONSECUTIVE_MISSES) break;
+    }
+    if (id % 500 === 0) log(`  partner (chu) id ${id}: ${out.length} found so far`);
+    await sleep(120);
+  }
+  return out;
+}
+
+// Domains that need bespoke handling rather than platform auto-detection.
+const SITE_SPECIFIC_CRAWLERS = {
+  'chu.lk': async (log) => ({ products: await chuCatalog(log), platform: 'chu-custom' }),
+};
+
 // Try each known platform in turn. Ordered cheapest-first: the two JSON APIs
 // are a single request to disprove, the OpenCart path costs many.
-async function crawlSite(domain) {
+async function crawlSite(domain, log = () => {}) {
+  if (SITE_SPECIFIC_CRAWLERS[domain]) return SITE_SPECIFIC_CRAWLERS[domain](log);
+
   const woo = await wooCatalog(domain);
   if (woo.length) return { products: woo, platform: 'woocommerce' };
 
@@ -228,9 +309,10 @@ async function main() {
   for (const site of pending) {
     const category = CATEGORY_BY_DOMAIN[site.domain] || DEFAULT_CATEGORY;
     process.stdout.write(`${site.domain} [${category}] … `);
+    if (SITE_SPECIFIC_CRAWLERS[site.domain]) process.stdout.write('\n');
     let result;
     try {
-      result = await crawlSite(site.domain);
+      result = await crawlSite(site.domain, (m) => console.log(m));
     } catch (err) {
       console.log(`FAILED: ${err.message.slice(0, 70)}`);
       skipped++;
