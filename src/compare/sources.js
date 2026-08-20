@@ -408,10 +408,49 @@ function parseKaprukaPage(html) {
 // relevance-sorted search results by query-token coverage -- Kapruka's own
 // search engine did the hard filtering; this only needs to pick the best
 // of what it already returned.
-function queryCoverage(qTokens, cTokens) {
+// How far apart two same-unit spec values (weight/volume/etc., e.g. "50g" vs
+// "51g") can be and still count as the same product -- covers a site
+// rounding a pack size in its own title. Deliberately scoped to _specs
+// (extractSpecs()'s digit+unit matches, e.g. "51g") rather than bare numeric
+// tokens: an earlier version compared any two numeric tokens within 10% and
+// that let "iPhone 12" match "iPhone 13" (an 8% gap) since ordinary model
+// numbers sit close together too -- a unit letter is what actually marks a
+// number as a rounding-prone quantity instead of an identity digit.
+const SPEC_VALUE_TOLERANCE = 0.1;
+function specsHaveCloseValue(value, unit, specs) {
+  const values = specs[unit];
+  if (!values) return false;
+  for (const v of values) {
+    if (Math.abs(v - value) <= Math.max(v, value) * SPEC_VALUE_TOLERANCE) return true;
+  }
+  return false;
+}
+
+function queryCoverage(qTokens, cTokens, qSpecs, cSpecs) {
   if (!qTokens.size) return 0;
   let matched = 0;
-  for (const t of qTokens) if (cTokens.has(t)) matched++;
+  for (const t of qTokens) {
+    if (cTokens.has(t)) {
+      matched++;
+      continue;
+    }
+    // No exact match -- if this token is a spec value (came from a
+    // digit+unit like "51g", tracked in _specs under "g") a close-enough
+    // candidate value for the same unit still counts, so "Mars Chocolate Bar
+    // 51g" isn't rejected against a Kapruka listing titled "50g" for what's
+    // the same product. A bare number with no unit (a model digit like the
+    // "12" in "iPhone 12") isn't in _specs at all, so it gets no leniency --
+    // it must match exactly.
+    const value = Number(t);
+    if (Number.isFinite(value)) {
+      for (const unit of Object.keys(qSpecs)) {
+        if (qSpecs[unit].has(value) && specsHaveCloseValue(value, unit, cSpecs)) {
+          matched++;
+          break;
+        }
+      }
+    }
+  }
   return matched / qTokens.size;
 }
 
@@ -447,16 +486,29 @@ export async function findKaprukaProduct(name) {
 
   const [qIndexed] = index([{ name, url: 'query' }], false);
   const indexed = index(candidates, false);
-  // Kapruka's own search already relevance-sorts its results -- take the
-  // first one clearing the coverage floor, not the "best-scoring" one
-  // (maximizing token overlap can prefer a longer, coincidentally-wordier
-  // listing over the genuinely most relevant top result).
+  // Kapruka's own search returns anything mentioning the query words at all,
+  // from the plain product to unrelated gift bouquets/combos whose longer
+  // description happens to also mention them (confirmed live: "Mars
+  // Chocolate" fully covers both a genuine "Mars 50g Chocolate Bar" AND a
+  // "Stylish Beauty Bouquet With Mars Chocolates" gift combo, and site order
+  // put the LKR 12,710 bouquet first). Taking the first full-coverage result
+  // trusted that ordering blindly; instead, among every candidate clearing
+  // the coverage floor, prefer whichever has the fewest tokens beyond the
+  // query itself -- the title closest to just being the product name, not a
+  // bouquet/gift-box description that happens to also contain it. Kapruka's
+  // own order only breaks remaining ties.
+  let best = null;
+  let bestExtraTokens = Infinity;
   for (const c of indexed) {
-    if (queryCoverage(qIndexed._tokens, c._tokens) >= KAPRUKA_MATCH_MIN_COVERAGE) {
-      return { name: c.name, url: c.url.startsWith('http') ? c.url : `https://www.kapruka.com${c.url}`, price: c.price };
+    if (queryCoverage(qIndexed._tokens, c._tokens, qIndexed._specs, c._specs) < KAPRUKA_MATCH_MIN_COVERAGE) continue;
+    const extraTokens = [...c._tokens].filter((t) => !qIndexed._tokens.has(t)).length;
+    if (extraTokens < bestExtraTokens) {
+      best = c;
+      bestExtraTokens = extraTokens;
     }
   }
-  return null;
+  if (!best) return null;
+  return { name: best.name, url: best.url.startsWith('http') ? best.url : `https://www.kapruka.com${best.url}`, price: best.price };
 }
 
 // `source` is a descriptor from parseKaprukaSource(), or a raw link/slug string.
