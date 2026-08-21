@@ -41,6 +41,17 @@ const CATEGORY_BY_DOMAIN = {
   'chu.lk': 'Cosmetics',                 // personal care / toiletries
   'kinderlandkidshop.com': 'Cosmetics',  // kids toiletries, same shelf as above
   'thechocolatehouse.lk': 'Chocolates',
+  'chocolate.lk': 'Chocolates',
+  'scentminis.lk': 'Perfume & Fragrance',  // surfaced by "Liquid Brun Eau De Parfum"
+  'scentson.lk': 'Perfume & Fragrance',
+  'nofake.lk': 'Perfume & Fragrance',
+  'brandstore.lk': 'Perfume & Fragrance',
+  'lifemobile.lk': 'Mobile Phones',        // surfaced by "Plokama ... Selfie Stick"
+  'doctormobile.lk': 'Mobile Phones',
+  'otc.lk': 'Mobile Phones',
+  'toyo.lk': 'Mobile Phones',
+  'baloon.lk': 'Mobile Phones',
+  '37left.lk': 'Mobile Phones',
 };
 const DEFAULT_CATEGORY = 'Grocery';
 
@@ -263,9 +274,169 @@ async function chuCatalog(log = () => {}) {
   return out;
 }
 
+// -- glomark.lk -- custom PHP/jQuery storefront (Softlogic's online
+// supermarket) with no REST catalogue endpoint, but /search?searchText=<term>
+// server-renders a `productList = [{...}, ...]` JSON array straight into the
+// page -- the exact data the page's own JS uses to paint results, just
+// easier to read as JSON than to scrape from HTML. Confirmed (by diffing
+// result counts across every letter in OC_TERMS) that searchText doesn't
+// actually filter the array server-side -- every single-letter query came
+// back with the exact same 5596 products, so this is really "get whole
+// catalogue" wearing a search endpoint's clothes. One request is enough;
+// unioning terms like the OpenCart adapter does would just refetch identical
+// data 6x. There's no per-product detail page (browsing is search-and-add-
+// to-cart only, no product URL to link to), so the stored `url` deep-links
+// back to a search for the product's own name -- not perfect, but it at
+// least lands a human on the right item.
+function extractBalancedJsonArray(text, startIdx) {
+  let depth = 0;
+  let inStr = false;
+  let esc = false;
+  for (let i = startIdx; i < text.length; i++) {
+    const ch = text[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (ch === '\\') esc = true;
+      else if (ch === '"') inStr = false;
+      continue;
+    }
+    if (ch === '"') { inStr = true; continue; }
+    if (ch === '[') depth++;
+    else if (ch === ']') {
+      depth--;
+      if (depth === 0) return text.slice(startIdx, i + 1);
+    }
+  }
+  return null;
+}
+
+async function glomarkCatalog(log = () => {}) {
+  const html = await fetchText('https://glomark.lk/search?searchText=a');
+  if (!html) return [];
+  // The page also declares `let productList = [];` as an empty template
+  // before the real, populated reassignment further down -- searching for
+  // the marker followed by an actual product object skips straight to it.
+  const marker = 'productList = [{"id"';
+  const markerIdx = html.indexOf(marker);
+  if (markerIdx === -1) return [];
+  const arrStart = markerIdx + marker.indexOf('[');
+  const jsonText = extractBalancedJsonArray(html, arrStart);
+  if (!jsonText) return [];
+  let arr;
+  try {
+    arr = JSON.parse(jsonText);
+  } catch {
+    return [];
+  }
+  const byId = new Map();
+  for (const p of arr) {
+    if (byId.has(p.id)) continue;
+    const name = decodeEntities(String(p.name || '')).replace(/\s+/g, ' ').trim();
+    if (!name) continue;
+    const price = Number(p.applicablePrice ?? p.promoPrice ?? p.price);
+    byId.set(p.id, {
+      name,
+      url: `https://glomark.lk/search?searchText=${encodeURIComponent(name)}`,
+      priceLKR: Number.isFinite(price) && price > 0 ? Math.round(price) : null,
+    });
+  }
+  log(`  glomark.lk: ${byId.size} products`);
+  return [...byId.values()];
+}
+
+// -- keellssuper.com -- React SPA backed by a session-gated JSON API
+// (zebraliveback.keellssuper.com), found by watching the site's own network
+// traffic in a headless browser rather than static analysis -- the app code
+// calling it lives in a lazily-loaded chunk grep never sees. GuestLogin
+// hands back a `userSessionID` that every following call must echo back in a
+// `usersessionid` header (paired with the cf-mitigation cookies GuestLogin's
+// response sets -- without both together the API 401s). GetItemDetails with
+// an empty `itemDescription` and no department/category filters returns the
+// FULL catalogue, paginated (itemsPerPage caps out around 500/page).
+const KEELLS_API_BASE = 'https://zebraliveback.keellssuper.com';
+const KEELLS_HEADERS_BASE = {
+  'User-Agent': UA,
+  Accept: 'application/json',
+  Referer: 'https://keellssuper.com/',
+};
+
+function mergeSetCookies(jar, res) {
+  const setCookies = res.headers.getSetCookie?.() || [];
+  for (const line of setCookies) {
+    const pair = line.split(';')[0];
+    const eq = pair.indexOf('=');
+    if (eq > 0) jar.set(pair.slice(0, eq).trim(), pair.slice(eq + 1).trim());
+  }
+}
+
+async function keellsCatalog(log = () => {}) {
+  const cookieJar = new Map();
+  const cookieHeader = () => [...cookieJar].map(([k, v]) => `${k}=${v}`).join('; ');
+
+  const loginRes = await fetch(`${KEELLS_API_BASE}/1.0/Login/GuestLogin`, {
+    method: 'POST',
+    headers: KEELLS_HEADERS_BASE,
+  }).catch(() => null);
+  if (!loginRes || !loginRes.ok) return [];
+  mergeSetCookies(cookieJar, loginRes);
+  const loginData = await loginRes.json().catch(() => null);
+  const sessionId = loginData?.result?.userSessionID;
+  if (!sessionId) return [];
+
+  const out = [];
+  const perPage = 500;
+  let pageCount = 1;
+  for (let pageNo = 1; pageNo <= pageCount; pageNo++) {
+    const qs = new URLSearchParams({
+      pageNo: String(pageNo),
+      itemsPerPage: String(perPage),
+      outletCode: 'SCDR',
+      departmentId: '',
+      subDepartmentId: '',
+      categoryId: '',
+      itemDescription: '',
+      itemPricefrom: '0',
+      itemPriceTo: '999999',
+      isFeatured: '0',
+      isPromotionOnly: 'false',
+      promotionCategory: '',
+      sortBy: 'default',
+      BrandId: '',
+      storeName: '',
+      subDeaprtmentCode: '',
+      isShowOutofStockItems: 'true',
+      brandName: '',
+    });
+    const res = await fetch(`${KEELLS_API_BASE}/2.0/WebV2/GetItemDetails?${qs}`, {
+      headers: { ...KEELLS_HEADERS_BASE, usersessionid: sessionId, Cookie: cookieHeader() },
+    }).catch(() => null);
+    if (!res || !res.ok) break;
+    mergeSetCookies(cookieJar, res);
+    const data = await res.json().catch(() => null);
+    const result = data?.result?.itemDetailResult;
+    if (!result) break;
+    pageCount = result.pageCount || pageCount;
+    for (const it of result.itemDetails || []) {
+      const name = String(it.name || '').trim();
+      if (!name || name === '#N/A') continue; // a handful of delisted/placeholder rows
+      const price = Number(it.amount);
+      out.push({
+        name,
+        url: `https://keellssuper.com/productDetail?itemcode=${it.itemCode}`,
+        priceLKR: Number.isFinite(price) && price > 0 ? Math.round(price) : null,
+      });
+    }
+    log(`  keellssuper.com page ${pageNo}/${pageCount}: ${result.itemDetails?.length || 0} items, total ${out.length}`);
+    await sleep(300);
+  }
+  return out;
+}
+
 // Domains that need bespoke handling rather than platform auto-detection.
 const SITE_SPECIFIC_CRAWLERS = {
   'chu.lk': async (log) => ({ products: await chuCatalog(log), platform: 'chu-custom' }),
+  'glomark.lk': async (log) => ({ products: await glomarkCatalog(log), platform: 'glomark-custom' }),
+  'keellssuper.com': async (log) => ({ products: await keellsCatalog(log), platform: 'keells-custom' }),
 };
 
 // Try each known platform in turn. Ordered cheapest-first: the two JSON APIs
