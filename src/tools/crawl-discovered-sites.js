@@ -52,18 +52,37 @@ const CATEGORY_BY_DOMAIN = {
   'toyo.lk': 'Mobile Phones',
   'baloon.lk': 'Mobile Phones',
   '37left.lk': 'Mobile Phones',
+  'printercartridges.lk': 'Electronics',
 };
 const DEFAULT_CATEGORY = 'Grocery';
 
+// A large sequential crawl (buyabans.com's id-discovery pass fetches 4000+
+// pages one at a time) died silently for over an hour, stuck past both
+// fetchJson's and fetchText's own AbortController timeout below -- aborting
+// mid-response-body-read isn't always honoured (a known flaky spot in
+// Node's fetch/undici), so a single stalled connection can hang the whole
+// crawl forever even though the site is reachable again moments later.
+// Racing every fetch against this independent plain setTimeout guarantees
+// each one returns within ~31s no matter what the underlying fetch does,
+// even if that means abandoning a socket that never got the memo.
+function hardTimeout(ms) {
+  return new Promise((resolve) => setTimeout(() => resolve(null), ms));
+}
+
 async function fetchJson(url) {
   const ctl = new AbortController();
-  const t = setTimeout(() => ctl.abort(), 30000);
+  const t = setTimeout(() => ctl.abort(), 15000);
+  const attempt = (async () => {
+    try {
+      const res = await fetch(url, { headers: { 'User-Agent': UA, Accept: 'application/json' }, signal: ctl.signal });
+      if (!res.ok) return null;
+      return await res.json().catch(() => null);
+    } catch {
+      return null;
+    }
+  })();
   try {
-    const res = await fetch(url, { headers: { 'User-Agent': UA, Accept: 'application/json' }, signal: ctl.signal });
-    if (!res.ok) return null;
-    return await res.json().catch(() => null);
-  } catch {
-    return null;
+    return await Promise.race([attempt, hardTimeout(16000)]);
   } finally {
     clearTimeout(t);
   }
@@ -71,16 +90,47 @@ async function fetchJson(url) {
 
 async function fetchText(url) {
   const ctl = new AbortController();
-  const t = setTimeout(() => ctl.abort(), 30000);
+  const t = setTimeout(() => ctl.abort(), 15000);
+  const attempt = (async () => {
+    try {
+      const res = await fetch(url, { headers: { 'User-Agent': UA }, signal: ctl.signal, redirect: 'follow' });
+      if (!res.ok) return null;
+      return await res.text();
+    } catch {
+      return null;
+    }
+  })();
   try {
-    const res = await fetch(url, { headers: { 'User-Agent': UA }, signal: ctl.signal, redirect: 'follow' });
-    if (!res.ok) return null;
-    return await res.text();
-  } catch {
-    return null;
+    return await Promise.race([attempt, hardTimeout(16000)]);
   } finally {
     clearTimeout(t);
   }
+}
+
+// Tracks consecutive fetch failures/timeouts within a sequential crawl loop
+// and cools down when a run of them shows up, rather than hammering a site
+// that's already pushing back. Found the hard way: buyabans.com silently
+// stops answering (each request just running out the clock on the hard
+// timeout above) once a crawl walks enough DISTINCT never-cached URLs in a
+// row -- repeating the same handful of URLs never triggered it, so this
+// reads as a WAF reacting to unique-path crawl behaviour specifically, not a
+// simple per-request rate cap. It's a soft throttle that never returns an
+// explicit 429/403, so there's no status code to react to, only the pattern
+// of repeated nulls -- and it can take minutes to lift, hence the long cap.
+function backoffTracker(log, label) {
+  let consecutiveFails = 0;
+  return async (result) => {
+    if (result == null) {
+      consecutiveFails++;
+      if (consecutiveFails % 10 === 0) {
+        const cooldownMs = Math.min(15000 * (consecutiveFails / 10), 300000);
+        log(`  ${label}: ${consecutiveFails} consecutive failures -- cooling down ${Math.round(cooldownMs / 1000)}s`);
+        await sleep(cooldownMs);
+      }
+    } else {
+      consecutiveFails = 0;
+    }
+  };
 }
 
 function parsePriceLKR(text) {
@@ -432,11 +482,95 @@ async function keellsCatalog(log = () => {}) {
   return out;
 }
 
+// -- buyabans.com -- custom Laravel/Vue storefront (Abans' online store).
+// /product-list?category_id=N returns an HTML fragment (not the full page)
+// for that one category -- clean and cheap once you have the id, but there's
+// no single endpoint listing either the whole catalogue or the full category
+// tree with ids: the homepage's embedded `categorySet0..4` arrays are only
+// the ~18 top-level megamenu entries, not the ~4000+ nested leaf categories
+// visible in sitemap.xml. Each leaf category page DOES embed its own numeric
+// id inline (`requestParams.push('category_id=207')`), so the only reliable
+// way to discover every id is to fetch every sitemap URL once and read it
+// off the page. That's thousands of page fetches just for id discovery,
+// before the (cheaper) per-category product-list calls -- there's no
+// shortcut here, it really is that heavy for this particular site. Both
+// loops run deliberately slowly (seconds, not milliseconds, between
+// requests) with backoffTracker() on top -- confirmed the site's WAF starts
+// silently throttling once enough distinct new URLs get hit in a row, so a
+// full crawl here is a genuinely long-running, patient operation, not a
+// bug to optimise away.
+const BUYABANS_CATEGORY_ID_RE = /requestParams\.push\('category_id=(\d+)'\)/;
+
+async function buyabansSitemapUrls() {
+  const xml = await fetchText('https://buyabans.com/sitemap.xml');
+  if (!xml) return [];
+  const urls = [...xml.matchAll(/<loc>(https:\/\/buyabans\.com\/[^<]+)<\/loc>/g)].map((m) => m[1]);
+  return [...new Set(urls)];
+}
+
+async function buyabansCategoryIds(log = () => {}) {
+  const urls = await buyabansSitemapUrls();
+  const ids = new Map(); // id -> a url_path, for logging only
+  const track = backoffTracker(log, 'buyabans.com id discovery');
+  let checked = 0;
+  for (const url of urls) {
+    const html = await fetchText(url);
+    await track(html);
+    checked++;
+    if (html) {
+      const m = html.match(BUYABANS_CATEGORY_ID_RE);
+      if (m && !ids.has(m[1])) ids.set(m[1], url);
+    }
+    if (checked % 200 === 0) log(`  buyabans.com id discovery: ${checked}/${urls.length} pages checked, ${ids.size} category ids found`);
+    await sleep(1500);
+  }
+  log(`  buyabans.com id discovery done: ${ids.size} category ids from ${urls.length} sitemap pages`);
+  return [...ids.keys()];
+}
+
+async function buyabansCatalog(log = () => {}) {
+  const ids = await buyabansCategoryIds(log);
+  const byUrl = new Map();
+  const track = backoffTracker(log, 'buyabans.com product-list');
+  let done = 0;
+  for (const id of ids) {
+    const qs = new URLSearchParams({
+      category_id: id,
+      stamp_banner_id: '0',
+      sort: 'new_arrivals',
+      is_search_list: 'false',
+      aging_only: '0',
+    });
+    const data = await fetchJson(`https://buyabans.com/product-list?${qs}`);
+    await track(data);
+    done++;
+    const html = data?.html;
+    if (html) {
+      const $ = cheerio.load(html);
+      $('.product-list-item').each((_, el) => {
+        const $item = $(el);
+        const href = $item.find('a[href^="https://buyabans.com/"]').first().attr('href');
+        if (!href || byUrl.has(href)) return;
+        const name = decodeEntities($item.find('.pro-name-compact').first().text()).replace(/\s+/g, ' ').trim();
+        if (!name) return;
+        const priceText = $item.find('.selling-price').first().text() || $item.find('.market-price').first().text();
+        const priceLKR = parsePriceLKR(priceText);
+        byUrl.set(href, { name, url: href, priceLKR });
+      });
+    }
+    if (done % 100 === 0) log(`  buyabans.com product-list: ${done}/${ids.length} categories, ${byUrl.size} products so far`);
+    await sleep(1000);
+  }
+  log(`  buyabans.com: ${byUrl.size} products from ${ids.length} categories`);
+  return [...byUrl.values()];
+}
+
 // Domains that need bespoke handling rather than platform auto-detection.
 const SITE_SPECIFIC_CRAWLERS = {
   'chu.lk': async (log) => ({ products: await chuCatalog(log), platform: 'chu-custom' }),
   'glomark.lk': async (log) => ({ products: await glomarkCatalog(log), platform: 'glomark-custom' }),
   'keellssuper.com': async (log) => ({ products: await keellsCatalog(log), platform: 'keells-custom' }),
+  'buyabans.com': async (log) => ({ products: await buyabansCatalog(log), platform: 'buyabans-custom' }),
 };
 
 // Try each known platform in turn. Ordered cheapest-first: the two JSON APIs
