@@ -53,6 +53,11 @@ const CATEGORY_BY_DOMAIN = {
   'baloon.lk': 'Mobile Phones',
   '37left.lk': 'Mobile Phones',
   'printercartridges.lk': 'Electronics',
+  'printers.lk': 'Electronics',      // surfaced by "HP 03A Toner Cartridge"
+  'mmsrilanka.com': 'Electronics',
+  'beautyharbour.lk': 'Cosmetics',
+  'lassana.com': 'Gifts',    // multi-category gifting platform (flowers, cakes, gifts, etc.) -- no single better fit
+  'wishque.com': 'Gifts',
 };
 const DEFAULT_CATEGORY = 'Grocery';
 
@@ -565,12 +570,197 @@ async function buyabansCatalog(log = () => {}) {
   return [...byUrl.values()];
 }
 
+// -- beautyharbour.lk -- custom PHP/jQuery storefront, fully server-rendered
+// (unlike buyabans.com/chamacomputers.lk, no client-side data fetch to
+// reverse-engineer). Product detail pages looked like the natural unit to
+// crawl (sitemap.xml lists ~770 of them directly), but each one repeats the
+// SAME `.price` class for the cart-subtotal placeholder AND for unrelated
+// "related products" cards lower on the page -- there's no reliable way to
+// pick out just the main product's own price by class alone. The `/shop/
+// <category>` LISTING pages don't have that ambiguity: every `.product-box`
+// on those pages is an actual distinct product card (name + link + price
+// together, no placeholders mixed in), so this crawls the ~430 category
+// pages (paginated via ?page=N, ends at the first empty page) instead.
+async function beautyharbourShopSlugs() {
+  const xml = await fetchText('https://beautyharbour.lk/sitemap.xml');
+  if (!xml) return [];
+  const urls = [...xml.matchAll(/<loc>(https:\/\/(?:www\.)?beautyharbour\.lk\/shop\/[^<]+)<\/loc>/g)].map((m) => m[1]);
+  return [...new Set(urls)];
+}
+
+async function parseBeautyharbourPage(html, origin) {
+  const $ = cheerio.load(html);
+  const out = [];
+  $('.product-box').each((_, el) => {
+    const $box = $(el);
+    const $a = $box.find('h4 a[href]').first();
+    let href = $a.attr('href');
+    if (!href) return;
+    if (!href.startsWith('http')) href = new URL(href, origin).toString();
+    const name = decodeEntities($a.text()).replace(/\s+/g, ' ').trim();
+    if (!name) return;
+    // The strikethrough original price sits in a nested <s> before the real
+    // (possibly discounted) price text -- drop it so parsePriceLKR grabs the
+    // actual selling price, not the crossed-out one.
+    const $price = $box.find('.price').first().clone();
+    $price.find('s').remove();
+    const priceLKR = parsePriceLKR($price.text());
+    out.push({ name, url: href, priceLKR });
+  });
+  return out;
+}
+
+async function beautyharbourCatalog(log = () => {}) {
+  const slugs = await beautyharbourShopSlugs();
+  const byUrl = new Map();
+  const track = backoffTracker(log, 'beautyharbour.lk');
+  let done = 0;
+  for (const shopUrl of slugs) {
+    for (let page = 1; page <= 50; page++) {
+      const url = page === 1 ? shopUrl : `${shopUrl}?page=${page}`;
+      const html = await fetchText(url);
+      await track(html);
+      const products = html ? await parseBeautyharbourPage(html, 'https://beautyharbour.lk') : [];
+      if (products.length === 0) break;
+      for (const p of products) if (!byUrl.has(p.url)) byUrl.set(p.url, p);
+      await sleep(500);
+    }
+    done++;
+    if (done % 50 === 0) log(`  beautyharbour.lk: ${done}/${slugs.length} categories, ${byUrl.size} products so far`);
+  }
+  log(`  beautyharbour.lk: ${byUrl.size} products from ${slugs.length} categories`);
+  return [...byUrl.values()];
+}
+
+// -- lassana.com -- pure client-rendered React SPA (Create React App --
+// homepage HTML is just a ~7KB shell) backed by a clean REST API on
+// api.lassana.com. No page scraping needed at all: /api/v2/category/active
+// lists every department, and /api/v2/product/active/findByCategory?
+// categoryId=N&subCategoryId=0&subCategory2Id=0&subCategory3Id=0&pageNo=P&
+// pageSize=100 returns that WHOLE department's products (every nested
+// subcategory included) paginated -- so this only needs the ~18 top-level
+// department ids, not the full 4-level subcategory tree underneath them.
+async function lassanaCatalog(log = () => {}) {
+  const catRes = await fetchJson('https://api.lassana.com/api/v2/category/active');
+  const departments = catRes?.departmentGrids || [];
+  const byId = new Map();
+  for (const dept of departments) {
+    for (let pageNo = 0; pageNo <= 200; pageNo++) {
+      const qs = new URLSearchParams({
+        categoryId: String(dept.id),
+        subCategoryId: '0',
+        subCategory2Id: '0',
+        subCategory3Id: '0',
+        pageNo: String(pageNo),
+        pageSize: '100',
+        arrangeBy: 'DEFAULT',
+        inStock: '',
+        isPrime: 'false',
+      });
+      const data = await fetchJson(`https://api.lassana.com/api/v2/product/active/findByCategory?${qs}`);
+      const products = data?.products || [];
+      if (products.length === 0) break;
+      for (const p of products) {
+        if (byId.has(p.id)) continue;
+        const name = decodeEntities(String(p.productName || '')).trim();
+        if (!name) continue;
+        const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+        const priceLKR = Number.isFinite(p.sellingPriceLk) && p.sellingPriceLk > 0 ? Math.round(p.sellingPriceLk) : null;
+        byId.set(p.id, {
+          name,
+          url: `https://lassana.com/product/${slug}/${String(p.productNumber || '').toLowerCase()}`,
+          priceLKR,
+        });
+      }
+      await sleep(300);
+    }
+    log(`  lassana.com: ${dept.name} done, ${byId.size} products so far`);
+  }
+  return [...byId.values()];
+}
+
+// -- wishque.com -- custom PHP/jQuery storefront, fully server-rendered.
+// robots.txt asks for Crawl-Delay: 10, which this honours -- sitemap.xml
+// lists ~170 /catelog/ URLs, but almost all of them are narrow subcategories
+// nested under just 20 top-level departments (e.g. /catelog/cakes vs
+// /catelog/cakes/wishque-signature-cakes), and each top-level department
+// page already renders its FULL product list in one shot (no pagination at
+// all -- "cakes" alone returned 847 cards in a single request), so crawling
+// just the 20 top-level URLs covers everything the narrower ones would.
+const WISHQUE_CRAWL_DELAY_MS = 10000;
+
+async function wishqueTopLevelCategories() {
+  const xml = await fetchText('https://www.wishque.com/sitemap.xml');
+  if (!xml) return [];
+  const urls = [...xml.matchAll(/<loc>(https:\/\/www\.wishque\.com\/catelog\/[^<]+)<\/loc>/g)].map((m) => m[1]);
+  return urls.filter((u) => !u.replace('https://www.wishque.com/catelog/', '').includes('/'));
+}
+
+// Some of these category pages render 5-10MB of HTML in one response (no
+// pagination -- the whole department in a single shot). The shared 15s
+// fetchText timeout was built for normal page sizes and silently dropped
+// several of the biggest categories here (no error, no retry -- they just
+// contributed 0 products, invisible unless you cross-check counts). A
+// dedicated longer timeout plus one retry fixes that without loosening the
+// tighter timeout every other crawler in this file relies on.
+async function fetchTextPatient(url, timeoutMs = 60000) {
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const ctl = new AbortController();
+    const t = setTimeout(() => ctl.abort(), timeoutMs);
+    try {
+      const res = await Promise.race([
+        (async () => {
+          const r = await fetch(url, { headers: { 'User-Agent': UA }, signal: ctl.signal, redirect: 'follow' });
+          return r.ok ? await r.text() : null;
+        })(),
+        hardTimeout(timeoutMs + 1000),
+      ]);
+      if (res != null) return res;
+    } catch {
+      // fall through to retry
+    } finally {
+      clearTimeout(t);
+    }
+  }
+  return null;
+}
+
+async function wishqueCatalog(log = () => {}) {
+  const categories = await wishqueTopLevelCategories();
+  const byUrl = new Map();
+  for (const url of categories) {
+    const html = await fetchTextPatient(url);
+    if (html) {
+      const $ = cheerio.load(html);
+      $('.product').each((_, el) => {
+        const $box = $(el);
+        const $a = $box.find('a[href^="/product/view/"]').first();
+        let href = $a.attr('href');
+        if (!href) return;
+        if (!href.startsWith('http')) href = new URL(href, 'https://www.wishque.com').toString();
+        if (byUrl.has(href)) return;
+        const name = decodeEntities($box.find('.name').first().text()).replace(/\s+/g, ' ').trim();
+        if (!name) return;
+        const priceAttr = $box.find('.js-prod-price').first().attr('data-price-store');
+        const priceLKR = priceAttr != null ? Math.round(parseFloat(priceAttr)) : null;
+        byUrl.set(href, { name, url: href, priceLKR: Number.isFinite(priceLKR) && priceLKR > 0 ? priceLKR : null });
+      });
+    }
+    log(`  wishque.com: ${url.replace('https://www.wishque.com/catelog/', '')} done, ${byUrl.size} products so far`);
+    await sleep(WISHQUE_CRAWL_DELAY_MS);
+  }
+  return [...byUrl.values()];
+}
+
 // Domains that need bespoke handling rather than platform auto-detection.
 const SITE_SPECIFIC_CRAWLERS = {
   'chu.lk': async (log) => ({ products: await chuCatalog(log), platform: 'chu-custom' }),
   'glomark.lk': async (log) => ({ products: await glomarkCatalog(log), platform: 'glomark-custom' }),
   'keellssuper.com': async (log) => ({ products: await keellsCatalog(log), platform: 'keells-custom' }),
   'buyabans.com': async (log) => ({ products: await buyabansCatalog(log), platform: 'buyabans-custom' }),
+  'beautyharbour.lk': async (log) => ({ products: await beautyharbourCatalog(log), platform: 'beautyharbour-custom' }),
+  'lassana.com': async (log) => ({ products: await lassanaCatalog(log), platform: 'lassana-custom' }),
+  'wishque.com': async (log) => ({ products: await wishqueCatalog(log), platform: 'wishque-custom' }),
 };
 
 // Try each known platform in turn. Ordered cheapest-first: the two JSON APIs
