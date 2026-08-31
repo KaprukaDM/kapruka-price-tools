@@ -131,6 +131,14 @@ const ACCESSORY_WORDS = new Set([
   'case', 'cover', 'pouch', 'sleeve', 'skin', 'sticker', 'decal', 'tempered',
   'protector', 'charger', 'cable', 'adapter', 'holder', 'mount', 'stand',
   'strap', 'bumper', 'magsafe', 'lanyard', 'shell', 'casing',
+  // Console accessories: a query for the console itself ("PlayStation 5")
+  // is a substring of virtually every accessory listing for it ("Sony
+  // PlayStation 5 DualSense Wireless Controller"/"...Joystick"), same
+  // failure mode as the phone-case case above -- confirmed live on the
+  // price checker, a PS5 search was matching a PS5 joystick listing.
+  'joystick', 'controller', 'gamepad', 'headset', 'earphone', 'earphones',
+  'earbud', 'earbuds', 'dock', 'docking', 'remote', 'faceplate',
+  'thumbstick', 'thumbgrip', 'grip', 'grips',
 ]);
 // Per-word exemption ("query has 'cover', candidate also has 'cover'" ->
 // fine) missed the common case of two DIFFERENT accessory words meaning the
