@@ -644,9 +644,24 @@ async function convertForeignItems(items) {
 // this fallback the pretty URL's 404 silently looks like "empty catalogue"
 // (fetchJsonSafe returns null on error) rather than a real failure — nothing
 // throws, so a force-refresh happily overwrites good stored data with zero.
+// baseuscolombo.lk shows two prices per product: a "cash" price (the one the
+// WooCommerce Store API reports as price/regular_price) and a higher
+// "non-cash"/card price shown only via client-side JS (div.mainpri), not
+// present in the API or static HTML at all. Verified across several products
+// the site's own "10% off" cash-payment badges account for the gap exactly:
+// non-cash = cash / 0.9. Deriving it here avoids rendering all ~800+ product
+// pages in a browser just to read one number.
+const CASH_DISCOUNT_SITES = ['baseuscolombo.lk'];
+const CASH_DISCOUNT_RATE = 0.9;
+
+function isCashDiscountSite(origin) {
+  return CASH_DISCOUNT_SITES.some((d) => origin.includes(d));
+}
+
 async function fetchWooCatalog(origin, log, fetchJson = fetchJsonSafe) {
   const out = [];
   let useRestRoute = false;
+  const deriveNonCash = isCashDiscountSite(origin);
   for (let page = 1; page <= 100; page++) {
     const prettyUrl = `${origin}/wp-json/wc/store/v1/products?per_page=100&page=${page}`;
     const restRouteUrl = `${origin}/?rest_route=/wc/store/v1/products&per_page=100&page=${page}`;
@@ -658,6 +673,11 @@ async function fetchWooCatalog(origin, log, fetchJson = fetchJsonSafe) {
     if (!Array.isArray(arr) || arr.length === 0) break;
     for (const p of arr) {
       const pr = p.prices || {};
+      const price = minorUnitDivide(pr.price, pr.currency_minor_unit);
+      let regularPrice = minorUnitDivide(pr.regular_price, pr.currency_minor_unit);
+      if (deriveNonCash && price != null) {
+        regularPrice = Math.round(price / CASH_DISCOUNT_RATE);
+      }
       out.push({
         id: `woo-${p.id}`,
         name: decodeEntities(p.name || '').trim(),
@@ -666,8 +686,8 @@ async function fetchWooCatalog(origin, log, fetchJson = fetchJsonSafe) {
         // (no extra request). Both are optional taxonomies, so guard for absence.
         brand: decodeEntities(p.brands?.[0]?.name || '').trim(),
         category: decodeEntities(p.categories?.[0]?.name || '').trim(),
-        price: minorUnitDivide(pr.price, pr.currency_minor_unit),
-        regularPrice: minorUnitDivide(pr.regular_price, pr.currency_minor_unit),
+        price,
+        regularPrice,
         url: p.permalink,
         inStock: p.is_in_stock !== false,
       });
