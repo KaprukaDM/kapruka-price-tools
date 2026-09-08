@@ -43,25 +43,37 @@ never run the scheduled scraper itself; it only ever reads what this machine
 
 ## The scheduled refresh job
 
-- **Script:** `src/tools/refresh-all-partners.js`
-- **Wrapper:** `scripts/refresh-all-partners.bat` (resolves the full path to
-  `node.exe` and sets the working directory explicitly — a bare `node` on PATH
-  isn't reliably resolved inside a non-interactive Task Scheduler session)
-- **Windows Scheduled Task:** `Kapruka Price Refresh`, every 15 minutes, on
-  this local machine, with `StartWhenAvailable` on (catches up immediately if
-  the machine was asleep/off when a 15-minute mark passed, instead of just
-  skipping it)
-- **Log:** `logs/refresh-all-partners.log`
+**Changed 2026-09-08:** this used to be a Windows Scheduled Task
+(`Kapruka Price Refresh`, every 15 min, running
+`scripts/refresh-all-partners.bat` out of an old checkout at
+`C:\Users\fari\Desktop\Price Analysis`). Nothing in the app knew it existed, so
+if it stopped firing — machine off, checkout moved, `.env` changed — the only
+symptom was dashboards quietly going stale. **That task has been deleted.** The
+same job now runs inside the Express app and is visible on the Partner
+Overpriced dashboard.
 
-Check/manage the task:
-```powershell
-Get-ScheduledTaskInfo -TaskName "Kapruka Price Refresh"
-Start-ScheduledTask -TaskName "Kapruka Price Refresh"   # run it now
-```
+- **Where it runs:** in-process in `src/server.js` (the `pending-refresh` and
+  `full-sweep` entries in its `JOBS` registry), whenever `npm start` is running
+  on the trusted Sri-Lanka-geo machine
+- **Job body:** `refreshPendingPartners()` in `src/tools/refresh-all-partners.js`
+  (still runnable standalone: `node src/tools/refresh-all-partners.js`)
+- **Intervals:** `pending-refresh` every 15 min (`PENDING_REFRESH_MINUTES`),
+  `full-sweep` every 4h (`AUTO_REFRESH_HOURS`); `DISABLE_AUTO_REFRESH=1` pauses
+  both — the dashboard panel then says so instead of hiding it
+- **Where you see it:** the "⏱ Scheduled refresh" panel at the top of
+  `public/partner-overpriced.html` — interval, last run, next run, last result
+  and a **Run now** button per job, fed by `GET /api/schedule` and
+  `POST /api/schedule/:id/run`
 
-Run it manually without the scheduler:
+Because the schedule now lives in the server process, **the app has to be
+running on the trusted machine** (with its `.env`: Supabase credentials plus
+`SCRAPE_ON_ADD=1`) for automatic refreshes to happen at all. An instance
+without `SCRAPE_ON_ADD` shows an explicit warning in the panel and only queues
+refresh requests instead of scraping.
+
+Check it from the terminal:
 ```
-node src/tools/refresh-all-partners.js
+curl http://localhost:3000/api/schedule
 ```
 
 ### Deliberately narrow: new partners + explicit refresh requests only

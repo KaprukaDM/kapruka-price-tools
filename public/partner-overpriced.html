@@ -33,6 +33,25 @@
                        border-radius:10px; padding:10px 14px; font-size:13px; margin-bottom:14px; }
     .offline-banner strong { font-weight:700; }
     .badge-offline { background:#fae5e4; color:var(--bad); }
+    /* Scheduled refresh panel — the schedule used to live in an invisible
+       Windows scheduled task; it now runs inside the app and is shown here. */
+    .sched { background:#fff; border:1px solid var(--line); border-radius:12px; padding:14px 16px; margin-bottom:16px;
+             box-shadow:0 1px 3px rgba(64,41,112,.06); }
+    .sched h2 { font-size:13px; text-transform:uppercase; letter-spacing:.04em; color:var(--mut);
+                margin:0 0 10px; font-weight:700; }
+    .sched-jobs { display:flex; flex-wrap:wrap; gap:12px; }
+    .sched-job { flex:1 1 320px; border:1px solid var(--line); border-radius:10px; padding:10px 12px; background:var(--tint); }
+    .sched-job .jname { font-weight:700; color:var(--purple-dk); font-size:14px; display:flex; align-items:center; gap:8px; }
+    .sched-job .jdesc { font-size:12px; color:var(--mut); margin:4px 0 8px; }
+    .sched-job dl { display:grid; grid-template-columns:auto 1fr; gap:2px 10px; margin:0; font-size:12.5px; }
+    .sched-job dt { color:var(--mut); }
+    .sched-job dd { margin:0; color:#222; }
+    .sched-job .jfoot { margin-top:8px; display:flex; align-items:center; gap:8px; }
+    .sched-job button { font-size:12px; padding:4px 10px; margin:0; }
+    .dot-on, .dot-off, .dot-run { display:inline-block; width:8px; height:8px; border-radius:50%; }
+    .dot-on { background:#2e9e5b; } .dot-off { background:#b9b3c6; } .dot-run { background:#e2a300; }
+    .sched-note { font-size:12px; color:var(--mut); margin-top:10px; }
+    .sched-note.warn { color:var(--bad); }
   </style>
 </head>
 <body>
@@ -50,8 +69,13 @@
     <h1>Overpriced products — configured partner stores</h1>
     <p class="sub">Every product where <strong>our Kapruka price is higher than the partner's own website</strong>,
        across all <em>configured partner</em> stores (the Partner Price Comparison tool's reconciliation runs), in
-       one list. Refreshed automatically once a day. For a broader view across every scraped competitor site —
+       one list. Refreshed automatically on the schedule shown below. For a broader view across every scraped competitor site —
        not just configured partners — see the <a href="all-products-overpriced.html">All Products Overpriced Dashboard</a>.</p>
+
+    <!-- Deliberately outside #app: the schedule is the answer to "is this data
+         being kept fresh?", so it must show immediately — including while the
+         (slow) overpriced report is still loading, or if it fails entirely. -->
+    <div id="schedule" class="sched" style="display:none"></div>
 
     <div id="status" class="card"><span class="spin"></span>Loading the latest overpriced products…</div>
 

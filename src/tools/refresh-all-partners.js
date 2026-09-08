@@ -24,22 +24,29 @@
 // fast and avoids repeatedly hitting Kapruka/partner sites (see the HTTP 429
 // rate-limiting noted elsewhere) for partners nobody has asked to re-check.
 //
-// Usage:
-//   node src/tools/refresh-all-partners.js
+// Where the schedule lives (changed 2026-09-08): this used to be driven by a
+// hidden Windows Scheduled Task ("Kapruka Price Refresh", every 15 min) that
+// nobody could see from the dashboards — if it silently stopped, the only clue
+// was stale data. That task has been deleted; the same work now runs *inside*
+// the app (src/server.js registers it as the `pending-refresh` scheduled job)
+// and its interval, last run, next run and last result are shown on the
+// Partner Overpriced dashboard, with a "Run now" button next to them.
 //
-// Schedule on Windows (every 15 min, adjust as needed):
-//   schtasks /create /tn "Kapruka Price Refresh" /sc minute /mo 15 ^
-//     /tr "node \"C:\Users\fari\Desktop\Price Analysis\src\tools\refresh-all-partners.js\""
+// Usage (still runnable standalone, e.g. a one-off from the terminal):
+//   node src/tools/refresh-all-partners.js
 
 import 'dotenv/config';
+import { pathToFileURL } from 'node:url';
 import { runComparison } from '../compare/run.js';
 import { listPartners } from '../compare/partners.js';
 import { saveComparisonRun, recentComparisonRuns, storageKind } from '../db.js';
 
-async function main() {
-  console.log(`Storage backend: ${storageKind}`);
+// The job itself, exported so the in-app scheduler can call it directly
+// instead of shelling out to a separate process. `log` lets the server route
+// output wherever it wants; defaults to the console for the CLI path.
+export async function refreshPendingPartners({ log = console.log } = {}) {
   const partners = await listPartners();
-  console.log(`Checking ${partners.length} partner(s) for new additions / refresh requests…`);
+  log(`Checking ${partners.length} partner(s) for new additions / refresh requests…`);
 
   let refreshed = 0;
   let skipped = 0;
@@ -49,7 +56,7 @@ async function main() {
     const refreshPending = p.refreshRequestedAt &&
       (!latest || new Date(p.refreshRequestedAt) > new Date(latest.created_at));
     if (latest && !refreshPending) {
-      console.log(`  · ${p.name}: already has data, no refresh requested — skipping`);
+      log(`  · ${p.name}: already has data, no refresh requested — skipping`);
       skipped += 1;
       continue;
     }
@@ -57,19 +64,30 @@ async function main() {
       const data = await runComparison({ partnerId: p.id, force: true });
       if (!data.cached) await saveComparisonRun(data);
       const pm = data.summary.priceMissing;
-      console.log(`  ✓ ${p.name}: ${data.summary.kaprukaHigher} overpriced of ${data.summary.matched} matched` +
+      log(`  ✓ ${p.name}: ${data.summary.kaprukaHigher} overpriced of ${data.summary.matched} matched` +
         (pm ? `, ${pm} still price-missing` : ' — fully complete'));
       refreshed += 1;
     } catch (err) {
-      console.warn(`  ! ${p.name}: ${err.message}`);
+      log(`  ! ${p.name}: ${err.message}`);
       failed += 1;
     }
   }
-  console.log(`Done — ${refreshed} refreshed, ${skipped} already have data, ${failed} failed.`);
+  log(`Done — ${refreshed} refreshed, ${skipped} already have data, ${failed} failed.`);
+  return { total: partners.length, refreshed, skipped, failed };
+}
+
+async function main() {
+  console.log(`Storage backend: ${storageKind}`);
+  const { refreshed, skipped, failed } = await refreshPendingPartners();
   if (failed > 0 && refreshed === 0 && skipped === 0) process.exitCode = 1;
 }
 
-main().catch((err) => {
-  console.error('Refresh failed:', err);
-  process.exitCode = 1;
-});
+// Only run the CLI path when this file is the entry point — importing it from
+// the server must not kick off a refresh on import.
+const isCli = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+if (isCli) {
+  main().catch((err) => {
+    console.error('Refresh failed:', err);
+    process.exitCode = 1;
+  });
+}

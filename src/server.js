@@ -50,6 +50,7 @@ import {
   productRows,
   invalidateReportCache,
 } from './export.js';
+import { refreshPendingPartners } from './tools/refresh-all-partners.js';
 import { uaeCompareApiRouter } from './uae-compare/routes.js';
 import { sendWhatsAppMessage, whatsappConfigured } from './notify/whatsapp.js';
 
@@ -558,7 +559,7 @@ app.get('/api/export/comparison.csv', async (req, res) => {
 // scheduler below (or on demand via POST /api/overpriced/refresh).
 app.get('/api/overpriced', async (_req, res) => {
   try {
-    res.json({ ...(await overpricedReport()), refreshing: REFRESH_STATE.running });
+    res.json({ ...(await overpricedReport()), refreshing: anyRefreshRunning() });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -589,7 +590,10 @@ app.post('/api/overpriced/refresh', async (_req, res) => {
       });
     }
     await logBulkRefreshRequest();
-    const result = await refreshAllPartners('manual');
+    // Goes through the job registry (rather than calling refreshAllPartners
+    // directly) so this button's run shows up in the dashboard's scheduled-
+    // refresh panel as the full sweep's last run, like any other trigger.
+    const result = await runJob('full-sweep', 'manual (Refresh all stores)');
     res.json({
       ...(await overpricedReport()),
       refreshing: false,
@@ -641,7 +645,7 @@ app.get('/api/export/overpriced-all.csv', async (_req, res) => {
 // disagree on stock status, split into the two directions.
 app.get('/api/stock-mismatch', async (_req, res) => {
   try {
-    res.json({ ...(await stockMismatchReport()), refreshing: REFRESH_STATE.running });
+    res.json({ ...(await stockMismatchReport()), refreshing: anyRefreshRunning() });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -667,7 +671,7 @@ app.get('/api/export/stock-mismatch.csv', async (req, res) => {
 // store new runs.
 app.get('/api/price-changes', async (_req, res) => {
   try {
-    res.json({ ...(await priceChangesReport()), refreshing: REFRESH_STATE.running });
+    res.json({ ...(await priceChangesReport()), refreshing: anyRefreshRunning() });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -756,6 +760,13 @@ app.delete('/api/removed-products/:id', async (req, res) => {
 const AUTO_REFRESH_MS = (Number(process.env.AUTO_REFRESH_HOURS) || 4) * 60 * 60 * 1000;
 const REFRESH_STATE = { running: false, lastRunAt: null };
 
+// True while any scraping job is in flight — the full sweep, or one of the
+// scheduled jobs registered further down (JOBS). The dashboards use this to
+// show a "refreshing right now" hint on their data.
+function anyRefreshRunning() {
+  return REFRESH_STATE.running || [...JOBS.values()].some((j) => j.running);
+}
+
 async function refreshAllPartners(reason) {
   // Never live-scrape from a host that isn't confirmed-good-geo (see
   // TRUSTED_SCRAPE_HOST above) — Kapruka would serve USD instead of LKR, and
@@ -806,7 +817,7 @@ async function refreshIfStale() {
     const [newest] = await recentComparisonRuns(1);
     const ageMs = newest ? Date.now() - new Date(newest.created_at).getTime() : Infinity;
     if (ageMs >= AUTO_REFRESH_MS) {
-      refreshAllPartners(newest ? 'startup: data is stale' : 'startup: no data yet');
+      runJob('full-sweep', newest ? 'startup: data is stale' : 'startup: no data yet');
     } else {
       const mins = Math.round(ageMs / 60000);
       console.log(`↻ Skipping startup refresh — newest run is ${mins}min old (< ${AUTO_REFRESH_MS / 3600000}h).`);
@@ -815,6 +826,154 @@ async function refreshIfStale() {
     console.warn('! startup refresh check failed:', err.message);
   }
 }
+
+// ---- Visible scheduled jobs ------------------------------------------------
+// Until 2026-09-08 the 15-minute "new / requested store" refresh was a hidden
+// Windows Scheduled Task ("Kapruka Price Refresh") shelling out to
+// src/tools/refresh-all-partners.js. Nothing in the app knew it existed, so if
+// it stopped firing the only symptom was quietly stale dashboards. That task
+// has been deleted and the job now runs in-process alongside the full sweep,
+// with both of them reported by GET /api/schedule and rendered on the Partner
+// Overpriced dashboard (interval, last run, next run, last result, Run now).
+const PENDING_REFRESH_MS = Math.max(1, Number(process.env.PENDING_REFRESH_MINUTES) || 15) * 60 * 1000;
+const SCHEDULER_DISABLED = process.env.DISABLE_AUTO_REFRESH === '1';
+const SERVER_STARTED_AT = new Date().toISOString();
+
+const JOBS = new Map();
+function defineJob(job) {
+  JOBS.set(job.id, {
+    running: false,
+    lastRunAt: null,
+    lastReason: null,
+    lastResult: null,
+    lastError: null,
+    nextRunAt: null,
+    timer: null,
+    ...job,
+  });
+}
+
+defineJob({
+  id: 'pending-refresh',
+  name: 'New & requested stores',
+  description:
+    'Re-scrapes only stores that have no data yet or a pending "Refresh" request — the job that used to be the hidden Windows scheduled task.',
+  intervalMs: PENDING_REFRESH_MS,
+  async run(reason) {
+    if (!TRUSTED_SCRAPE_HOST) {
+      return { skipped: true, summary: 'Skipped — this host is not the trusted-geo scraper (SCRAPE_ON_ADD is unset).' };
+    }
+    const r = await refreshPendingPartners({ log: (line) => console.log(`[pending-refresh] ${line}`) });
+    return {
+      ...r,
+      summary: `${r.refreshed} refreshed, ${r.skipped} already current, ${r.failed} failed (of ${r.total} stores)`,
+    };
+  },
+});
+
+defineJob({
+  id: 'full-sweep',
+  name: 'Full sweep of every store',
+  description: 'Re-runs every partner reconciliation from scratch and stores the results, so prices that changed on Kapruka never sit stale.',
+  intervalMs: AUTO_REFRESH_MS,
+  async run(reason) {
+    const r = (await refreshAllPartners(reason)) || {};
+    const summary = r.queued
+      ? `Queued ${r.queued} stores for the trusted host (this host doesn't scrape live)`
+      : r.skipped
+        ? 'Skipped — a sweep was already running'
+        : `${r.refreshed ?? 0} stores refreshed`;
+    return { ...r, summary };
+  },
+});
+
+async function runJob(id, reason) {
+  const job = JOBS.get(id);
+  if (!job) throw new Error(`unknown job "${id}"`);
+  if (job.running) return { skipped: true, summary: 'Already running' };
+  job.running = true;
+  job.lastReason = reason;
+  const startedAt = Date.now();
+  try {
+    const result = await job.run(reason);
+    job.lastError = null;
+    job.lastResult = { ...result, durationMs: Date.now() - startedAt };
+    console.log(`⏱ ${job.id} (${reason}): ${result?.summary || 'done'}`);
+    return job.lastResult;
+  } catch (err) {
+    job.lastError = err.message;
+    job.lastResult = null;
+    console.warn(`⏱ ${job.id} (${reason}) failed: ${err.message}`);
+    throw err;
+  } finally {
+    job.running = false;
+    job.lastRunAt = new Date().toISOString();
+    if (job.timer) job.nextRunAt = new Date(Date.now() + job.intervalMs).toISOString();
+  }
+}
+
+function startScheduler() {
+  for (const job of JOBS.values()) {
+    job.timer = setInterval(() => {
+      runJob(job.id, 'scheduled').catch(() => {});
+    }, job.intervalMs);
+    job.nextRunAt = new Date(Date.now() + job.intervalMs).toISOString();
+  }
+}
+
+function scheduleStatus() {
+  return {
+    enabled: !SCHEDULER_DISABLED,
+    disabledReason: SCHEDULER_DISABLED ? 'DISABLE_AUTO_REFRESH=1 in this instance\'s .env' : null,
+    trustedScrapeHost: TRUSTED_SCRAPE_HOST,
+    storage: storageKind,
+    serverStartedAt: SERVER_STARTED_AT,
+    now: new Date().toISOString(),
+    jobs: [...JOBS.values()].map((j) => ({
+      id: j.id,
+      name: j.name,
+      description: j.description,
+      intervalMs: j.intervalMs,
+      running: j.running,
+      lastRunAt: j.lastRunAt,
+      lastReason: j.lastReason,
+      lastResult: j.lastResult ? { summary: j.lastResult.summary, durationMs: j.lastResult.durationMs } : null,
+      lastError: j.lastError,
+      nextRunAt: SCHEDULER_DISABLED ? null : j.nextRunAt,
+    })),
+  };
+}
+
+// What the dashboard's "Scheduled refresh" panel reads.
+app.get('/api/schedule', (_req, res) => {
+  res.json(scheduleStatus());
+});
+
+// Run one job immediately. Allowed even when the timers are disabled — the
+// point of surfacing the schedule is being able to act on it from the page.
+app.post('/api/schedule/:id/run', async (req, res) => {
+  const job = JOBS.get(req.params.id);
+  if (!job) return res.status(404).json({ error: `Unknown job "${req.params.id}"` });
+  if (job.running) return res.status(409).json({ error: `"${job.name}" is already running.` });
+  try {
+    // A manual full sweep is the same expensive all-partner scrape as the
+    // "Refresh all stores" button, so it counts against (and respects) the
+    // same daily cap — see BULK_REFRESH_DAILY_LIMIT above.
+    if (job.id === 'full-sweep') {
+      const usedToday = await countBulkRefreshesSince(startOfTodaySriLanka());
+      if (usedToday >= BULK_REFRESH_DAILY_LIMIT) {
+        return res.status(429).json({
+          error: `Daily limit reached (${BULK_REFRESH_DAILY_LIMIT}/${BULK_REFRESH_DAILY_LIMIT}) for the full sweep — it still runs on its own schedule.`,
+        });
+      }
+      await logBulkRefreshRequest();
+    }
+    const result = await runJob(job.id, 'manual (dashboard)');
+    res.json({ ...scheduleStatus(), ranJob: job.id, summary: result?.summary || null });
+  } catch (err) {
+    res.status(500).json({ error: err.message, ...scheduleStatus() });
+  }
+});
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
@@ -828,11 +987,12 @@ app.listen(PORT, () => {
   if (!process.env.OPENAI_API_KEY) console.warn('! OPENAI_API_KEY is not set');
   if (!process.env.SERP_API_KEY) console.warn('! SERP_API_KEY is not set');
 
-  if (process.env.DISABLE_AUTO_REFRESH === '1') {
-    console.log('↻ Auto-refresh disabled (DISABLE_AUTO_REFRESH=1).');
+  if (SCHEDULER_DISABLED) {
+    console.log('↻ Scheduled refresh jobs disabled (DISABLE_AUTO_REFRESH=1) — run them from the dashboard panel instead.');
   } else {
-    console.log(`↻ Auto-refresh sweep every ${AUTO_REFRESH_MS / 3600000}h (override with AUTO_REFRESH_HOURS).`);
+    console.log(`↻ Scheduled jobs: pending-refresh every ${PENDING_REFRESH_MS / 60000}min ` +
+      `(override PENDING_REFRESH_MINUTES), full sweep every ${AUTO_REFRESH_MS / 3600000}h (override AUTO_REFRESH_HOURS).`);
+    startScheduler();
     refreshIfStale();
-    setInterval(() => refreshAllPartners('scheduled sweep'), AUTO_REFRESH_MS);
   }
 });

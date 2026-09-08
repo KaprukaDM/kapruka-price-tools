@@ -244,13 +244,115 @@ function wireRemoveButtons() {
 
 function footmeta() {
   if (!DATA.lastUpdated) {
-    $('footmeta').textContent = 'No comparison data stored yet — the daily refresh will populate this shortly.';
+    $('footmeta').textContent = 'No comparison data stored yet — the scheduled refresh above will populate this shortly.';
     return;
   }
   const at = new Date(DATA.lastUpdated);
   $('footmeta').textContent =
     `Showing the latest stored comparison for each store · last updated ${at.toLocaleString()} · ` +
-    'refreshes automatically once a day. "Overcharge" = Kapruka price − partner-site price.';
+    'refresh schedule is shown at the top of this page. "Overcharge" = Kapruka price − partner-site price.';
+}
+
+// ---- Scheduled refresh panel ----------------------------------------------
+// The 15-minute "new & requested stores" refresh used to be a Windows
+// scheduled task nobody could see; it now runs inside the app and reports
+// itself through GET /api/schedule, which is what this renders.
+let SCHEDULE = null;
+
+function relTime(iso) {
+  if (!iso) return null;
+  const diff = new Date(iso).getTime() - Date.now();
+  const mins = Math.round(Math.abs(diff) / 60000);
+  const txt = mins < 1 ? 'less than a minute' : mins < 60
+    ? `${mins} min` : `${Math.floor(mins / 60)}h ${mins % 60}m`;
+  return diff < 0 ? `${txt} ago` : `in ${txt}`;
+}
+
+function everyLabel(ms) {
+  const mins = Math.round(ms / 60000);
+  return mins < 60 ? `every ${mins} min` : `every ${+(mins / 60).toFixed(2)}h`;
+}
+
+function scheduleJobHtml(j, enabled) {
+  const dot = j.running ? 'dot-run' : enabled ? 'dot-on' : 'dot-off';
+  const state = j.running ? 'running now' : enabled ? 'scheduled' : 'paused';
+  const last = j.lastRunAt
+    ? `${new Date(j.lastRunAt).toLocaleString()} <span class="ctx">(${relTime(j.lastRunAt)})</span>`
+    : 'not since this server started';
+  const next = j.running ? 'running now…'
+    : j.nextRunAt ? `${new Date(j.nextRunAt).toLocaleTimeString()} <span class="ctx">(${relTime(j.nextRunAt)})</span>`
+    : 'paused — run it manually';
+  const result = j.lastError
+    ? `<span style="color:var(--bad)">✗ ${escapeHtml(j.lastError)}</span>`
+    : j.lastResult
+      ? escapeHtml(j.lastResult.summary || 'done') +
+        (j.lastResult.durationMs ? ` <span class="ctx">(${Math.round(j.lastResult.durationMs / 1000)}s)</span>` : '')
+      : '—';
+  return `<div class="sched-job">
+    <div class="jname"><span class="${dot}" title="${state}"></span>${escapeHtml(j.name)}</div>
+    <div class="jdesc">${escapeHtml(j.description)}</div>
+    <dl>
+      <dt>Runs</dt><dd>${everyLabel(j.intervalMs)}</dd>
+      <dt>Last run</dt><dd>${last}</dd>
+      <dt>Next run</dt><dd>${next}</dd>
+      <dt>Last result</dt><dd>${result}</dd>
+    </dl>
+    <div class="jfoot">
+      <button class="ghost sched-run" type="button" data-job="${escapeHtml(j.id)}" ${j.running ? 'disabled' : ''}>
+        ${j.running ? 'Running…' : '▶ Run now'}</button>
+    </div>
+  </div>`;
+}
+
+function renderSchedule() {
+  const el = $('schedule');
+  if (!SCHEDULE) { el.style.display = 'none'; return; }
+  const notes = [];
+  if (!SCHEDULE.enabled) {
+    notes.push(`<div class="sched-note warn">⏸ Automatic runs are switched off on this instance (${escapeHtml(SCHEDULE.disabledReason || 'disabled')}) —
+      the jobs only run when someone presses “Run now”.</div>`);
+  }
+  if (!SCHEDULE.trustedScrapeHost) {
+    notes.push(`<div class="sched-note warn">⚠️ This instance isn't the trusted Sri-Lanka-geo scraper (<code>SCRAPE_ON_ADD</code> unset),
+      so it queues refresh requests instead of scraping Kapruka itself.</div>`);
+  }
+  notes.push(`<div class="sched-note">Storage: ${escapeHtml(SCHEDULE.storage)} · server up since ${new Date(SCHEDULE.serverStartedAt).toLocaleString()}.
+    These jobs run inside this app — there's no separate scheduled task behind the scenes.</div>`);
+
+  el.innerHTML = `<h2>⏱ Scheduled refresh</h2>
+    <div class="sched-jobs">${SCHEDULE.jobs.map((j) => scheduleJobHtml(j, SCHEDULE.enabled)).join('')}</div>
+    ${notes.join('')}`;
+  el.style.display = '';
+  el.querySelectorAll('.sched-run').forEach((btn) => {
+    btn.addEventListener('click', () => runScheduledJob(btn));
+  });
+}
+
+async function loadSchedule() {
+  try {
+    const res = await fetch('/api/schedule');
+    SCHEDULE = await res.json();
+    renderSchedule();
+  } catch {
+    /* the panel is informational — a failed poll shouldn't break the page */
+  }
+}
+
+async function runScheduledJob(btn) {
+  const id = btn.dataset.job;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spin"></span>Running…';
+  try {
+    const res = await fetch(`/api/schedule/${id}/run`, { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'run failed');
+    SCHEDULE = data;
+    renderSchedule();
+    await load(); // job may have written new runs — repaint the table
+  } catch (err) {
+    alert('Job failed: ' + err.message);
+    loadSchedule();
+  }
 }
 
 function paint() {
@@ -350,3 +452,7 @@ $('refresh').addEventListener('click', refreshNow);
 $('toggleRemoved').addEventListener('click', toggleRemovedSection);
 
 load();
+loadSchedule();
+// Keeps "next run in …" honest without a page reload, and shows a job that
+// started on its own timer while the page was open.
+setInterval(loadSchedule, 30000);
