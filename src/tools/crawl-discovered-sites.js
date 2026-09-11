@@ -58,6 +58,68 @@ const CATEGORY_BY_DOMAIN = {
   'beautyharbour.lk': 'Cosmetics',
   'lassana.com': 'Gifts',    // multi-category gifting platform (flowers, cakes, gifts, etc.) -- no single better fit
   'wishque.com': 'Gifts',
+
+  // --- 2026-09-11 batch: the review queue had grown to 105 pending sites, all
+  // with a blank category, so every one of them would have been filed under
+  // the Grocery fallback below -- odel.lk's clothing landing in the grocery
+  // aisle and quietly poisoning Price Checker matches. Category here is
+  // inferred from what the shop actually sells, cross-checked against the
+  // sampleQuery that surfaced it (noted where the two disagree). Only Sri
+  // Lankan retailers are listed -- global marketplaces (etsy, flipkart,
+  // shopee), brand HQ sites (armani.com, hp.com) and non-shops (agoda,
+  // fragrantica, mdpi.com) were rejected off the queue rather than mapped.
+  'celltronics.lk': 'Mobile Phones',
+  'mytechpoint.lk': 'Electronics',       // surfaced by "Play Station 5 pro"
+  'nanotek.lk': 'Electronics',
+  'tecroot.lk': 'Electronics',
+  'techmart.lk': 'Electronics',
+  'cameralk.com': 'Electronics',         // cameras + consoles
+  'chamacomputers.lk': 'Electronics',
+  'dreamtek.lk': 'Electronics',
+  'sense.lk': 'Electronics',
+  'directdealz.lk': 'Electronics',
+  'megadeals.lk': 'Electronics',
+  'gearz.lk': 'Watches',                 // surfaced by "Fossil Bq2494 Bannon Chronograph"
+  'wristlab.lk': 'Watches',
+  'stylelanka.lk': 'Watches',            // surfaced by "Hannah Martin ... Quartz Ladies watch"
+  'chamathkajewellers.lk': 'Jewellery',
+  'diamondmint.lk': 'Jewellery',
+  'lusterblue.lk': 'Jewellery',
+  'swastikboutiques.lk': 'Jewellery',
+  'chickadee.lk': 'Jewellery',           // reads as a kidswear shop, but the anklet query is what matched
+  '2ndhandbooks.lk': 'Books',
+  'booxworm.lk': 'Books',
+  'sarasavi.lk': 'Books',
+  'mdgunasena.com': 'Books',
+  'jeyabookcentre.com': 'Books',
+  'kimrox.lk': 'Baby',                   // surfaced by "Kimrox Baby Diapers"
+  'kiddoz.lk': 'Baby',
+  'sponge.lk': 'Cakes',
+  'gerardmendis.com': 'Cakes',
+  'perfumegallery.lk': 'Perfume & Fragrance',
+  'exclusivelines.lk': 'Perfume & Fragrance',  // surfaced by "Ck Eternity For Men Air Edt"
+  'dotlinklanka.lk': 'Perfume & Fragrance',    // name reads tech, but it's the CK Eternity listing that matched
+  'beautymix.lk': 'Cosmetics',
+  'libertystore.lk': 'Cosmetics',        // surfaced by "Victoria's Secret ... Body Mist"
+  'esermarketing.lk': 'Cosmetics',
+  'odel.lk': 'Gifts',                    // department store -- multi-category, same reasoning as lassana.com
+  'artland.lk': 'Gifts',
+  'treatsnstuff.com': 'Gifts',
+  'noorbhoy.com': 'Gifts',
+  'teg.lk': 'Gifts',
+  'frrunch.lk': 'Grocery',
+  'rainbowfoods.lk': 'Grocery',
+  'spar2u.lk': 'Grocery',
+  'livelife.lk': 'Grocery',
+  'coconutmiracle.lk': 'Grocery',
+  'ecoceylon.lk': 'Grocery',
+  'samleyteas.lk': 'Grocery',
+  'mabrocteas.com': 'Grocery',
+  'shop.akbar.com': 'Grocery',
+  'goodfolks.shop': 'Grocery',
+  'shop.coffee.lk': 'Grocery',
+  'luxecolombo.com': 'Grocery',          // surfaced by "Toscana Ceylon Cardamom Flavour Coffee"
+  'sugarworld.lk': 'Grocery',
 };
 const DEFAULT_CATEGORY = 'Grocery';
 
