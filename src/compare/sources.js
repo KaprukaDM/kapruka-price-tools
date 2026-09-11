@@ -1355,7 +1355,26 @@ async function fetchForeverskinCatalog(fetchJson = fetchJsonSafe) {
  *   `viaBrowser` should be true for partners already known to sit behind a
  *   Cloudflare-style block (persisted from detectPartnerPlatform's result).
  */
-export async function fetchPartnerCatalog(site, { log = () => {}, platform = 'auto', viaBrowser = false } = {}) {
+// Public entry point. Every path below that can return an empty catalogue —
+// including the bespoke per-site adapters (woocommerce-html, odoo, ichouse,
+// kidsmarket, …) — is funnelled through this one check, because "0 products"
+// was being treated as a perfectly good result everywhere downstream. Only the
+// throwing path gives compute() the chance to keep the last known good data
+// (site offline) or surface a real breakage instead of quietly saving an empty
+// comparison over a partner's real one.
+export async function fetchPartnerCatalog(site, opts = {}) {
+  const result = await fetchPartnerCatalogRaw(site, opts);
+  if (!result.products.length) {
+    throw new Error(
+      `Read 0 products from ${toOrigin(site)} (platform: ${result.platform}). Its catalogue ` +
+        `endpoint is empty or blocking us — treating this as a failure rather than saving ` +
+        `an empty comparison over the last good one.`,
+    );
+  }
+  return result;
+}
+
+async function fetchPartnerCatalogRaw(site, { log = () => {}, platform = 'auto', viaBrowser = false } = {}) {
   const origin = toOrigin(site);
   const fetchJson = viaBrowser ? fetchJsonViaBrowser : fetchJsonSafe;
 
@@ -1403,21 +1422,30 @@ export async function fetchPartnerCatalog(site, { log = () => {}, platform = 'au
     const products = await fetchForeverskinCatalog(fetchJson);
     return { products, platform: 'foreverskin' };
   }
+  // An *explicitly configured* woocommerce/shopify partner used to return its
+  // empty catalogue straight back rather than trying the browser fallback, so
+  // a partner whose Store API started answering 403 (Cloudflare/WAF) never got
+  // the one retry that would have worked. Confirmed live: dinapalagroup.lk went
+  // from 1,274 products / 60 matches to 0/0 the day its /wp-json endpoint began
+  // returning 403 — the headless-browser retry reads it fine.
   if (platform === 'woocommerce' || platform === 'auto') {
     const woo = await fetchWooCatalog(origin, log, fetchJson);
     if (woo.length) return { products: woo, platform: 'woocommerce' };
-    if (platform === 'woocommerce') return { products: woo, platform: 'woocommerce' };
   }
   if (platform === 'shopify' || platform === 'auto') {
     const shop = await fetchShopifyCatalog(origin, log, fetchJson);
     if (shop.length) return { products: shop, platform: 'shopify' };
-    if (platform === 'shopify') return { products: shop, platform: 'shopify' };
   }
-  // Direct fetch found nothing in auto mode — if the site is actively blocking
-  // us, retry once through a real browser before giving up.
-  if (!viaBrowser && platform === 'auto' && (await isCloudflareBlocked(origin))) {
-    return fetchPartnerCatalog(site, { log, platform: 'auto', viaBrowser: true });
+  // Direct fetch found nothing — if the site is actively blocking us, retry
+  // once through a real browser before giving up.
+  if (!viaBrowser && (await isCloudflareBlocked(origin))) {
+    log(`  ${origin} looks Cloudflare-blocked — retrying through a headless browser…`);
+    return fetchPartnerCatalog(site, { log, platform, viaBrowser: true });
   }
+  // Explicitly-configured platforms fall through to the empty-catalogue check
+  // in fetchPartnerCatalog(); only `auto` means "we couldn't identify this site
+  // at all", which is a different, more actionable message.
+  if (platform !== 'auto') return { products: [], platform };
   throw new Error(
     `Could not read a product catalogue from ${origin}. Supported platforms: ` +
       `WooCommerce (/wp-json/wc/store/v1/products) and Shopify (/products.json). ` +

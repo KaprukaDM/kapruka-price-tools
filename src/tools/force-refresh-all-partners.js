@@ -60,9 +60,19 @@ function parseArgs(argv) {
 // bad-geo host fails loudly in seconds instead of quietly writing ~130 runs of
 // "price missing" over good data.
 async function checkKaprukaGeo() {
-  const res = await fetch(GEO_PROBE_URL, {
-    headers: { 'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
-  });
+  // Kapruka's own rate limiter can answer the probe with a 429 (e.g. right
+  // after a previous sweep). That says nothing about geo-pricing, so back off
+  // and retry rather than aborting a whole refresh over it.
+  let res;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    res = await fetch(GEO_PROBE_URL, {
+      headers: { 'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
+    });
+    if (res.status !== 429) break;
+    const waitMs = 5000 * 2 ** attempt; // 5s, 10s, 20s, 40s
+    console.warn(`  · geo probe rate-limited (429), retrying in ${waitMs / 1000}s…`);
+    await new Promise((r) => setTimeout(r, waitMs));
+  }
   if (!res.ok) return { ok: false, reason: `probe page returned HTTP ${res.status}` };
   const html = await res.text();
   const currencies = new Set(
@@ -79,6 +89,7 @@ async function checkKaprukaGeo() {
 // than just echoing a stack-trace message.
 function classifyError(message) {
   const m = String(message).toLowerCase();
+  if (m.includes('read 0 products')) return 'empty-catalogue';
   if (m.includes('429') || m.includes('rate limit')) return 'rate-limited';
   if (m.includes('no valid kapruka link')) return 'misconfigured';
   if (/\b(403|401)\b|forbidden|unauthor/.test(m)) return 'blocked';
@@ -213,6 +224,23 @@ async function main() {
     { matched: 0, kaprukaHigher: 0, priceMissing: 0, kaprukaProducts: 0, partnerProducts: 0 }
   );
 
+  // A run that "succeeded" can still be useless. These two cases look identical
+  // to a clean run in the totals, so call them out explicitly rather than
+  // letting a partner sit at 0 matches for weeks with nobody noticing.
+  const warnings = ok
+    .map((r) => {
+      if (r.kaprukaProducts === 0)
+        return { ...r, warning: 'no-kapruka-products', note: 'Kapruka side is empty — check the partner\'s Kapruka link' };
+      if (r.matched === 0)
+        return {
+          ...r,
+          warning: 'no-matches',
+          note: `${r.kaprukaProducts} Kapruka vs ${r.partnerProducts} partner products but nothing matched — likely a naming mismatch the matcher can't bridge`,
+        };
+      return null;
+    })
+    .filter(Boolean);
+
   const report = {
     startedAt: startedAt.toISOString(),
     finishedAt: finishedAt.toISOString(),
@@ -228,6 +256,7 @@ async function main() {
       acc[r.reason] = (acc[r.reason] || 0) + 1;
       return acc;
     }, {}),
+    warnings,
     results,
   };
 
@@ -247,6 +276,10 @@ async function main() {
   if (failed.length) {
     console.log('Failures by reason:', report.failuresByReason);
     for (const f of failed) console.log(`  · ${f.name} (${f.id}) — ${f.reason}: ${f.error}`);
+  }
+  if (warnings.length) {
+    console.log(`\nRefreshed but produced nothing usable (${warnings.length}):`);
+    for (const w of warnings) console.log(`  · ${w.name} (${w.id}) — ${w.warning}: ${w.note}`);
   }
   console.log(`Report written to ${reportPath}`);
 
