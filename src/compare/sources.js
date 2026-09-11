@@ -65,6 +65,16 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 // as before.
 const RATE_LIMIT_RETRIES = 7;
 
+// Retried 429s used to be completely silent, so "we got rate-limited a lot but
+// recovered" looked identical to "nothing happened" — which matters when a
+// sweep runs several partners at once and needs to report whether its
+// concurrency was too high. Counted here (and logged once per hit) so callers
+// like src/tools/force-refresh-all-partners.js can report it.
+let rateLimitRetries = 0;
+export function rateLimitRetryCount() {
+  return rateLimitRetries;
+}
+
 async function fetchText(url) {
   for (let attempt = 0; ; attempt++) {
     const c = new AbortController();
@@ -84,6 +94,8 @@ async function fetchText(url) {
         const waitMs = Number.isFinite(retryAfter) && retryAfter > 0
           ? retryAfter * 1000
           : Math.min(1000 * 2 ** attempt, 30000); // 1s, 2s, 4s, 8s, 16s, 30s, 30s
+        rateLimitRetries += 1;
+        console.warn(`  · HTTP 429 rate-limited, retrying in ${waitMs}ms: ${url}`);
         await sleep(waitMs);
         continue;
       }

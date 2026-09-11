@@ -15,6 +15,8 @@
     "intl-gifts:refresh": "node src/uae-compare/cli-refresh.js",
     "intl-gifts:set-pairing": "node src/uae-compare/cli-set-pairing.js",
     "compare": "node src/compare/index.js",
+    "refresh:pending": "node src/tools/refresh-all-partners.js",
+    "refresh:all": "node src/tools/force-refresh-all-partners.js",
     "relevancy": "node src/tools/find-online-relevancy.js",
     "clear-supabase": "node src/tools/clear-supabase-data.js"
   },
