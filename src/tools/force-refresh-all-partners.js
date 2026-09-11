@@ -231,6 +231,16 @@ async function main() {
     .map((r) => {
       if (r.kaprukaProducts === 0)
         return { ...r, warning: 'no-kapruka-products', note: 'Kapruka side is empty — check the partner\'s Kapruka link' };
+      // Only reachable via compute()'s "site offline, reuse last known data"
+      // path, since a live empty fetch now throws.
+      if (r.partnerProducts === 0)
+        return {
+          ...r,
+          warning: 'no-partner-products',
+          note: r.siteActive
+            ? 'Partner side is empty'
+            : 'Partner site was unreachable — this is the last stored run, which was already empty',
+        };
       if (r.matched === 0)
         return {
           ...r,

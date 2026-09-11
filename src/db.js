@@ -162,6 +162,7 @@ export const getComparisonRun = (id) => backend.getComparisonRun(id);
 export const allPriceCheckRows = () => backend.allPriceCheckRows();
 export const requestPartnerRefresh = (id) => backend.requestPartnerRefresh(id);
 export const allComparisonRows = (partnerId = null) => backend.allComparisonRows(partnerId);
+export const latestComparisonRowsPerPartner = () => backend.latestComparisonRowsPerPartner();
 export const listPartnerRows = () => backend.listPartnerRows();
 export const getPartnerRow = (id) => backend.getPartnerRow(id);
 export const insertPartnerRow = (p) => backend.insertPartnerRow(p);
@@ -684,6 +685,16 @@ async function makePostgresBackend(connectionString) {
       );
       return rows;
     },
+
+    // See the note on the Supabase REST implementation — only the newest run
+    // per partner, without dragging every historical payload across the wire.
+    async latestComparisonRowsPerPartner() {
+      const { rows } = await pool.query(
+        `SELECT DISTINCT ON (partner_id) id, created_at, payload::text AS payload_json
+         FROM comparison_runs ORDER BY partner_id, id DESC`,
+      );
+      return rows;
+    },
   };
 }
 
@@ -861,18 +872,32 @@ async function makeSupabaseRestBackend(baseUrl, serviceKey) {
   // serializes a partner's whole catalogue match) — 500/batch measured at
   // ~45MB and 7-13s, right at the edge of Supabase's statement_timeout under
   // load. 100/batch measured ~11MB in under 2s, with comfortable margin.
+  // ...but 100/batch is only the right size when the batch carries `payload`.
+  // A metadata-only select (id/partner_id/created_at) is a few dozen bytes per
+  // row, so paging it 100 at a time is thousands of HTTPS round-trips for
+  // nothing — measured at 8min just to enumerate comparison_runs. Callers that
+  // don't select a payload column pass a much larger pageSize.
+  //
+  // PostgREST enforces its own `db-max-rows` cap (1000 on this Supabase
+  // project, measured), and it applies that cap SILENTLY — ask for 5000 and
+  // you get 1000 back with no error and no indication it was truncated. So the
+  // loop must not treat "fewer rows than I asked for" as "that was the last
+  // page": with pageSize above the cap, that ends the walk after the very
+  // first batch and hands back the OLDEST rows as if they were the whole
+  // table. (Seen live: the Overpriced dashboard quietly showing August data
+  // after a September refresh.) Only an empty page ends the walk, which costs
+  // exactly one extra request per call.
   const PAGE_SIZE = 100;
-  async function restFetchPaged(basePath, extraFilter = '') {
+  async function restFetchPaged(basePath, extraFilter = '', pageSize = PAGE_SIZE) {
     const rows = [];
     let cursor = 0;
     for (;;) {
       const page = await restFetch(
-        `${basePath}&id=gt.${cursor}${extraFilter}&order=id.asc&limit=${PAGE_SIZE}`,
+        `${basePath}&id=gt.${cursor}${extraFilter}&order=id.asc&limit=${pageSize}`,
       );
       if (!page.length) break;
       rows.push(...page);
       cursor = page[page.length - 1].id;
-      if (page.length < PAGE_SIZE) break;
     }
     return rows;
   }
@@ -1248,6 +1273,46 @@ async function makeSupabaseRestBackend(baseUrl, serviceKey) {
       const filter = partnerId ? `&partner_id=eq.${encodeURIComponent(partnerId)}` : '';
       const rows = await restFetchPaged(`/comparison_runs?select=id,created_at,payload`, filter);
       return rows.map((r) => ({ id: r.id, created_at: r.created_at, payload_json: JSON.stringify(r.payload) }));
+    },
+
+    // Only the newest run per partner. The dashboards want exactly this, but
+    // used to get it by pulling allComparisonRows() — every run ever stored,
+    // payload and all — and keeping the last one per partner in memory. With
+    // ~130 partners refreshed daily and each payload being a whole catalogue
+    // match (tens to hundreds of KB), that grew into hundreds of megabytes and
+    // started returning "Supabase REST 504 Gateway Timeout" mid-pagination,
+    // i.e. a hard 500 on /api/overpriced with no partial result.
+    //
+    // Two cheap requests instead: page the *metadata only* (id + partner_id,
+    // no payload) to work out which row ids are current, then fetch just those
+    // ~130 payloads. Same answer, a fraction of the transfer.
+    async latestComparisonRowsPerPartner() {
+      // 1000 = this project's PostgREST db-max-rows; asking for more just gets
+      // silently capped, so there's nothing to gain above it.
+      const meta = await restFetchPaged('/comparison_runs?select=id,partner_id,created_at', '', 1000);
+      const newestId = new Map(); // partner_id -> row
+      for (const row of meta) {
+        const prev = newestId.get(row.partner_id);
+        if (!prev || row.id > prev.id) newestId.set(row.partner_id, row);
+      }
+      const ids = [...newestId.values()].map((r) => r.id);
+      if (!ids.length) return [];
+
+      // Chunked so the `id=in.(…)` filter can't outgrow the URL length limit,
+      // and so one slow batch can't time the whole thing out.
+      const CHUNK = 25;
+      const out = [];
+      for (let i = 0; i < ids.length; i += CHUNK) {
+        const slice = ids.slice(i, i + CHUNK);
+        const rows = await restFetch(
+          `/comparison_runs?select=id,created_at,payload&id=in.(${slice.join(',')})`,
+        );
+        for (const r of rows) {
+          out.push({ id: r.id, created_at: r.created_at, payload_json: JSON.stringify(r.payload) });
+        }
+      }
+      out.sort((a, b) => a.id - b.id);
+      return out;
     },
   };
 }
@@ -1718,6 +1783,19 @@ async function makeSqliteBackend() {
                    ${partnerId ? 'WHERE partner_id = ?' : ''} ORDER BY id`;
       const stmt = db.prepare(sql);
       return partnerId ? stmt.all(partnerId) : stmt.all();
+    },
+
+    // See the note on the Supabase REST implementation — only the newest run
+    // per partner, without reading every historical payload.
+    async latestComparisonRowsPerPartner() {
+      return db
+        .prepare(
+          `SELECT c.id, c.created_at, c.payload_json FROM comparison_runs c
+           JOIN (SELECT partner_id, MAX(id) AS id FROM comparison_runs GROUP BY partner_id) m
+             ON m.id = c.id
+           ORDER BY c.id`,
+        )
+        .all();
     },
   };
 }

@@ -5,7 +5,13 @@
 // A UTF-8 BOM is prepended so Excel renders Sri Lankan/Unicode product names
 // correctly instead of mojibake.
 
-import { allPriceCheckRows, allComparisonRows, getPriceAuditItems, removedUrlSet } from './db.js';
+import {
+  allPriceCheckRows,
+  allComparisonRows,
+  latestComparisonRowsPerPartner,
+  getPriceAuditItems,
+  removedUrlSet,
+} from './db.js';
 import { listPartners } from './compare/partners.js';
 
 // The Overpriced / All Products Overpriced / Stock Mismatch dashboards (and
@@ -33,6 +39,7 @@ function cached(fn) {
   };
 }
 const cachedAllComparisonRows = cached(allComparisonRows);
+const cachedLatestComparisonRows = cached(latestComparisonRowsPerPartner);
 const cachedGetPriceAuditItems = cached(getPriceAuditItems);
 const cachedRemovedUrlSet = cached(removedUrlSet);
 const cachedAllPriceCheckRows = cached(allPriceCheckRows);
@@ -280,9 +287,17 @@ function categoryFromKaprukaUrl(url) {
 }
 
 // Latest stored comparison run per partner (newest by row id wins).
+//
+// Asks the database for just those rows rather than downloading every run ever
+// stored and discarding all but the last per partner. The old approach meant
+// the dashboards transferred hundreds of MB of historical payloads on a cache
+// miss and eventually failed outright with a Supabase REST 504 mid-pagination.
+// The dedupe below is kept as a safety net: latestComparisonRowsPerPartner()
+// keys on the `partner_id` column, while everything here keys on the partner
+// id *inside* the payload, and legacy rows exist where those disagree.
 async function latestRunPerPartner() {
   const latest = new Map(); // partnerId -> { created_at, payload }
-  for (const row of await cachedAllComparisonRows()) {
+  for (const row of await cachedLatestComparisonRows()) {
     let payload;
     try {
       payload = JSON.parse(row.payload_json);
