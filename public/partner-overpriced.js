@@ -1,6 +1,22 @@
 const $ = (id) => document.getElementById(id);
 let DATA = null;
 let PAGE = 1;
+
+// "Hide offline stores" defaults to ON: a store whose site is dead can't sell
+// at the price we last saw, so leaving it in the list invites us to cut our
+// own margin to beat a competitor that isn't taking orders. The user's own
+// choice is remembered per browser and wins over the default; the default
+// only applies when nothing has been stored yet.
+const HIDE_OFFLINE_KEY = 'partnerOverpriced.hideOffline';
+function restoreHideOffline() {
+  let stored = null;
+  try { stored = localStorage.getItem(HIDE_OFFLINE_KEY); } catch { /* private mode */ }
+  $('hideOffline').checked = stored == null ? true : stored === '1';
+}
+function saveHideOffline() {
+  try { localStorage.setItem(HIDE_OFFLINE_KEY, $('hideOffline').checked ? '1' : '0'); } catch { /* private mode */ }
+}
+restoreHideOffline();
 const PAGE_SIZE = 50;
 let CURRENT_ROWS = []; // the filtered+sorted rows behind the currently rendered page — see wireRemoveButtons()
 
@@ -90,13 +106,25 @@ function discountBadge(regular, price) {
   return ` <span class="badge b-hi" title="Partner regular price: ${lkr(regular)}">🏷 -${pct}%</span>`;
 }
 
+// The headline numbers follow the offline filter. They used to be the raw
+// totals from /api/overpriced, which meant "Total overcharge" quietly included
+// the gap against stores that can't take an order — the one number people
+// quote when arguing for a price cut, inflated by competitors who don't exist.
 function statCards(d) {
   const card = (n, l, cls = '') => `<div class="stat ${cls}"><div class="n">${n}</div><div class="l">${l}</div></div>`;
-  const stores = d.partners.filter((p) => p.overpriced > 0).length;
+  const hideOffline = $('hideOffline').checked;
+  const items = hideOffline ? d.items.filter((i) => i.siteActive !== false) : d.items;
+  const partners = hideOffline ? d.partners.filter((p) => p.siteActive !== false) : d.partners;
+  const stores = partners.filter((p) => p.overpriced > 0).length;
+  const total = items.reduce((sum, i) => sum + (i.diff ?? 0), 0);
+  const excluded = d.count - items.length;
   $('cards').innerHTML =
-    card(d.count, 'Overpriced products', 'bad') +
-    card(stores + ' / ' + d.partners.length, 'Stores affected') +
-    card(lkr(Math.round(d.totalOvercharge)), 'Total overcharge', 'bad');
+    card(items.length, 'Overpriced products', 'bad') +
+    card(stores + ' / ' + partners.length, 'Stores affected') +
+    card(lkr(Math.round(total)), 'Total overcharge', 'bad') +
+    (excluded > 0
+      ? card(excluded, 'Hidden — offline stores')
+      : '');
 }
 
 function countBy(items, key) {
@@ -124,12 +152,16 @@ function categoryOptions() {
 
 // Store options are scoped to whatever category is currently selected, so
 // picking a category first narrows the store list to only stores that
-// actually have overpriced items in that category.
+// actually have overpriced items in that category. Offline stores drop out
+// of the list entirely while they're being hidden — offering a store you'd
+// then be told has nothing to show is just a dead end.
 function storeOptions() {
   const sel = $('store');
   const current = sel.value;
   const category = $('category').value;
-  const items = category ? DATA.items.filter((m) => m.category === category) : DATA.items;
+  const hideOffline = $('hideOffline').checked;
+  let items = category ? DATA.items.filter((m) => m.category === category) : DATA.items;
+  if (hideOffline) items = items.filter((m) => m.siteActive !== false);
   const byPartner = new Map(); // partnerId -> { name, count, offline }
   for (const m of items) {
     if (!m.partnerId) continue;
@@ -147,18 +179,33 @@ function storeOptions() {
   sel.value = byPartner.has(current) ? current : '';
 }
 
-// A store whose site was unreachable on its last refresh attempt (see
-// checkSiteActive() in compare/sources.js) -- its rows below are the last
-// known-good comparison, kept on display rather than dropped, but the price
-// may no longer be accurate so it's worth calling out and letting the team
-// filter them out if they'd rather not see possibly-stale data.
+// Plain-English version of the siteStatus reason set by checkSiteHealth()
+// in src/compare/sources.js.
+const OFFLINE_REASONS = {
+  unreachable: 'no response at all',
+  server_error: 'server error',
+  origin_missing: 'shop front page is gone',
+  storefront_dead: 'home page loads but no product page opens',
+  empty_catalogue: 'site lists no products',
+};
+const offlineReason = (s) => OFFLINE_REASONS[s] || 'site unreachable';
+
+// A store that failed its health check on its last refresh (see
+// checkSiteHealth() in compare/sources.js) -- its rows below are the last
+// known-good comparison, kept on display rather than dropped, but nobody can
+// buy at those prices today, so they're hidden by default and only shown when
+// someone deliberately unticks "Hide offline stores".
 function offlineBanner() {
   const offline = DATA.partners.filter((p) => p.siteActive === false);
   if (!offline.length) { $('offlineBanner').innerHTML = ''; return; }
-  const names = offline.map((p) => escapeHtml(p.partnerLabel || p.name)).join(', ');
+  const names = offline
+    .map((p) => `${escapeHtml(p.partnerLabel || p.name)} <span class="ctx">(${escapeHtml(offlineReason(p.siteStatus))})</span>`)
+    .join(', ');
+  const hidden = $('hideOffline').checked;
   $('offlineBanner').innerHTML = `<div class="offline-banner">
     ⚠️ <strong>${offline.length} store${offline.length === 1 ? '' : 's'} appear offline</strong>
-    (site unreachable on last check) — showing their last known prices, which may be outdated: ${names}
+    — ${hidden ? 'hidden from the list below' : 'shown below'}, because their last known prices
+    aren't something a customer can buy today: ${names}
   </div>`;
 }
 
@@ -176,7 +223,17 @@ function render() {
   );
 
   if (!rows.length) {
-    $('table').innerHTML = '<p class="empty">No overpriced products match your filter. 🎉</p>';
+    // Don't say "nothing to see here 🎉" when the only reason the list is
+    // empty is that the offline filter swallowed everything.
+    const hiddenByOffline = hideOffline && DATA.items.some(
+      (m) => m.siteActive === false &&
+        (!category || m.category === category) &&
+        (!store || m.partnerId === store) &&
+        (!q || m.name.toLowerCase().includes(q)),
+    );
+    $('table').innerHTML = hiddenByOffline
+      ? '<p class="empty">Everything matching this filter belongs to a store that\'s offline, so it\'s hidden. Untick “Hide offline stores” to see the last prices we saw there.</p>'
+      : '<p class="empty">No overpriced products match your filter. 🎉</p>';
     return;
   }
 
@@ -192,7 +249,7 @@ function render() {
       const pct = m.pct == null ? '' : `+${m.pct.toFixed(1)}%`;
       return `<tr class="over">
         <td>${escapeHtml(m.category)}</td>
-        <td><span class="store-pill">${escapeHtml(m.partner)}</span>${m.siteActive === false ? ' <span class="badge badge-offline" title="Site was unreachable on last check — prices below may be outdated">⚠️ offline</span>' : ''}${m.partnerLabel ? `<div class="ctx">${escapeHtml(m.partnerLabel)}</div>` : ''}</td>
+        <td><span class="store-pill">${escapeHtml(m.partner)}</span>${m.siteActive === false ? ` <span class="badge badge-offline" title="Offline on last check: ${escapeHtml(offlineReason(m.siteStatus))} — this price is the last one we saw, not one a customer can buy at today">⚠️ offline</span>` : ''}${m.partnerLabel ? `<div class="ctx">${escapeHtml(m.partnerLabel)}</div>` : ''}</td>
         <td class="col-product">
           <div class="prod-name">${link(m.kaprukaUrl, m.name)}</div>
           <div class="prod-name prod-partner">${link(m.partnerUrl, m.partnerProductName || m.partnerLabel || '—')}</div>
@@ -446,7 +503,14 @@ function exportCsv() {
 $('search').addEventListener('input', () => { PAGE = 1; render(); });
 $('category').addEventListener('change', () => { PAGE = 1; storeOptions(); render(); });
 $('store').addEventListener('change', () => { PAGE = 1; render(); });
-$('hideOffline').addEventListener('change', () => { PAGE = 1; render(); });
+$('hideOffline').addEventListener('change', () => {
+  PAGE = 1;
+  saveHideOffline();
+  statCards(DATA); // headline totals follow the filter
+  offlineBanner(); // the banner says whether those stores are hidden or shown
+  storeOptions(); // offline stores appear/disappear from the dropdown
+  render();
+});
 $('exportCsv').addEventListener('click', exportCsv);
 $('refresh').addEventListener('click', refreshNow);
 $('toggleRemoved').addEventListener('click', toggleRemovedSection);

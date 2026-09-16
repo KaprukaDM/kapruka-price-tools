@@ -1,7 +1,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-import { fetchKaprukaCatalog, fetchPartnerCatalog, fetchKaprukaProduct, parseKaprukaSource, checkSiteActive } from "./sources.js";
+import { fetchKaprukaCatalog, fetchPartnerCatalog, fetchKaprukaProduct, parseKaprukaSource, checkSiteHealth, siteHealthLabel } from "./sources.js";
 import { matchCatalogs, summarize } from "./matcher.js";
 import { getPartner } from "./partners.js";
 import { hydrateComparisonResultFromMcp } from "./mcpPrices.js";
@@ -103,12 +103,22 @@ async function compute(partner, log, previousPayload) {
     // Distinguish "the site itself is down" from "the site is up but our
     // scraper choked on it" -- only the former should fall back to stale
     // data silently; the latter is a real bug that should keep failing loud.
-    const siteActive = await checkSiteActive(partner.partnerSite);
-    if (!siteActive && previousPayload) {
-      log(`  Site appears offline -- reusing last known comparison data for ${partner.name}.`);
+    // The last known-good catalogue gives the health check real product URLs
+    // to sample, so a site whose shop front has since 404'd is caught here too.
+    const health = await checkSiteHealth(partner.partnerSite, {
+      products: (previousPayload?.matched || []).map((m) => m.partnerUrl),
+      log,
+    });
+    if (!health.active && previousPayload) {
+      log(`  Site appears offline (${siteHealthLabel(health.reason)}) -- reusing last known comparison data for ${partner.name}.`);
       return {
         ...previousPayload,
-        partner: { ...previousPayload.partner, siteActive: false },
+        partner: {
+          ...previousPayload.partner,
+          siteActive: false,
+          siteStatus: health.reason,
+          siteStatusDetail: health.detail,
+        },
         checkedAt,
       };
     }
@@ -116,6 +126,19 @@ async function compute(partner, log, previousPayload) {
   }
 
   const partnerCat = partnerCatOutcome.result;
+
+  // Health is now judged on EVERY run, not only when the scrape blew up.
+  // It used to be hardcoded `siteActive: true` on the happy path, which meant
+  // a store whose catalogue API still answers but whose actual shop front is
+  // dead (thinex.lk -- see checkSiteHealth) could never be classified offline,
+  // no matter how many times it was refreshed.
+  const health = partnerCat.products.length === 0
+    ? { active: false, reason: 'empty_catalogue', detail: `${partner.partnerSite} returned no products` }
+    : await checkSiteHealth(partner.partnerSite, { products: partnerCat.products, log });
+  if (!health.active) {
+    log(`  ⚠️ ${partner.name} classified offline: ${siteHealthLabel(health.reason)} — ${health.detail}`);
+  }
+
   const result = matchCatalogs(kapruka, partnerCat.products, partner.name);
 
   const stock = await hydrateKaprukaStock(result.matched, log);
@@ -137,7 +160,9 @@ async function compute(partner, log, previousPayload) {
       partnerLabel: partner.partnerLabel || partner.partnerSite,
       partnerSite: partner.partnerSite,
       platform: partnerCat.platform,
-      siteActive: true
+      siteActive: health.active,
+      siteStatus: health.reason,
+      siteStatusDetail: health.detail
     },
     catalogCounts: {
       kapruka: kapruka.length,

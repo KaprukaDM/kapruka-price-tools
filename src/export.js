@@ -13,6 +13,7 @@ import {
   removedUrlSet,
 } from './db.js';
 import { listPartners } from './compare/partners.js';
+import { siteHealthLabel } from './compare/sources.js';
 
 // The Overpriced / All Products Overpriced / Stock Mismatch dashboards (and
 // their CSV exports) all re-scan the same handful of full tables on every
@@ -326,11 +327,14 @@ export async function overpricedReport() {
     // Team-curated exclusions (e.g. the partner's higher price is explained
     // by a bundled add-on) — see removed_products in db.js.
     const over = (payload.matched || []).filter((m) => m.verdict === 'kapruka_higher' && !removed.has(m.kaprukaUrl));
-    // false only when the store's own website was confirmed unreachable on
-    // the last refresh attempt (see checkSiteActive() in compare/sources.js)
-    // -- the items below are that store's last known-good comparison, kept
-    // on display rather than dropped, but worth flagging as possibly stale.
+    // false when the store's own website failed its health check on the last
+    // refresh (see checkSiteHealth() in compare/sources.js): unreachable, a
+    // dead shop front, or no products at all. The items below are that
+    // store's last known-good comparison, kept on display rather than
+    // dropped, but they're not a price anyone can actually buy at today.
+    // siteStatus says *which* failure it was, so the UI can explain itself.
     const siteActive = p.siteActive !== false;
+    const siteStatus = p.siteStatus || (siteActive ? 'ok' : 'unreachable');
     partners.push({
       id: p.id ?? '',
       name: p.name ?? '',
@@ -339,6 +343,7 @@ export async function overpricedReport() {
       matched: (payload.matched || []).length,
       generatedAt: at,
       siteActive,
+      siteStatus,
     });
 
     for (const m of over) {
@@ -360,6 +365,7 @@ export async function overpricedReport() {
         partnerUrl: m.partnerUrl ?? '',
         generatedAt: at,
         siteActive,
+        siteStatus,
       });
     }
   }
@@ -380,6 +386,11 @@ export async function overpricedReport() {
 const OVERPRICED_COLUMNS = [
   { key: 'category', label: 'Category' },
   { key: 'partner', label: 'Store' },
+  // The dashboard hides offline stores by default; the CSV can't hide
+  // anything, so it labels them instead — otherwise a spreadsheet re-imports
+  // the exact problem the filter exists to prevent (repricing against a
+  // competitor who can't take an order).
+  { key: 'storeStatus_out', label: 'Store status' },
   { key: 'name', label: 'Product' },
   { key: 'kaprukaPrice', label: 'Kapruka price' },
   { key: 'partnerPrice', label: 'Partner price' },
@@ -401,6 +412,7 @@ export async function exportOverpricedCsv(partnerId = null, category = null) {
   const rows = filtered.map((i) => ({
     ...i,
     pct_out: i.pct != null ? Math.round(i.pct * 10) / 10 : '',
+    storeStatus_out: i.siteActive === false ? `OFFLINE — ${siteHealthLabel(i.siteStatus)}` : 'online',
   }));
   return buildCsv(OVERPRICED_COLUMNS, rows);
 }

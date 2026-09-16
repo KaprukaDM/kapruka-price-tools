@@ -86,8 +86,12 @@
       <div class="toolbar">
         <select id="category"><option value="">All categories</option></select>
         <select id="store"><option value="">All stores</option></select>
-        <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--mut);cursor:pointer">
-          <input type="checkbox" id="hideOffline" /> Hide offline stores
+        <!-- Checked by default (and remembered per browser) — an offline
+             store's last-known price is not a price anyone can buy at, so
+             repricing against it gives away margin for nothing. -->
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--mut);cursor:pointer;white-space:nowrap"
+               title="On by default. Offline stores' prices are their last known ones — not something a customer can actually buy today.">
+          <input type="checkbox" id="hideOffline" checked /> Hide offline stores
         </label>
         <div class="right">
           <input type="search" id="search" placeholder="Filter by product name…" />

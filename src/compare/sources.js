@@ -177,27 +177,137 @@ function toOrigin(site) {
   return u.origin;
 }
 
-// Is the partner's own website reachable at all -- separate question from
-// "did our scraper understand the page." A catalogue fetch can fail for lots
-// of reasons (layout change, Cloudflare challenge, rate limit) while the site
-// itself is perfectly up; this only answers whether the domain resolves and
-// something answers the connection, so a comparison run can tell "site is
-// down" apart from "site is up but scraping it broke." Any HTTP response
-// (even an error page) means a server answered -- only a network-level
-// failure (DNS, connection refused/reset, TLS, timeout) counts as inactive.
-export async function checkSiteActive(site) {
+// Fetch just the status code for a URL (still a GET -- plenty of these hosts
+// 405 a HEAD). Returns null on a network-level failure (DNS, refused, TLS,
+// timeout), which is a different answer from "the server said 404".
+async function statusOf(url, timeoutMs = 15000) {
+  const c = new AbortController();
+  const t = setTimeout(() => c.abort(), timeoutMs);
   try {
-    const c = new AbortController();
-    const t = setTimeout(() => c.abort(), 15000);
-    try {
-      const r = await fetch(toOrigin(site), { method: 'GET', headers: UA, redirect: 'follow', signal: c.signal });
-      return r.status < 500;
-    } finally {
-      clearTimeout(t);
+    const opts = { method: 'GET', headers: UA, redirect: 'follow', signal: c.signal };
+    if (SCRAPE_PROXY) {
+      if (!proxyDispatcher) {
+        const { ProxyAgent } = await import('undici');
+        proxyDispatcher = new ProxyAgent(SCRAPE_PROXY);
+      }
+      opts.dispatcher = proxyDispatcher;
     }
+    const r = await fetch(url, opts);
+    return r.status;
   } catch {
-    return false;
+    return null;
+  } finally {
+    clearTimeout(t);
   }
+}
+
+// How many of a partner's product pages we sample when deciding whether the
+// storefront is actually usable. Spread across the catalogue so one deleted
+// product (or one whole dead category) can't condemn a healthy shop -- every
+// single sample has to be gone before we call the store dead.
+const HEALTH_SAMPLE_SIZE = 4;
+
+// Evenly-spaced sample of product URLs from a catalogue, deduped.
+function sampleProductUrls(products, n = HEALTH_SAMPLE_SIZE) {
+  const urls = [...new Set((products || []).map((p) => (typeof p === 'string' ? p : p?.url)).filter(Boolean))];
+  if (urls.length <= n) return urls;
+  const step = urls.length / n;
+  return Array.from({ length: n }, (_, i) => urls[Math.floor(i * step)]);
+}
+
+const HEALTH_LABELS = {
+  ok: 'online',
+  unreachable: 'site unreachable (no response at all)',
+  server_error: 'site returning a server error',
+  origin_missing: 'domain answers but the shop front page is gone',
+  storefront_dead: 'home page loads but no product page opens — nothing can actually be bought',
+  empty_catalogue: 'site is up but lists no products at all',
+};
+export function siteHealthLabel(reason) {
+  return HEALTH_LABELS[reason] || reason || 'unknown';
+}
+
+// Is the partner's own website actually a working shop? -- a different (and
+// much more useful) question than the one this used to ask, which was only
+// "did anything answer the connection."
+//
+// The old rule -- GET the origin, call it alive on any status below 500 -- let
+// genuinely dead stores keep driving repricing decisions. thinex.lk is the
+// worked example: its home page returns a perfectly healthy 200, but every
+// pretty permalink underneath it (/product/..., /shop/, /cart/) 404s, so no
+// customer can open a product, let alone buy one. Its catalogue still reads
+// fine over the WooCommerce Store API's ?rest_route= form, so the comparison
+// run "succeeded" and the store showed up as our single biggest overpricing
+// gap -- a competitor that cannot take an order.
+//
+// So the verdict now needs three things to be true: the domain answers, the
+// origin isn't a 4xx/5xx error page, and at least one real product page from
+// the freshly-scraped catalogue actually opens. Deliberately conservative
+// about false positives, because hiding a live competitor costs us real
+// margin intelligence:
+//   · a network failure on a *sample* (not the origin) is inconclusive, so it
+//     counts as alive -- only an explicit 404/410 means "page is gone";
+//   · 401/403 on the origin is a WAF blocking us, not a dead shop -- alive;
+//   · every single sample has to be 404/410 before we call it dead.
+//
+// Returns { active, reason, detail }; see HEALTH_LABELS for the reasons.
+export async function checkSiteHealth(site, { products = [], log = () => {} } = {}) {
+  let origin;
+  try {
+    origin = toOrigin(site);
+  } catch {
+    return { active: false, reason: 'unreachable', detail: `Unparseable site URL: ${site}` };
+  }
+
+  // One retry before condemning a site on a timeout: a single slow response
+  // under the sweep's concurrency is not evidence a shop has closed, and this
+  // verdict sticks until the next refresh.
+  let originStatus = await statusOf(origin);
+  if (originStatus == null) originStatus = await statusOf(origin, 25000);
+
+  const samples = sampleProductUrls(products);
+  const sampleStatuses = samples.length ? await Promise.all(samples.map((u) => statusOf(u))) : [];
+  // A product page that actually serves is the strongest possible evidence the
+  // shop is trading -- it outranks anything the home page did, including a
+  // timeout on a slow apex domain (iloveceylon.com does exactly this).
+  const opens = sampleStatuses.filter((s) => s != null && s < 400).length;
+  if (opens > 0) {
+    return { active: true, reason: 'ok', detail: `${opens}/${sampleStatuses.length} sampled product page(s) open` };
+  }
+
+  if (originStatus == null) {
+    return { active: false, reason: 'unreachable', detail: `No response from ${origin} (two attempts)` };
+  }
+  if (originStatus >= 500) {
+    return { active: false, reason: 'server_error', detail: `${origin} returned HTTP ${originStatus}` };
+  }
+  // 401/403 is us being blocked, not the shop being shut. Anything else in the
+  // 4xx range on the *home page* means there's no shop front left to visit.
+  if (originStatus >= 400 && originStatus !== 401 && originStatus !== 403) {
+    return { active: false, reason: 'origin_missing', detail: `${origin} returned HTTP ${originStatus}` };
+  }
+
+  // Home page is fine. Every sampled product page being an explicit 404/410 is
+  // the thinex.lk case: a shop you can look at but not buy from. Samples that
+  // merely timed out or got WAF-blocked prove nothing, so they don't count.
+  const gone = sampleStatuses.filter((s) => s === 404 || s === 410).length;
+  if (sampleStatuses.length && gone === sampleStatuses.length) {
+    log(`  ✗ ${origin}: home page is up but all ${gone} sampled product page(s) 404 — storefront is dead`);
+    return {
+      active: false,
+      reason: 'storefront_dead',
+      detail: `${origin} home page HTTP ${originStatus}, but all ${gone} sampled product page(s) returned 404/410`,
+    };
+  }
+
+  // Either there was no catalogue to sample, or the samples were inconclusive.
+  // The home page answered, so we can't say more than that from here.
+  return { active: true, reason: 'ok', detail: `${origin} returned HTTP ${originStatus}` };
+}
+
+// Back-compat boolean wrapper: "is the partner site alive?" without the reason.
+export async function checkSiteActive(site, opts) {
+  return (await checkSiteHealth(site, opts)).active;
 }
 
 // ---- Kapruka -------------------------------------------------------------
