@@ -61,6 +61,7 @@ const CATEGORY_BY_DOMAIN = {
   'toyo.lk': 'Mobile Phones',
   'baloon.lk': 'Mobile Phones',
   '37left.lk': 'Mobile Phones',
+  'istudio.lk': 'Electronics',           // Apple/audio reseller (Wix storefront)
   'printercartridges.lk': 'Electronics',
   'printers.lk': 'Electronics',      // surfaced by "HP 03A Toner Cartridge"
   'mmsrilanka.com': 'Electronics',
