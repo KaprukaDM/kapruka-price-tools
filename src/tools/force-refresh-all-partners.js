@@ -36,7 +36,7 @@ import 'dotenv/config';
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { runComparison } from '../compare/run.js';
-import { rateLimitRetryCount } from '../compare/sources.js';
+import { rateLimitRetryCount, closeScrapeBrowsers } from '../compare/sources.js';
 import { listPartners } from '../compare/partners.js';
 import { saveComparisonRun, storageKind } from '../db.js';
 
@@ -292,6 +292,11 @@ async function main() {
     for (const w of warnings) console.log(`  · ${w.name} (${w.id}) — ${w.warning}: ${w.note}`);
   }
   console.log(`Report written to ${reportPath}`);
+
+  // Cloudflare-blocked partners leave a Playwright browser open for cookie
+  // reuse across catalogue pages (see fetchJsonViaBrowser in
+  // compare/sources.js); close it so the sweep exits when it says it's done.
+  await closeScrapeBrowsers();
 
   if (ok.length === 0 && results.length > 0) process.exitCode = 1;
 }

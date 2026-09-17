@@ -142,32 +142,195 @@ async function isCloudflareBlocked(origin) {
   }
 }
 
-// Fetch JSON through a real headless browser instead of fetch() — the only way
-// past a Cloudflare JS challenge. Slow (~5-10s) and not guaranteed to pass, so
-// this is only ever tried as a last resort, never as the first attempt.
+// Fetch JSON through a real browser instead of fetch() — the only way past a
+// Cloudflare JS challenge. Slow and not guaranteed to pass, so this is only
+// ever tried as a last resort, never as the first attempt.
+//
+// Three things this has to get right, all learned the hard way against
+// tomahawkbike.com and theminisecret.com (both went to "0 products" while this
+// fallback reported success at passing nothing):
+//
+//   1. HEADED beats headless. Cloudflare's managed challenge fingerprints
+//      headless Chromium (and even channel:'chrome' in headless mode) and never
+//      clears it — the interstitial just sits there forever. The same challenge
+//      clears in ~12s in a headed window. So: try headless first (cheap, works
+//      for the softer WAFs), then retry headed unless SCRAPE_HEADED=0 says this
+//      host has no display (a Linux VPS/container, where launching headed just
+//      throws and we end up back at null, same as before).
+//   2. Wait for the JSON, don't sleep a fixed 6s. The old blind wait both
+//      wasted 6s on sites that answer instantly and gave up on ones that take
+//      12-15s. Poll until the body parses as JSON.
+//   3. Reuse the browser AND the per-origin context. This used to launch (and
+//      throw away) a whole browser per request, so a 5-page catalogue re-ran
+//      the challenge 5 times from scratch. Keeping the context keeps the
+//      cf_clearance cookie, so only the first page pays for the challenge.
+const HEADED_DISABLED = /^(0|false)$/i.test(process.env.SCRAPE_HEADED || '');
+const BROWSER_IDLE_MS = 120000;
+
+const browsers = new Map(); // headed:boolean -> Promise<Browser>
+const browserContexts = new Map(); // `${headed}|${origin}` -> Promise<BrowserContext>
+let browserIdleTimer = null;
+
+async function launchBrowser(headed) {
+  const { chromium } = await import('playwright');
+  const launchOpts = { headless: !headed };
+  if (headed) launchOpts.args = ['--disable-blink-features=AutomationControlled'];
+  if (SCRAPE_PROXY) launchOpts.proxy = { server: SCRAPE_PROXY };
+  return chromium.launch(launchOpts);
+}
+
+function getBrowser(headed) {
+  if (!browsers.has(headed)) browsers.set(headed, launchBrowser(headed));
+  return browsers.get(headed);
+}
+
+async function getBrowserContext(origin, headed) {
+  const key = `${headed}|${origin}`;
+  if (!browserContexts.has(key)) {
+    browserContexts.set(
+      key,
+      (async () => {
+        const browser = await getBrowser(headed);
+        // Deliberately NOT forcing UA['User-Agent'] here. That string is a
+        // pinned Chrome/124 that no longer matches the Chromium actually doing
+        // the navigating, and Cloudflare compares the two: with the override
+        // the challenge never cleared, without it the same page cleared in ~9s
+        // (measured on tomahawkbike.com). The browser's own UA is consistent
+        // with its fingerprint, which is the whole point of using a browser.
+        return browser.newContext({
+          locale: 'en-US',
+          extraHTTPHeaders: { 'Accept-Language': UA['Accept-Language'] },
+        });
+      })(),
+    );
+  }
+  return browserContexts.get(key);
+}
+
+// Close every browser this module opened. Exported so a CLI sweep can exit
+// promptly instead of waiting on the idle timer; the server never has to call
+// it (the idle timer below closes an unused browser on its own).
+export async function closeScrapeBrowsers() {
+  clearTimeout(browserIdleTimer);
+  browserIdleTimer = null;
+  const pending = [...browsers.values()];
+  browsers.clear();
+  browserContexts.clear();
+  await Promise.all(
+    pending.map(async (p) => {
+      try {
+        await (await p).close();
+      } catch {
+        /* already gone */
+      }
+    }),
+  );
+}
+
+function scheduleBrowserIdleClose() {
+  clearTimeout(browserIdleTimer);
+  browserIdleTimer = setTimeout(() => {
+    closeScrapeBrowsers().catch(() => {});
+  }, BROWSER_IDLE_MS);
+  browserIdleTimer.unref?.(); // never hold the process open just for this
+}
+
+const CHALLENGE_TEXT = /just a moment|security verification|attention required|checking your browser|enable javascript and cookies/i;
+
+// One navigation, polled until the response body parses as JSON (or we run out
+// of patience). Returns { json } on success, or { challenged } saying whether
+// what we were left staring at was a bot-protection interstitial (as opposed to
+// an ordinary 404/HTML page), which tells the caller whether escalating to a
+// headed browser is worth the time.
+async function readJsonInBrowser(context, url, waitMs) {
+  const page = await context.newPage();
+  try {
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
+    const deadline = Date.now() + waitMs;
+    let challenged = false;
+    for (;;) {
+      let text = null;
+      try {
+        text = await page.evaluate(() => document.body.innerText);
+      } catch {
+        // "Execution context was destroyed" — the challenge just navigated the
+        // page to the real response, which is exactly what we're waiting for.
+        challenged = true;
+      }
+      if (text) {
+        try {
+          return { json: JSON.parse(text), challenged };
+        } catch {
+          challenged = challenged || CHALLENGE_TEXT.test(text);
+          // Nothing to wait for if this is just a plain HTML page (a 404, a
+          // "not WooCommerce" shop front): only a live challenge changes on
+          // its own, so stop burning the timeout on anything else.
+          if (!challenged) return { json: null, challenged };
+        }
+      }
+      if (Date.now() >= deadline) return { json: null, challenged };
+      await page.waitForTimeout(2000);
+    }
+  } finally {
+    await page.close().catch(() => {});
+  }
+}
+
+// Origins where headless has already been proved useless. Remembered because
+// catalogues are paginated: without this, every single page of a Cloudflare-
+// challenged shop would waste its headless attempt again before escalating.
+const headlessHopeless = new Set();
+
+// Only one headed challenge at a time, process-wide. Two challenged partners
+// running in the same sweep (concurrency 2) had one pass and one hang forever;
+// the one that hung passed on its own a minute later. Headed windows compete
+// for focus, and an unfocused challenge widget can just sit there — so the
+// sweep's concurrency has to stop at this door.
+let headedQueue = Promise.resolve();
+function withHeadedLock(fn) {
+  const run = headedQueue.then(fn, fn);
+  headedQueue = run.then(
+    () => {},
+    () => {},
+  );
+  return run;
+}
+
 async function fetchJsonViaBrowser(url) {
   if (BROWSER_DISABLED) return null;
+  let origin;
   try {
-    const { chromium } = await import('playwright');
-    const launchOpts = {};
-    if (SCRAPE_PROXY) launchOpts.proxy = { server: SCRAPE_PROXY };
-    const browser = await chromium.launch(launchOpts);
-    try {
-      const context = await browser.newContext({
-        userAgent: UA['User-Agent'],
-        extraHTTPHeaders: { 'Accept-Language': UA['Accept-Language'] },
-      });
-      const page = await context.newPage();
-      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
-      // Cloudflare's managed challenge normally clears itself within a few seconds.
-      await page.waitForTimeout(6000);
-      const text = await page.evaluate(() => document.body.innerText);
-      return JSON.parse(text);
-    } finally {
-      await browser.close();
-    }
+    origin = toOrigin(url);
   } catch {
     return null;
+  }
+  const modes = [];
+  if (!headlessHopeless.has(origin)) modes.push(false);
+  if (!HEADED_DISABLED) modes.push(true);
+  try {
+    for (const headed of modes) {
+      let result = null;
+      try {
+        const read = async () => {
+          const context = await getBrowserContext(origin, headed);
+          return readJsonInBrowser(context, url, headed ? 40000 : 15000);
+        };
+        result = headed ? await withHeadedLock(read) : await read();
+      } catch {
+        // A crashed/closed browser shouldn't poison every later call — drop the
+        // cached handles for this mode so the next attempt relaunches cleanly.
+        browserContexts.delete(`${headed}|${origin}`);
+        browsers.delete(headed);
+      }
+      if (result?.json != null) return result.json;
+      if (!headed && result?.challenged) headlessHopeless.add(origin);
+      // A headless miss that wasn't a challenge means the endpoint genuinely
+      // isn't there — a headed retry would return the same 404 more slowly.
+      if (!headed && result && !result.challenged) return null;
+    }
+    return null;
+  } finally {
+    scheduleBrowserIdleClose();
   }
 }
 
@@ -694,6 +857,11 @@ export async function detectPartnerPlatform(site) {
   if (Array.isArray(woo) && woo.length) return { platform: 'woocommerce', viaBrowser: false, blocked: false };
   const shop = await fetchJsonSafe(`${origin}/products.json?limit=1`);
   if (shop && Array.isArray(shop.products) && shop.products.length) return { platform: 'shopify', viaBrowser: false, blocked: false };
+
+  // Medusa storefronts expose no public catalogue JSON, so this one is a
+  // server-rendered listing page rather than an API probe — cheap enough to
+  // try before falling back to the (much slower) browser path.
+  if (await looksLikeMedusa(site)) return { platform: 'medusa', viaBrowser: false, blocked: false };
 
   const blocked = await isCloudflareBlocked(origin);
   if (blocked) {
@@ -1456,6 +1624,101 @@ async function fetchForeverskinCatalog(fetchJson = fetchJsonSafe) {
   return out;
 }
 
+// -- Medusa storefront (the Next.js "medusa-next" starter) -- agnarsl.com is
+// the first partner on it: it used to be WooCommerce, and the day it
+// replatformed its /wp-json endpoints started 404ing, so the comparison went
+// to zero. There's no public catalogue JSON to read (the Medusa Store API sits
+// on a separate backend host behind a publishable key), but the storefront
+// server-renders its whole product grid, prices included, so the listing pages
+// are the catalogue.
+//
+// Two storefront quirks this has to handle:
+//   · every route is prefixed with a region/country code (/lk/store), which we
+//     discover by following the origin's redirect rather than hard-coding "lk";
+//   · the grid pages past the first also carry a "recommended" strip of
+//     products from elsewhere in the catalogue, so pages overlap — dedupe by
+//     URL and stop when a page adds nothing new, same as the woo-html adapter.
+const MEDUSA_MAX_PAGES = 40;
+
+// The region-prefixed base path (e.g. "https://agnarsl.com/lk"): taken from the
+// configured partner site if it already points inside a region, otherwise from
+// wherever the bare origin redirects to.
+async function medusaBasePath(site) {
+  const origin = toOrigin(site);
+  const configured = new URL(site.startsWith('http') ? site : `https://${site}`).pathname;
+  const fromSite = configured.match(/^\/([a-z]{2})(?:\/|$)/i);
+  if (fromSite) return `${origin}/${fromSite[1].toLowerCase()}`;
+  try {
+    const res = await fetch(origin, { headers: UA, redirect: 'follow' });
+    const landed = new URL(res.url).pathname.match(/^\/([a-z]{2})(?:\/|$)/i);
+    if (landed) return `${origin}/${landed[1].toLowerCase()}`;
+  } catch {
+    /* fall through to the un-prefixed form */
+  }
+  return origin;
+}
+
+function parseMedusaListingPage(html, origin) {
+  const $ = cheerio.load(html);
+  const out = [];
+  $('a[href*="/products/"]').each((_, el) => {
+    const href = $(el).attr('href');
+    if (!href) return;
+    const url = href.startsWith('http') ? href : `${origin}${href}`;
+    // The card's image alt is the clean product name; the anchor's own text is
+    // name+price run together ("Agnar Luxe KarmaLKR 8,500.00"), so the name is
+    // read from the alt and only the price from the text.
+    const name = fixMojibake(decodeEntities($(el).find('img').first().attr('alt') || '')).trim();
+    const text = $(el).text().replace(/\s+/g, ' ').trim();
+    const priceText = (text.match(/(?:LKR|Rs\.?|USD|\$)\s?[\d.,]+/gi) || []).pop();
+    if (!name || !priceText) return;
+    const parsed = parsePriceMaybeForeign(priceText);
+    if (!parsed || parsed.price == null || parsed.price <= 0) return;
+    out.push({ id: `medusa-${url}`, name, price: parsed.price, url, _currency: parsed.currency });
+  });
+  return out;
+}
+
+async function fetchMedusaCatalog(site, log) {
+  const origin = toOrigin(site);
+  const base = await medusaBasePath(site);
+  const byUrl = new Map();
+  for (let page = 1; page <= MEDUSA_MAX_PAGES; page++) {
+    let html;
+    try {
+      html = await fetchText(`${base}/store?page=${page}`);
+    } catch {
+      break; // past the last page, or the storefront stopped answering
+    }
+    const products = parseMedusaListingPage(html, origin);
+    if (!products.length) break;
+    let added = 0;
+    for (const p of products) {
+      if (!byUrl.has(p.url)) {
+        byUrl.set(p.url, p);
+        added++;
+      }
+    }
+    log(`  partner (medusa) page ${page}: ${products.length} cards (${added} new), total ${byUrl.size}`);
+    if (added === 0) break; // pagination wrapped — only repeats from here
+    await sleep(400); // full page renders, not a lightweight API call
+  }
+  return convertForeignItems([...byUrl.values()]);
+}
+
+// Cheap "is this a Medusa storefront?" probe: one listing page that yields
+// parseable product cards. Used both by detectPartnerPlatform (new partners)
+// and by the replatform fallback in fetchPartnerCatalogRaw (existing ones).
+async function looksLikeMedusa(site) {
+  try {
+    const base = await medusaBasePath(site);
+    const html = await fetchText(`${base}/store`);
+    return parseMedusaListingPage(html, toOrigin(site)).length > 0;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Fetch a partner's full catalogue from their own site, auto-detecting the
  * platform. Returns the standard product shape. Throws if the platform isn't
@@ -1532,6 +1795,10 @@ async function fetchPartnerCatalogRaw(site, { log = () => {}, platform = 'auto',
     const products = await fetchForeverskinCatalog(fetchJson);
     return { products, platform: 'foreverskin' };
   }
+  if (platform === 'medusa') {
+    const products = await fetchMedusaCatalog(site, log);
+    return { products, platform: 'medusa' };
+  }
   // An *explicitly configured* woocommerce/shopify partner used to return its
   // empty catalogue straight back rather than trying the browser fallback, so
   // a partner whose Store API started answering 403 (Cloudflare/WAF) never got
@@ -1549,13 +1816,44 @@ async function fetchPartnerCatalogRaw(site, { log = () => {}, platform = 'auto',
   // Direct fetch found nothing — if the site is actively blocking us, retry
   // once through a real browser before giving up.
   if (!viaBrowser && (await isCloudflareBlocked(origin))) {
-    log(`  ${origin} looks Cloudflare-blocked — retrying through a headless browser…`);
+    log(`  ${origin} looks Cloudflare-blocked — retrying through a real browser…`);
     return fetchPartnerCatalog(site, { log, platform, viaBrowser: true });
   }
-  // Explicitly-configured platforms fall through to the empty-catalogue check
-  // in fetchPartnerCatalog(); only `auto` means "we couldn't identify this site
-  // at all", which is a different, more actionable message.
-  if (platform !== 'auto') return { products: [], platform };
+  // Still nothing, and this partner is pinned to a platform it clearly isn't
+  // serving any more: partners replatform. agnarsl.com moved from WooCommerce
+  // to a Medusa/Next.js storefront and simply reported "0 products" on every
+  // sweep from that day on, because a pinned platform never re-probed anything
+  // else. Re-detect once here so a replatformed store heals itself instead of
+  // sitting at zero until somebody reads a refresh report.
+  if (platform !== 'auto') {
+    if (platform !== 'woocommerce') {
+      const woo = await fetchWooCatalog(origin, log, fetchJson);
+      if (woo.length) {
+        log(`  ${origin} now looks like WooCommerce, not ${platform} — using that`);
+        return { products: woo, platform: 'woocommerce' };
+      }
+    }
+    if (platform !== 'shopify') {
+      const shop = await fetchShopifyCatalog(origin, log, fetchJson);
+      if (shop.length) {
+        log(`  ${origin} now looks like Shopify, not ${platform} — using that`);
+        return { products: shop, platform: 'shopify' };
+      }
+    }
+    if (platform !== 'medusa' && (await looksLikeMedusa(site))) {
+      log(`  ${origin} now looks like a Medusa storefront, not ${platform} — using that`);
+      const products = await fetchMedusaCatalog(site, log);
+      if (products.length) return { products, platform: 'medusa' };
+    }
+    // Fall through to the empty-catalogue check in fetchPartnerCatalog();
+    // only `auto` means "we couldn't identify this site at all", which is a
+    // different, more actionable message.
+    return { products: [], platform };
+  }
+  if (await looksLikeMedusa(site)) {
+    const products = await fetchMedusaCatalog(site, log);
+    if (products.length) return { products, platform: 'medusa' };
+  }
   throw new Error(
     `Could not read a product catalogue from ${origin}. Supported platforms: ` +
       `WooCommerce (/wp-json/wc/store/v1/products) and Shopify (/products.json). ` +

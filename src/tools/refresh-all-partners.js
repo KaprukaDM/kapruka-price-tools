@@ -38,6 +38,7 @@
 import 'dotenv/config';
 import { pathToFileURL } from 'node:url';
 import { runComparison } from '../compare/run.js';
+import { closeScrapeBrowsers } from '../compare/sources.js';
 import { listPartners } from '../compare/partners.js';
 import { saveComparisonRun, recentComparisonRuns, storageKind } from '../db.js';
 
@@ -79,6 +80,11 @@ export async function refreshPendingPartners({ log = console.log } = {}) {
 async function main() {
   console.log(`Storage backend: ${storageKind}`);
   const { refreshed, skipped, failed } = await refreshPendingPartners();
+  // A Cloudflare-blocked partner leaves a Playwright browser open (see
+  // fetchJsonViaBrowser in compare/sources.js, which keeps it around to reuse
+  // the clearance cookie across catalogue pages) — without this the CLI just
+  // sits there after printing its summary until the idle timer fires.
+  await closeScrapeBrowsers();
   if (failed > 0 && refreshed === 0 && skipped === 0) process.exitCode = 1;
 }
 

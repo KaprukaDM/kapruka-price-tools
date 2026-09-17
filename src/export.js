@@ -10,6 +10,7 @@ import {
   allComparisonRows,
   latestComparisonRowsPerPartner,
   getPriceAuditItems,
+  recentComparisonRuns,
   removedUrlSet,
 } from './db.js';
 import { listPartners } from './compare/partners.js';
@@ -52,6 +53,32 @@ const cachedAllPriceCheckRows = cached(allPriceCheckRows);
 // the next dashboard load recomputes from fresh data.
 export function invalidateReportCache() {
   for (const reset of REPORT_CACHES) reset();
+}
+
+// The other half of that problem: the refresh sweep that writes new comparison
+// runs does NOT run in this process. Scraping only ever happens from the
+// trusted Sri-Lanka-geo host (see SCRAPE_ON_ADD in server.js), usually as a
+// CLI sweep, while the dashboard is served by the VPS instance — which had no
+// way of knowing its cached snapshot had just been superseded, so it kept
+// serving the previous week's prices for up to 5 hours after a full refresh
+// landed in Supabase.
+//
+// So before building a dashboard, ask the database one cheap question: what's
+// the newest comparison run? (a single row, flat summary columns — not the
+// full-payload scan the caches exist to avoid). If it's newer than the run the
+// current snapshot was built from, drop the caches and recompute.
+let cacheRunStamp = null;
+async function invalidateIfNewRuns() {
+  let newest = null;
+  try {
+    const [latest] = await recentComparisonRuns(1);
+    newest = latest?.created_at || null;
+  } catch {
+    return; // freshness is a nicety; never fail a dashboard over this probe
+  }
+  if (!newest) return;
+  if (cacheRunStamp && newest > cacheRunStamp) invalidateReportCache();
+  cacheRunStamp = newest;
 }
 
 function csvCell(v) {
@@ -297,6 +324,7 @@ function categoryFromKaprukaUrl(url) {
 // keys on the `partner_id` column, while everything here keys on the partner
 // id *inside* the payload, and legacy rows exist where those disagree.
 async function latestRunPerPartner() {
+  await invalidateIfNewRuns(); // a sweep on the trusted host may have landed since the last load
   const latest = new Map(); // partnerId -> { created_at, payload }
   for (const row of await cachedLatestComparisonRows()) {
     let payload;
@@ -747,6 +775,7 @@ async function priceChangeEventsPerPartner() {
 const PRICE_CHANGES_HIDDEN_PARTNER_IDS = new Set(['east-star-handlooms', 'ekko']);
 
 async function priceChangesReportUncached() {
+  await invalidateIfNewRuns(); // this one reads the full run history, not just the latest per partner
   const removed = await removedUrlSet();
   const items = [];
   let partnersChecked = 0;
