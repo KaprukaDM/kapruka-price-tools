@@ -186,6 +186,10 @@ export const getPriceAuditItems = (opts) => backend.getPriceAuditItems(opts);
 export const deletePriceAuditItemsByCategory = (category) => backend.deletePriceAuditItemsByCategory(category);
 export const upsertCompetitorProducts = (siteDomain, products, category) => backend.upsertCompetitorProducts(siteDomain, products, category);
 export const getCompetitorProducts = (siteDomain) => backend.getCompetitorProducts(siteDomain);
+// How many catalogue rows a site actually has cached (and when they were last
+// scraped) — used by discovered-sites.html to show whether an approved site
+// really got crawled, rather than approval silently meaning nothing.
+export const competitorProductStats = (siteDomain) => backend.competitorProductStats(siteDomain);
 // Cross-site substring search over the full competitor_products catalogue —
 // used by the Price Checker to find candidates for a typed name/description
 // without having to page through and score all ~70k+ cached rows locally.
@@ -432,6 +436,15 @@ async function makePostgresBackend(connectionString) {
         [siteDomain],
       );
       return rows;
+    },
+
+    async competitorProductStats(siteDomain) {
+      const { rows } = await pool.query(
+        `SELECT COUNT(*)::int AS n, MAX(scraped_at) AS last_scraped_at
+         FROM competitor_products WHERE site_domain = $1`,
+        [siteDomain],
+      );
+      return { products: rows[0].n, lastScrapedAt: rows[0].last_scraped_at || null };
     },
 
     async searchCompetitorProductsByTokens(tokens, limit = 500) {
@@ -1023,6 +1036,27 @@ async function makeSupabaseRestBackend(baseUrl, serviceKey) {
         if (page.length < PAGE) break;
       }
       return out;
+    },
+
+    // How much catalogue a site actually has cached, without downloading it.
+    // PostgREST refuses aggregate functions on this project ("PGRST123: Use of
+    // aggregate functions is not allowed"), so COUNT(*) isn't available as a
+    // select — but `Prefer: count=exact` returns the same number in the
+    // Content-Range header of an ordinary 1-row request, which also carries the
+    // newest scraped_at. One cheap request per domain either way.
+    async competitorProductStats(siteDomain) {
+      const res = await fetch(
+        `${REST}/competitor_products?select=scraped_at&site_domain=eq.${encodeURIComponent(siteDomain)}` +
+          `&order=scraped_at.desc&limit=1`,
+        { headers: { ...headers, Prefer: 'count=exact' } },
+      );
+      if (!res.ok) throw new Error(`Supabase REST ${res.status} on competitor_products count`);
+      const rows = await res.json().catch(() => []);
+      const total = Number((res.headers.get('content-range') || '').split('/')[1]);
+      return {
+        products: Number.isFinite(total) ? total : rows.length,
+        lastScrapedAt: rows[0]?.scraped_at || null,
+      };
     },
 
     async searchCompetitorProductsByTokens(tokens, limit = 500) {
@@ -1617,6 +1651,16 @@ async function makeSqliteBackend() {
 
     async getCompetitorProducts(siteDomain) {
       return selCompetitorProducts.all(siteDomain);
+    },
+
+    async competitorProductStats(siteDomain) {
+      const row = db
+        .prepare(
+          `SELECT COUNT(*) AS n, MAX(scraped_at) AS last_scraped_at
+           FROM competitor_products WHERE site_domain = ?`,
+        )
+        .get(siteDomain);
+      return { products: row?.n || 0, lastScrapedAt: row?.last_scraped_at || null };
     },
 
     async searchCompetitorProductsByTokens(tokens, limit = 500) {

@@ -13,12 +13,21 @@
 // against every product a shop actually sells instead.
 //
 // Usage:
-//   node src/tools/crawl-discovered-sites.js            # crawl + approve all pending
+//   node src/tools/crawl-discovered-sites.js            # crawl + approve all pending/queued
 //   node src/tools/crawl-discovered-sites.js --dry      # report only, change nothing
 //   node src/tools/crawl-discovered-sites.js --only=onlinekade.lk,chu.lk
 //   node src/tools/crawl-discovered-sites.js --keep-pending   # crawl but don't approve
+//
+// crawlSite() and crawlAndSaveDiscoveredSite() are also imported by
+// src/server.js, so that approving a site on discovered-sites.html kicks off
+// exactly this crawl in the background instead of leaving the site approved
+// with zero rows in competitor_products until someone remembers to run this
+// script by hand. Nothing below main() runs on import — main() is only called
+// when this file is executed directly (see the import.meta.url guard at the
+// bottom).
 
 import 'dotenv/config';
+import { pathToFileURL } from 'node:url';
 import * as cheerio from 'cheerio';
 import { decodeEntities } from '../compare/normalize.js';
 import {
@@ -814,6 +823,107 @@ async function wishqueCatalog(log = () => {}) {
   return [...byUrl.values()];
 }
 
+// -- Wix Stores (generic, not one shop's bespoke crawler) ---------------------
+// Wix is the fourth store platform that actually turns up among discovered Sri
+// Lankan shops (istudio.lk, the one approved site that sat at zero products for
+// months, is one). It has no open catalogue endpoint the way WooCommerce and
+// Shopify do — its storefront talks to a token-authenticated GraphQL API whose
+// token is minted per page load — but every Wix store publishes a
+// `store-products-sitemap.xml` listing each product page, and every Wix product
+// page server-renders a complete schema.org JSON-LD Product block (name +
+// offers.price + currency). So: read the sitemap for the product list, then one
+// page fetch per product for its name and price.
+//
+// That's one request per product (Wix pages are ~1.5MB each), so it's a slow
+// crawl by design — deliberately paced, same as the other heavy crawlers here.
+const WIX_MAX_PRODUCTS = 5000;
+const WIX_PRODUCT_LOC_RE = /<loc>([^<]*\/product-page\/[^<]*)<\/loc>/g;
+
+function isWixSite(html) {
+  return /wixDesktopViewport|static\.parastorage\.com|X-Wix-/i.test(html || '');
+}
+
+async function wixProductUrls(domain) {
+  // The index sitemap names the products sitemap; some stores serve the
+  // products sitemap directly at /sitemap.xml, so try both.
+  const seen = new Set();
+  const index = await fetchText(`https://${domain}/sitemap.xml`);
+  const candidates = [`https://${domain}/store-products-sitemap.xml`];
+  if (index) {
+    for (const m of index.matchAll(/<loc>([^<]*store-products-sitemap[^<]*)<\/loc>/g)) candidates.unshift(m[1]);
+    for (const m of index.matchAll(WIX_PRODUCT_LOC_RE)) seen.add(m[1]);
+  }
+  for (const sitemapUrl of [...new Set(candidates)]) {
+    const xml = await fetchText(sitemapUrl);
+    if (!xml) continue;
+    for (const m of xml.matchAll(WIX_PRODUCT_LOC_RE)) seen.add(m[1]);
+    if (seen.size) break;
+  }
+  return [...seen].slice(0, WIX_MAX_PRODUCTS);
+}
+
+function parseWixProduct(html, url) {
+  const blocks = html.match(/<script[^>]*type="application\/ld\+json"[^>]*>([\s\S]*?)<\/script>/gi) || [];
+  for (const block of blocks) {
+    if (!/"@type"\s*:\s*"Product"/i.test(block)) continue;
+    let data;
+    try {
+      data = JSON.parse(block.replace(/^<script[^>]*>/i, '').replace(/<\/script>$/i, ''));
+    } catch {
+      continue;
+    }
+    const name = decodeEntities(String(data.name || '')).replace(/\s+/g, ' ').trim();
+    if (!name) continue;
+    const offers = Array.isArray(data.offers) ? data.offers[0] : data.offers;
+    // Only LKR prices belong in competitor_products (price_lkr) — a Wix store
+    // selling in USD would otherwise poison every comparison it appears in.
+    const currency = String(offers?.priceCurrency || 'LKR').toUpperCase();
+    const priceLKR = currency === 'LKR' ? parsePriceLKR(offers?.price) : null;
+    return { name, url, priceLKR };
+  }
+  return null;
+}
+
+// Wix answers a sustained crawl with a PARTIAL render rather than an error:
+// HTTP 200, about a third of the usual page size, and no JSON-LD block at all.
+// Measured on istudio.lk — the same URL that returns a full 1.3MB page with a
+// complete Product block when asked once returns a 0.6MB blockless shell while
+// a crawl is walking the site, then goes back to full pages when it stops. So a
+// missing JSON-LD block means "ask again in a moment", not "no such product":
+// without this retry the first full crawl captured only ~110 of 445 products
+// and looked like a site with a small catalogue rather than a throttled one.
+const WIX_PAGE_ATTEMPTS = 3;
+const WIX_RETRY_MS = 2500;
+
+async function fetchWixProduct(url) {
+  for (let attempt = 1; attempt <= WIX_PAGE_ATTEMPTS; attempt++) {
+    const html = await fetchText(url);
+    const product = html ? parseWixProduct(html, url) : null;
+    if (product) return product;
+    if (attempt < WIX_PAGE_ATTEMPTS) await sleep(WIX_RETRY_MS * attempt);
+  }
+  return null;
+}
+
+async function wixCatalog(domain, log = () => {}) {
+  const urls = await wixProductUrls(domain);
+  if (!urls.length) return [];
+  log(`  ${domain} (wix): ${urls.length} product pages from sitemap`);
+  const out = [];
+  const track = backoffTracker(log, `${domain} (wix)`);
+  let done = 0;
+  for (const url of urls) {
+    const product = await fetchWixProduct(url);
+    await track(product);
+    done++;
+    if (product) out.push(product);
+    if (done % 100 === 0) log(`  ${domain} (wix): ${done}/${urls.length} pages, ${out.length} products so far`);
+    await sleep(400);
+  }
+  log(`  ${domain} (wix): ${out.length} products from ${urls.length} pages`);
+  return out;
+}
+
 // Domains that need bespoke handling rather than platform auto-detection.
 const SITE_SPECIFIC_CRAWLERS = {
   'chu.lk': async (log) => ({ products: await chuCatalog(log), platform: 'chu-custom' }),
@@ -827,7 +937,7 @@ const SITE_SPECIFIC_CRAWLERS = {
 
 // Try each known platform in turn. Ordered cheapest-first: the two JSON APIs
 // are a single request to disprove, the OpenCart path costs many.
-async function crawlSite(domain, log = () => {}) {
+export async function crawlSite(domain, log = () => {}) {
   if (SITE_SPECIFIC_CRAWLERS[domain]) return SITE_SPECIFIC_CRAWLERS[domain](log);
 
   const woo = await wooCatalog(domain);
@@ -841,7 +951,61 @@ async function crawlSite(domain, log = () => {}) {
     const oc = await opencartCatalog(domain);
     if (oc.length) return { products: oc, platform: 'opencart' };
   }
+  if (isWixSite(home)) {
+    const wix = await wixCatalog(domain, log);
+    if (wix.length) return { products: wix, platform: 'wix' };
+  }
   return { products: [], platform: null };
+}
+
+export function categoryForDomain(domain) {
+  return CATEGORY_BY_DOMAIN[domain] || DEFAULT_CATEGORY;
+}
+
+// One discovered site: crawl its catalogue, save it to competitor_products and
+// set the site's own status to match what actually happened. Shared by the CLI
+// below and by the background crawl the approve button fires (src/server.js) so
+// both record the same outcomes:
+//
+//   approved    - catalogue found and saved (N products now in the table)
+//   unsupported - the site is reachable but none of the adapters above can read
+//                 a catalogue from it. Recorded plainly instead of being left
+//                 "approved" with zero rows, which is exactly how istudio.lk
+//                 (a Wix store, before the adapter above existed) sat invisible
+//                 for months.
+//   failed      - the crawl or the save threw; left for a retry.
+//
+// Returns { state, products, priced, platform, note } — never throws.
+export async function crawlAndSaveDiscoveredSite(site, { log = () => {}, category = null, setStatus = true } = {}) {
+  const cat = category || categoryForDomain(site.domain);
+  let result;
+  try {
+    result = await crawlSite(site.domain, log);
+  } catch (err) {
+    log(`✗ ${site.domain}: crawl failed — ${err.message}`);
+    return { state: 'failed', products: 0, priced: 0, platform: null, note: err.message };
+  }
+  const { products, platform } = result;
+  if (!products.length) {
+    const note = 'No readable catalogue (not WooCommerce, Shopify, OpenCart or Wix).';
+    log(`✗ ${site.domain}: ${note}`);
+    if (setStatus && site.id != null) await setDiscoveredSiteStatus(site.id, 'unsupported').catch(() => {});
+    return { state: 'unsupported', products: 0, priced: 0, platform: null, note };
+  }
+  const priced = products.filter((p) => p.priceLKR != null).length;
+  try {
+    await upsertCompetitorProducts(
+      site.domain,
+      products.map((p) => ({ ...p, siteName: site.domain })),
+      cat,
+    );
+  } catch (err) {
+    log(`✗ ${site.domain}: save failed — ${err.message}`);
+    return { state: 'failed', products: products.length, priced, platform, note: err.message };
+  }
+  if (setStatus && site.id != null) await setDiscoveredSiteStatus(site.id, 'approved').catch(() => {});
+  log(`✓ ${site.domain}: ${products.length} products (${priced} priced) via ${platform} → ${cat}`);
+  return { state: 'approved', products: products.length, priced, platform, note: '' };
 }
 
 async function main() {
@@ -854,9 +1018,14 @@ async function main() {
   // Naming a site explicitly means "crawl this one", so look past the pending
   // filter -- otherwise a site already approved (possibly with a bad partial
   // catalogue) could never be re-crawled through this tool.
+  // 'queued' = a human approved it on discovered-sites.html from a host that
+  // isn't the trusted-geo scraper, so the crawl was deferred to this job (same
+  // pattern as a partner's refresh_requested_at). Those come first: someone is
+  // actively waiting on them.
+  const all = await listDiscoveredSites();
   let pending = only
-    ? (await listDiscoveredSites()).filter((d) => only.has(d.domain))
-    : await listDiscoveredSites('pending');
+    ? all.filter((d) => only.has(d.domain))
+    : [...all.filter((d) => d.status === 'queued'), ...all.filter((d) => d.status === 'pending')];
   console.log(`Crawling ${pending.length} discovered site(s)…\n`);
 
   let approved = 0;
@@ -864,52 +1033,39 @@ async function main() {
   let totalProducts = 0;
 
   for (const site of pending) {
-    const category = CATEGORY_BY_DOMAIN[site.domain] || DEFAULT_CATEGORY;
-    process.stdout.write(`${site.domain} [${category}] … `);
-    if (SITE_SPECIFIC_CRAWLERS[site.domain]) process.stdout.write('\n');
-    let result;
-    try {
-      result = await crawlSite(site.domain, (m) => console.log(m));
-    } catch (err) {
-      console.log(`FAILED: ${err.message.slice(0, 70)}`);
-      skipped++;
-      continue;
-    }
-    const { products, platform } = result;
-    const priced = products.filter((p) => p.priceLKR != null);
-    if (products.length === 0) {
-      // Left pending on purpose: no catalogue means nothing to approve, and
-      // it stays on the review queue for a human to look at by hand.
-      console.log('no catalogue found — left pending');
-      skipped++;
-      continue;
-    }
-    console.log(`${products.length} products (${priced.length} priced) via ${platform}`);
-    totalProducts += products.length;
-
-    if (dry) continue;
-    try {
-      await upsertCompetitorProducts(
-        site.domain,
-        products.map((p) => ({ ...p, siteName: site.domain })),
-        category,
-      );
-      if (!keepPending) {
-        await setDiscoveredSiteStatus(site.id, 'approved');
-        approved++;
+    const category = categoryForDomain(site.domain);
+    console.log(`${site.domain} [${category}] …`);
+    if (dry) {
+      try {
+        const { products, platform } = await crawlSite(site.domain, (m) => console.log(m));
+        console.log(`  would save ${products.length} products via ${platform || 'no adapter'}`);
+        totalProducts += products.length;
+      } catch (err) {
+        console.log(`  FAILED: ${err.message.slice(0, 70)}`);
+        skipped++;
       }
-    } catch (err) {
-      console.log(`  ! save failed: ${err.message.slice(0, 90)}`);
-      skipped++;
+      continue;
     }
+    const out = await crawlAndSaveDiscoveredSite(site, {
+      log: (m) => console.log(m),
+      category,
+      setStatus: !keepPending,
+    });
+    totalProducts += out.products;
+    if (out.state === 'approved') approved++;
+    else skipped++;
   }
 
   console.log(
-    `\nDone — ${totalProducts} products cached, ${approved} site(s) approved, ${skipped} skipped/left pending.`,
+    `\nDone — ${totalProducts} products cached, ${approved} site(s) approved, ${skipped} skipped/unsupported/failed.`,
   );
 }
 
-main().catch((err) => {
-  console.error('Crawl failed:', err);
-  process.exitCode = 1;
-});
+// Only run the CLI when this file is the entry point — src/server.js imports
+// crawlSite()/crawlAndSaveDiscoveredSite() from here.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((err) => {
+    console.error('Crawl failed:', err);
+    process.exitCode = 1;
+  });
+}

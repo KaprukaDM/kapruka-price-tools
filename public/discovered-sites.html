@@ -19,6 +19,12 @@
     .row-actions { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
     .row-actions input[type=text] { max-width:180px; }
     td.domain { font-weight:700; }
+    .crawl { font-size:12px; white-space:nowrap; }
+    .crawl b { font-size:13px; }
+    .crawl.ok b { color:#1a7f47; }
+    .crawl.none b { color:#b3261e; }
+    .crawl.run b { color:#8a5a00; }
+    .crawl .when { color:var(--mut); font-size:11px; display:block; }
   </style>
 </head>
 <body>
@@ -36,16 +42,21 @@
     <h1>Discovered sites review queue</h1>
     <p class="sub">Every time the Price Checker's web-search discovery finds a Sri Lankan shop that isn't already a
        curated scrape target, it gets logged here instead of being added automatically. Approve the useful ones —
-       that adds the domain to the given category's permanent scrape list (same as the "Add category" flow) — or
-       reject noise (marketplaces, one-off pages, irrelevant sites).</p>
+       that adds the domain to the given category's permanent scrape list <em>and</em> starts a background crawl of
+       the shop's whole catalogue into the Price Checker's database — or reject noise (marketplaces, one-off pages,
+       irrelevant sites). The <b>Catalogue</b> column shows what each crawl actually produced, so an approval that
+       scraped nothing is visible rather than silent.</p>
 
     <div id="status" class="card"><span class="spin"></span>Loading discovered sites…</div>
 
     <div id="app" style="display:none">
+      <div id="hostNote"></div>
       <div class="cards" id="cards"></div>
       <div class="tabs2">
         <button type="button" class="ghost" id="tabPending" data-status="pending">Pending</button>
+        <button type="button" class="ghost" id="tabQueued" data-status="queued">Queued</button>
         <button type="button" class="ghost" id="tabApproved" data-status="approved">Approved</button>
+        <button type="button" class="ghost" id="tabUnsupported" data-status="unsupported">Unsupported</button>
         <button type="button" class="ghost" id="tabRejected" data-status="rejected">Rejected</button>
       </div>
       <div id="table"></div>

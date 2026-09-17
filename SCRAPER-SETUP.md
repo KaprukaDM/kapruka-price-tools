@@ -125,6 +125,35 @@ and shows the same live status/progress bar as before. Once nothing is
 running and there's still no stored data, it shows a calm "check back
 shortly" message instead, and keeps polling.
 
+### Approving a discovered site also crawls it (`SCRAPE_ON_ADD`)
+
+Approving a site on `discovered-sites.html` used to do two writes and nothing
+else — add the domain to a category's curated list, mark it approved — so the
+site had **zero rows in `competitor_products`** until someone ran
+`src/tools/crawl-discovered-sites.js` by hand. (istudio.lk sat approved and
+empty that way for months, contributing nothing to the Price Checker.)
+
+Approve now also starts the real catalogue crawl (the same `crawlSite()` used
+by that script) in the background; the click returns immediately and
+`discovered-sites.html` polls `/api/discovered-sites/crawl-status` for the
+outcome. Same geo rule as adding a partner:
+
+| host | what approve does |
+|---|---|
+| `SCRAPE_ON_ADD=1` | status → `approved`, crawl starts in the background |
+| anywhere else | status → `queued`; the scheduled `crawl-discovered-sites.js` run on the good-geo host crawls it (queued sites are crawled first) |
+
+Two extra statuses exist for this: **`queued`** (waiting for the scraper host)
+and **`unsupported`** (crawled, but no adapter could read a catalogue from the
+site — recorded plainly instead of leaving it "approved" with nothing in it).
+The page's **Catalogue** column shows each site's real row count and last
+scrape date, so an approval that scraped nothing is visible, not silent.
+
+Catalogue adapters tried, in order: WooCommerce Store API → Shopify
+`products.json` → OpenCart search → Wix (`store-products-sitemap.xml` plus the
+JSON-LD Product block on each product page), on top of the per-domain bespoke
+crawlers in that file.
+
 ### The Refresh button (brought back, redesigned)
 
 Clicking it (`POST /api/compare/refresh-request`) doesn't scrape anything

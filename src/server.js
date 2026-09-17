@@ -31,6 +31,7 @@ import {
   removedUrlSet,
   listDiscoveredSites,
   setDiscoveredSiteStatus,
+  competitorProductStats,
   countBulkRefreshesSince,
   logBulkRefreshRequest,
 } from './db.js';
@@ -51,6 +52,7 @@ import {
   invalidateReportCache,
 } from './export.js';
 import { refreshPendingPartners } from './tools/refresh-all-partners.js';
+import { crawlAndSaveDiscoveredSite, categoryForDomain } from './tools/crawl-discovered-sites.js';
 import { uaeCompareApiRouter } from './uae-compare/routes.js';
 import { sendWhatsAppMessage, whatsappConfigured } from './notify/whatsapp.js';
 
@@ -110,9 +112,47 @@ app.get('/api/discovered-sites', async (req, res) => {
   }
 });
 
+// Live state of the background catalogue crawls fired by the approve button
+// below. In-memory only, so it covers "is it running right now" — the durable
+// record of what a crawl achieved is the site's own status plus its row count
+// in competitor_products (see /api/discovered-sites/crawl-status).
+const DISCOVERED_CRAWLS = new Map(); // siteId -> { domain, startedAt, state, products, note, lines[] }
+
+// Approving a site used to mean two writes and nothing else: add the domain to
+// the category's curated list, mark it approved. Nothing ever crawled it, so an
+// approved site had ZERO rows in competitor_products until a human remembered
+// to run crawl-catalogs.js/crawl-discovered-sites.js by hand — istudio.lk sat
+// approved-and-empty that way for months. This fires the real catalogue crawl
+// as well, in the background: the click returns immediately (a full site crawl
+// is minutes to hours), and the page polls crawl-status for the outcome.
+//
+// Same geo guard as adding a partner (SCRAPE_ON_ADD, further down): Kapruka
+// geo-detects the connecting IP, so only the confirmed-good-geo host scrapes.
+// Anywhere else the site is parked at status 'queued' for the scheduled
+// crawl-discovered-sites.js run to pick up from that host, rather than scraped
+// here with prices we know would be wrong.
+function crawlDiscoveredSiteInBackground(site, category) {
+  const state = { domain: site.domain, startedAt: Date.now(), state: 'running', products: 0, note: '', lines: [] };
+  DISCOVERED_CRAWLS.set(site.id, state);
+  const log = (msg) => {
+    console.log(`[discovered-crawl:${site.domain}] ${msg}`);
+    state.lines.push(msg);
+    if (state.lines.length > 30) state.lines.shift();
+  };
+  crawlAndSaveDiscoveredSite(site, { log, category })
+    .then((out) => {
+      Object.assign(state, out, { finishedAt: Date.now() });
+      CRAWL_STATS_CACHE = null;
+    })
+    .catch((err) => {
+      Object.assign(state, { state: 'failed', note: err.message, finishedAt: Date.now() });
+    });
+}
+
 // Approve: add the site to the given category's curated scrape list (same
-// mechanism as /api/categories above) using its sample URL, then mark it
-// approved so it drops off the pending queue.
+// mechanism as /api/categories above), mark it approved (or queued, see above)
+// so it drops off the pending queue, and crawl its catalogue into
+// competitor_products so the Price Checker can actually match against it.
 app.post('/api/discovered-sites/:id/approve', async (req, res) => {
   try {
     const id = Number(req.params.id);
@@ -122,8 +162,90 @@ app.post('/api/discovered-sites/:id/approve', async (req, res) => {
     if (!site) return res.status(404).json({ error: 'Discovered site not found.' });
     const sampleLink = site.sampleUrl || `https://${site.domain}`;
     const result = await addCategorySites(category, [sampleLink]);
-    await setDiscoveredSiteStatus(id, 'approved');
-    res.json({ ...result, domain: site.domain, category });
+    if (TRUSTED_SCRAPE_HOST) {
+      await setDiscoveredSiteStatus(id, 'approved');
+      crawlDiscoveredSiteInBackground(site, category);
+    } else {
+      await setDiscoveredSiteStatus(id, 'queued');
+    }
+    CRAWL_STATS_CACHE = null;
+    res.json({ ...result, domain: site.domain, category, crawl: TRUSTED_SCRAPE_HOST ? 'running' : 'queued' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Re-crawl a site that's already been through approval — for a queued site
+// once this host IS the trusted scraper, an 'unsupported' site after an
+// adapter was added for its platform, or a stale catalogue.
+app.post('/api/discovered-sites/:id/crawl', async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const site = (await listDiscoveredSites()).find((s) => s.id === id);
+    if (!site) return res.status(404).json({ error: 'Discovered site not found.' });
+    if (!TRUSTED_SCRAPE_HOST) {
+      await setDiscoveredSiteStatus(id, 'queued');
+      CRAWL_STATS_CACHE = null;
+      return res.json({ domain: site.domain, crawl: 'queued' });
+    }
+    if (DISCOVERED_CRAWLS.get(id)?.state === 'running') {
+      return res.json({ domain: site.domain, crawl: 'running' });
+    }
+    crawlDiscoveredSiteInBackground(site, (req.body?.category || '').trim() || site.category || categoryForDomain(site.domain));
+    res.json({ domain: site.domain, crawl: 'running' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// What each discovered site's crawl actually produced: how many rows it has in
+// competitor_products and when they were last scraped, plus the live state of
+// any crawl running right now. This is what makes an approval that silently
+// scraped nothing visible on discovered-sites.html instead of invisible.
+// One small count request per domain (~150 of them), cached briefly so the
+// page can poll while a crawl runs without re-counting the world each time.
+const CRAWL_STATS_TTL_MS = 60 * 1000;
+let CRAWL_STATS_CACHE = null; // { at, promise }
+
+async function discoveredCrawlStats() {
+  const sites = await listDiscoveredSites();
+  const out = [];
+  const queue = [...sites];
+  const worker = async () => {
+    for (let site = queue.shift(); site; site = queue.shift()) {
+      let stats = { products: 0, lastScrapedAt: null };
+      try {
+        stats = await competitorProductStats(site.domain);
+      } catch {
+        // A count failure shouldn't blank the whole page — report 0/unknown.
+      }
+      out.push({ id: site.id, domain: site.domain, status: site.status, ...stats });
+    }
+  };
+  await Promise.all(Array.from({ length: 10 }, worker));
+  return out;
+}
+
+app.get('/api/discovered-sites/crawl-status', async (_req, res) => {
+  try {
+    const now = Date.now();
+    if (!CRAWL_STATS_CACHE || now - CRAWL_STATS_CACHE.at >= CRAWL_STATS_TTL_MS) {
+      const promise = discoveredCrawlStats();
+      CRAWL_STATS_CACHE = { at: now, promise };
+      promise.catch(() => { CRAWL_STATS_CACHE = null; });
+    }
+    const stats = await CRAWL_STATS_CACHE.promise;
+    const running = {};
+    for (const [id, s] of DISCOVERED_CRAWLS) {
+      running[id] = {
+        state: s.state,
+        products: s.products,
+        note: s.note,
+        elapsedMs: (s.finishedAt || Date.now()) - s.startedAt,
+        lines: s.lines.slice(-3),
+      };
+    }
+    res.json({ trustedScrapeHost: TRUSTED_SCRAPE_HOST, sites: stats, running });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
