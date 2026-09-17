@@ -29,12 +29,30 @@ export function decodeEntities(s) {
     .replace(/&nbsp;/g, ' ');
 }
 
+// Screen/display sizes are written five different ways across Sri Lankan
+// catalogues for the identical product -- 55", 55'', 55-inch, 55inch,
+// 55 Inches, 55 In. Every punctuation form collapses to a bare "55" once the
+// symbol strip below runs, while the spelled-out forms keep an "inch" token,
+// so the same TV tokenized two incompatible ways ({55} vs {55, inch}) and the
+// spelled-out side's "inch" then read as a distinctive word the other side
+// was "missing". Fold every form to the canonical "<n> inch" BEFORE the
+// symbol strip (the quote characters wouldn't survive it). The bare "in"
+// spelling is only folded when glued/hyphenated to the number ("55in",
+// "55-in") -- a spaced "3 in 1" is the preposition, not a measurement.
+function normalizeSizes(s) {
+  return s
+    .replace(/(\d)[\s-]*(?:"|''|″|”|inches\b|inch\b)/g, '$1 inch')
+    .replace(/(\d)-?in\b(?![\s-]*\d)/g, '$1 inch');
+}
+
 // Lowercase, decode, drop everything after a "|" (RankMath SEO tail), strip
 // punctuation to spaces, collapse whitespace.
 export function normalizeName(s) {
-  return decodeEntities(s)
-    .split('|')[0]
-    .toLowerCase()
+  return normalizeSizes(
+    decodeEntities(s)
+      .split('|')[0]
+      .toLowerCase(),
+  )
     // A mid-word "*" self-censoring a brand/word ("Org*e", "F*ck") gets
     // removed WITHOUT inserting a space, unlike every other punctuation
     // mark below -- the general rule would split it into two fragments
@@ -110,6 +128,28 @@ export function tokenize(s) {
     out.add(singularize(raw));
   }
   return out;
+}
+
+// Words to anchor a SQL LIKE/ILIKE search on, for callers that narrow a big
+// table before scoring candidates locally (see checker/db-search.js).
+// tokenize()'s output can't be used directly: its tokens are SINGULARIZED
+// ("series" -> "sery", "accessories" -> "accessory"), which is right for
+// comparing two token sets but wrong as a substring of the text actually
+// stored — neither "sery" nor "accessory" appears inside "Series"/
+// "Accessories", so a product whose most distinctive word is a plural could
+// match zero rows at the SQL level and never even reach the matcher. Return
+// the prefix the two spellings share ("ser", "accessor"), which IS a
+// substring of both the singular and the plural form as any site writes it.
+export function searchPrefixes(s) {
+  const out = new Set();
+  for (const raw of normalizeName(s).split(' ')) {
+    if (raw.length < 2 || STOPWORDS.has(raw) || SPEC_TOKEN.test(raw)) continue;
+    const sing = singularize(raw);
+    let i = 0;
+    while (i < raw.length && i < sing.length && raw[i] === sing[i]) i++;
+    out.add(raw.slice(0, i) || raw);
+  }
+  return [...out];
 }
 
 // Pure spec tokens (a number immediately followed by a unit) — wattage, volume,

@@ -908,9 +908,30 @@ function singhagiriCatalog() {
   };
 }
 
+// Re-derived from bigdeals.lk's own live category nav — HALF the previous list
+// ('televisions', 'refrigerators', 'kitchen-appliances', 'home-theatre',
+// 'small-appliances', 'fans') 404s on the live site, so the entire TV and
+// fridge range was silently absent from this site's cached catalogue and could
+// never be matched against Kapruka (confirmed: the Hisense 55" A6 sits under
+// '50_and_above_tvs', a slug we weren't asking for). Every slug below was
+// checked live for a 200 + product cards. TVs/fridges/ACs are enumerated by
+// their size/type sub-categories, which is how the site itself splits them.
 const BIGDEALS_CATEGORIES = [
-  'air-conditioners', 'televisions', 'refrigerators', 'washing-machines', 'microwave-ovens',
-  'kitchen-appliances', 'laptops', 'home-theatre', 'small-appliances', 'fans',
+  'tv', '24_and_below_tvs', '32_inch_above_tvs', '40_and_above_tvs', '50_and_above_tvs',
+  '65_and_above_tvs', '70_and_above_tvs', '80_and_above_tvs',
+  'refrigerator', 'single-door-refrigerators', 'doubledoorrefrigerators', 'Sidebyside',
+  'freezers', 'bootle_coolers', 'minibar',
+  'air-conditioners', 'inverter_ac', 'non_inverter_ac',
+  'washing-machines', 'semiautomatic', 'fullyautomatic', 'fully-automatic-front-load', 'Washer-Dryers',
+  'audioandvideo', 'headphonesandearphones', 'soundbar', 'speakers', 'bluetoothheadsets',
+  'BluetoothSpeakers', 'microphones',
+  'laptopsandcomputers', 'laptops', 'macbooks', 'dekstops-and-pc', 'Monitors', 'printers',
+  'networkdevices', 'projector-screen',
+  'mobile_phones', 'smartphones', 'featurephones', 'tablets', 'eBook-Readers',
+  'Smart-Devices', 'Smart-Watches', 'powerbanks',
+  'camera', 'digital_cameras', 'gaming', 'gaming-console-accessories',
+  'Cookingappliances', 'cookers-and-ovens', '-oven', 'blendersngrinders', 'rice-cookers',
+  'Kettlesnflasks', 'Food-Processorsjuicers', 'Fryer-foodcookers', 'Vacuum-Cleanerssblowers',
 ];
 function bigdealsCatalog() {
   return () =>

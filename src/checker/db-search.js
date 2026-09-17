@@ -33,7 +33,7 @@
 
 import { index } from '../compare/matcher.js';
 import { scoreCandidate, accessoryMismatch } from '../compare/audit-scoring.js';
-import { tokenize, SPEC_TOKEN, extractModelCodes } from '../compare/normalize.js';
+import { searchPrefixes, extractModelCodes } from '../compare/normalize.js';
 import { getPriceAuditItems, searchCompetitorProductsByTokens, allComparisonRows } from '../db.js';
 
 const AUDIT_ITEMS_SCAN_LIMIT = 6000; // comfortably above the ~2.5k rows currently stored
@@ -82,13 +82,37 @@ function getCachedComparisonRows() {
 const BROAD_QUERY_MAX_TOKENS = 2;
 const MAX_BROAD_PRODUCTS = 20;
 
-// The most distinctive (longest, non-spec) tokens anchor the ILIKE search —
-// specs like "128gb" are too common across unrelated products to narrow
+// The ILIKE pre-filter that narrows competitor_products before anything is
+// scored. Two separate searches, because the two kinds of anchor fail in
+// opposite directions:
+//   - the model code ("55a61h") finds the exact SKU wherever a site spells it
+//     out, and nothing at all on the (very common) site that doesn't;
+//   - the most distinctive plain WORDS ("hisense", "smart") find the terser
+//     listing, and are what every code-less product has to rely on.
+// They used to share one AND-ed query picking the two LONGEST words — which
+// is the model code whenever the name carries one, so a Kapruka name ending
+// in its SKU could only ever pre-filter to sites that quote that same SKU.
+// Kapruka's own "Hisense A6 Series 55 Inch 4K UHD Smart TV 55A61H" therefore
+// pulled back zero bigdeals.lk rows, no matter how well they'd have scored.
+// Run both and merge instead; the code query only costs an extra round trip
+// on names that actually carry a code.
+//
+// searchPrefixes() (not tokenize()) because these go into a SQL substring
+// match against the stored product_name, where a singularized token like
+// "sery"/"accessory" matches nothing at all. Specs ("128gb") are already
+// excluded by searchPrefixes — too common across unrelated products to narrow
 // anything usefully.
-function searchTokens(name) {
-  const all = [...tokenize(name)].filter((t) => !SPEC_TOKEN.test(t));
-  all.sort((a, b) => b.length - a.length);
-  return all.slice(0, 2);
+const MAX_CODE_QUERIES = 2;
+function searchQueries(name) {
+  const codes = [...extractModelCodes(name)];
+  const words = searchPrefixes(name)
+    .filter((w) => !codes.includes(w))
+    .sort((a, b) => b.length - a.length)
+    .slice(0, 2);
+  const queries = [];
+  if (words.length) queries.push(words);
+  for (const code of codes.slice(0, MAX_CODE_QUERIES)) queries.push([code]);
+  return queries;
 }
 
 // Matching still only ever CONTAINS-checks the product NAME (see the file
@@ -245,17 +269,26 @@ async function searchPriceAuditItemsBroad(qIndexed) {
 
 // Table 2: competitor_products — raw scraped catalogue, matched live.
 async function searchCompetitorProductsTable(qIndexed, name, description = '') {
-  const tokens = searchTokens(name);
-  if (!tokens.length) return [];
-  let rows = await searchCompetitorProductsByTokens(tokens, COMPETITOR_SEARCH_LIMIT);
-  // The name's own tokens found nothing at the SQL level -- try again with
-  // the description's most distinctive tokens (e.g. a brand/model the short
-  // "name" field left out). Only fired when the fast path is empty, so the
-  // common case pays no extra round trip.
-  if (!rows.length && description) {
-    const descTokens = searchTokens(description);
-    if (descTokens.length) rows = await searchCompetitorProductsByTokens(descTokens, COMPETITOR_SEARCH_LIMIT);
+  const queries = searchQueries(name);
+  if (!queries.length) return [];
+  const byUrl = new Map();
+  for (const rows of await Promise.all(
+    queries.map((q) => searchCompetitorProductsByTokens(q, COMPETITOR_SEARCH_LIMIT)),
+  )) {
+    for (const r of rows) byUrl.set(`${r.site_domain}|${r.product_url}`, r);
   }
+  // The name's own words/codes found nothing at the SQL level -- try again
+  // with the description's most distinctive ones (e.g. a brand/model the
+  // short "name" field left out). Only fired when the fast path is empty, so
+  // the common case pays no extra round trip.
+  if (!byUrl.size && description) {
+    for (const rows of await Promise.all(
+      searchQueries(description).map((q) => searchCompetitorProductsByTokens(q, COMPETITOR_SEARCH_LIMIT)),
+    )) {
+      for (const r of rows) byUrl.set(`${r.site_domain}|${r.product_url}`, r);
+    }
+  }
+  const rows = [...byUrl.values()];
   if (!rows.length) return [];
 
   const indexed = index(

@@ -93,10 +93,69 @@ const COLOR_WORDS = new Set([
   'aqua', 'turquoise', 'teal', 'cyan', 'navy', 'maroon', 'beige', 'cream',
   'lavender', 'mint', 'coral', 'ivory', 'magenta', 'violet',
 ]);
-function unmatchedDistinctiveToken(kTokens, cTokens) {
+
+// A bare measurement WORD ("inch", "cm", "kg") carries no identity on its own
+// -- the number in front of it does, and that number is checked as an
+// ordinary token like any other. Without this, "Hisense 55 Inch ... TV" could
+// never match a listing that writes the same size as `55"` or just "55",
+// because "inch" read as a distinctive word the other side was missing.
+// Deliberately only the spelled-out unit words; anything attached to a number
+// ("55inch", "1000w") is already handled by SPEC_TOKEN.
+const UNIT_WORDS = new Set([
+  'inch', 'inches', 'cm', 'mm', 'kg', 'ml', 'ltr', 'litre', 'liter', 'litres',
+  'liters', 'gram', 'grams', 'watt', 'watts', 'volt', 'volts', 'btu',
+]);
+
+// Kapruka's electronics names routinely end with the full SKU ("Hisense A6
+// Series 55 Inch 4K UHD Smart TV 55A61H") while the competitor's shorter
+// title spells the same identity out in words ("Hisense 55 Inch A6 Series 4K
+// UHD Smart TV") and gives no code at all. Treating that SKU as an ordinary
+// distinctive word rejected an otherwise 100%-overlap match on one token.
+//
+// The waiver is never unconditional. It requires ALL of:
+//   1. the competitor states no model code of its own — if it does and none of
+//      them matched (this path only runs with 0 shared codes), that's positive
+//      evidence of a DIFFERENT SKU, not just a terser title;
+//   2. every other distinctive Kapruka word is still present verbatim, plus
+//      the usual overlap/version-number bars (unchanged, checked by the
+//      caller) — so "43" vs "55", "A6" vs "A7" and a different brand all keep
+//      rejecting exactly as before;
+//   3. one of two positive anchors, since dropping a SKU from the comparison
+//      has to be paid for with evidence:
+//      a) the competitor's own words ACCOUNT for what the code is made of:
+//         strip each competitor token that appears inside the code (longest
+//         first) and the leftover must be a generation/region stub of <=2
+//         characters, with >=4 characters accounted for. "55a61h" minus "55"
+//         minus "a6" leaves "1h" -> waived; "au7700" against a listing that
+//         just says "Samsung 55 Inch 4K Smart TV" is unaccounted for -> still
+//         rejected, so a code that is the ONLY thing distinguishing two models
+//         can't be waved through; or
+//      b) both sides state the SAME measurable spec ("Innovex Rice Cooker 1.5L
+//         (IRC159)" vs "Innovex Rice Cooker (1.5L)", "Panasonic ... 23L
+//         (NNGT342M)" vs "Panasonic 23L Microwave Oven Grill"). A shared
+//         capacity/wattage figure is independent confirmation the two listings
+//         describe the same item; a spec-less pair ("Philips Sandwich Maker
+//         HD2393" vs "Philips Sandwich Maker") has no such anchor and stays
+//         rejected.
+const CODE_RESIDUE_MAX = 2;
+const CODE_EXPLAINED_MIN_CHARS = 4;
+function codeExplainedBy(code, cTokens) {
+  let rest = code;
+  for (const t of [...cTokens].sort((a, b) => b.length - a.length)) {
+    if (t.length < 2) continue;
+    const i = rest.indexOf(t);
+    if (i !== -1) rest = rest.slice(0, i) + rest.slice(i + t.length);
+  }
+  return rest.length <= CODE_RESIDUE_MAX && code.length - rest.length >= CODE_EXPLAINED_MIN_CHARS;
+}
+
+function unmatchedDistinctiveToken(kTokens, cTokens, { kCodes, cCodes, specsAgree } = {}) {
+  const canWaiveCodes = Boolean(kCodes && cCodes && cCodes.size === 0);
   for (const t of kTokens) {
-    if (COLOR_WORDS.has(t) || SPEC_TOKEN.test(t)) continue;
-    if (!cTokens.has(t)) return t;
+    if (COLOR_WORDS.has(t) || UNIT_WORDS.has(t) || SPEC_TOKEN.test(t)) continue;
+    if (cTokens.has(t)) continue;
+    if (canWaiveCodes && kCodes.has(t) && (specsAgree || codeExplainedBy(t, cTokens))) continue;
+    return t;
   }
   return null;
 }
@@ -231,7 +290,20 @@ export function scoreCandidate(k, c) {
     // beyond what Kapruka's name already vouches for.
     const exactSameTokens = k._tokens.size === c._tokens.size && intersection === k._tokens.size;
     if (!eitherHasSpecs && !exactSameTokens && intersection < SPEC_LESS_MIN_INTERSECTION) return null;
-    if (unmatchedDistinctiveToken(k._tokens, c._tokens)) return null;
+    // Kapruka's own SKU ("...Smart Tv 55A61H") is the one distinctive token a
+    // terser competitor title routinely omits — see the waiver conditions on
+    // unmatchedDistinctiveToken(). specsAgree is already guaranteed true here
+    // whenever either side has specs (checked just above), so it's passed
+    // through rather than recomputed.
+    if (
+      unmatchedDistinctiveToken(k._tokens, c._tokens, {
+        kCodes: k._codes,
+        cCodes: c._codes,
+        specsAgree: eitherHasSpecs && hasAgreeingSpec(k._specs, c._specs),
+      })
+    ) {
+      return null;
+    }
     if (qualifierMismatch(k._tokens, c._tokens)) return null;
     // A standalone 1-2 digit count ("3 Burner" vs "4 Burner", "JBL Xtreme 4"
     // vs "5") used to only cost -0.5 on the ranking score, which doesn't
@@ -247,5 +319,14 @@ export function scoreCandidate(k, c) {
   const cVersions = versionNumbers(c.name);
   const versionAgrees = [...kVersions].some((v) => cVersions.has(v));
   const versionBonus = kVersions.size && cVersions.size ? (versionAgrees ? 0.05 : -0.5) : 0;
-  return { value: 1 + overlap + versionBonus, codes, overlap };
+  // A listing that shares Kapruka's actual SKU outranks one that merely
+  // describes the same thing in words, whatever their name overlap. Ranking
+  // used to be name-overlap only, so a verbose competitor title carrying the
+  // exact model code ("Philips Electric Kettle - HD9303/03") could lose "best
+  // match on this site" to a tidier code-less title, and that got noticeably
+  // more likely once a missing code stopped being an automatic rejection
+  // above. Big enough (1.0) that no overlap difference can outweigh a shared
+  // code — the same evidence ranking match_confidence high/medium already uses.
+  const codeBonus = codes >= 1 ? 1 : 0;
+  return { value: 1 + overlap + versionBonus + codeBonus, codes, overlap };
 }
