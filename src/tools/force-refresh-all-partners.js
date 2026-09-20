@@ -36,7 +36,7 @@ import 'dotenv/config';
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { runComparison } from '../compare/run.js';
-import { rateLimitRetryCount, closeScrapeBrowsers } from '../compare/sources.js';
+import { rateLimitRetryCount, networkRetryCount, closeScrapeBrowsers } from '../compare/sources.js';
 import { listPartners } from '../compare/partners.js';
 import { saveComparisonRun, storageKind } from '../db.js';
 
@@ -155,6 +155,10 @@ async function refreshOne(partner, index, total) {
       saved: false,
       reason,
       error: err.message,
+      // Kept in the JSON report only (never the console line): "fetch failed"
+      // on its own doesn't say which host or which step gave up, and without
+      // this the only way to find out was to re-run the partner by hand.
+      stack: err.stack,
       durationSec: Number(((Date.now() - startedAt) / 1000).toFixed(1)),
       rateLimitRetriesDuringRun: rateLimitRetryCount() - rateLimitBefore,
     };
@@ -258,6 +262,7 @@ async function main() {
     storage: storageKind,
     concurrency: opts.concurrency,
     rateLimitRetriesTotal: rateLimitRetryCount(),
+    networkRetriesTotal: networkRetryCount(),
     partners: results.length,
     refreshed: ok.length,
     failed: failed.length,
@@ -281,7 +286,7 @@ async function main() {
     `\nDone in ${report.durationMin}min — ${ok.length} refreshed, ${failed.length} failed ` +
       `(of ${results.length} stores). ${totals.matched} matched products, ` +
       `${totals.kaprukaHigher} where Kapruka is overpriced, ${totals.priceMissing} still price-missing. ` +
-      `${report.rateLimitRetriesTotal} HTTP 429 retries along the way.`
+      `${report.rateLimitRetriesTotal} HTTP 429 retries and ${report.networkRetriesTotal} dropped-connection retries along the way.`
   );
   if (failed.length) {
     console.log('Failures by reason:', report.failuresByReason);

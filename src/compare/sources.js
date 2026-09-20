@@ -75,7 +75,56 @@ export function rateLimitRetryCount() {
   return rateLimitRetries;
 }
 
+// Transient connection failures are retried too, for the same reason 429s are.
+// Under a multi-partner sweep Kapruka doesn't only answer 429 — once its
+// limiter is hot it also drops connections outright (ECONNRESET / "socket hang
+// up" / UND_ERR_SOCKET), and a single dropped socket on page 3 of a 9-page
+// catalogue used to abort that entire partner with a bare "fetch failed".
+// Observed 2026-09-20: 15 of the first 20 partners in a concurrency-4 sweep
+// died this way, while every one of them refreshed fine when re-run alone.
+// Five attempts over ~60s of backoff, matching the 429 ladder's patience:
+// when Kapruka's limiter is hot (e.g. a second sweep started soon after the
+// first) it stops answering altogether for tens of seconds at a time, so a
+// short ladder just fails the partner a little more slowly.
+const NETWORK_RETRIES = 5;
+
+// Codes worth trying again. ENOTFOUND is deliberately absent — a domain that
+// doesn't resolve won't start resolving three seconds later, and retrying it
+// only slows the sweep down and muddies the "dns-failure" diagnosis.
+const RETRYABLE_NETWORK_CODES = new Set([
+  'ECONNRESET',
+  'ECONNABORTED',
+  'ETIMEDOUT',
+  'EPIPE',
+  'ENETUNREACH',
+  'ENETRESET',
+  'EHOSTUNREACH',
+  'EAI_AGAIN',
+  'UND_ERR_SOCKET',
+  'UND_ERR_CONNECT_TIMEOUT',
+  'UND_ERR_HEADERS_TIMEOUT',
+  'UND_ERR_BODY_TIMEOUT',
+]);
+
+let networkRetries = 0;
+export function networkRetryCount() {
+  return networkRetries;
+}
+
+// undici buries the real reason one or two levels down in `cause`, which is why
+// these failures surface as an unhelpful bare "fetch failed". Dig the code out
+// so both the retry decision and the error message can name it.
+function networkErrorCode(err) {
+  for (let e = err, depth = 0; e && depth < 5; e = e.cause, depth++) {
+    if (typeof e.code === 'string') return e.code;
+    if (e.name === 'AbortError' || e.name === 'TimeoutError') return 'ETIMEDOUT';
+    if (/socket hang up/i.test(e.message || '')) return 'ECONNRESET';
+  }
+  return null;
+}
+
 async function fetchText(url) {
+  let networkAttempts = 0;
   for (let attempt = 0; ; attempt++) {
     const c = new AbortController();
     const t = setTimeout(() => c.abort(), 30000);
@@ -101,6 +150,25 @@ async function fetchText(url) {
       }
       if (!r.ok) throw new Error(`HTTP ${r.status} for ${url}`);
       return await r.text();
+    } catch (err) {
+      // An HTTP-status failure thrown just above is a real answer from the
+      // server — leave it alone. Only connection-level faults are retried.
+      const code = err instanceof Error && !/^HTTP \d{3} /.test(err.message)
+        ? networkErrorCode(err)
+        : null;
+      if (code && RETRYABLE_NETWORK_CODES.has(code) && networkAttempts < NETWORK_RETRIES) {
+        const waitMs = Math.min(2000 * 2 ** networkAttempts, 30000); // 2s, 4s, 8s, 16s, 30s
+        networkAttempts += 1;
+        networkRetries += 1;
+        console.warn(`  · connection failed (${code}), retrying in ${waitMs}ms: ${url}`);
+        await sleep(waitMs);
+        continue;
+      }
+      // Bare "fetch failed" says nothing a failure report can act on; name the
+      // underlying code so the sweep can classify it (see classifyError in
+      // src/tools/force-refresh-all-partners.js).
+      if (code) throw new Error(`${code} — ${err.message} for ${url}`, { cause: err });
+      throw err;
     } finally {
       clearTimeout(t);
     }
