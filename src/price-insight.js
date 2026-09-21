@@ -42,18 +42,22 @@ const PRICE_INSIGHT_FN = {
 // matcher.js's SAME_PRICE_TOLERANCE, just a bit more generous since this is
 // a human-facing judgment call, not an exact-match filter.
 const COMPETITIVE_TOLERANCE = 0.02;
-function computeVerdict(kaprukaPrice, competitors) {
-  const cheapest = Math.min(...competitors.map((c) => c.price));
-  const diff = kaprukaPrice - cheapest;
-  if (Math.abs(diff) <= cheapest * COMPETITIVE_TOLERANCE) return 'competitive';
+function computeVerdict(kaprukaPrice, anchor) {
+  const diff = kaprukaPrice - anchor;
+  if (Math.abs(diff) <= anchor * COMPETITIVE_TOLERANCE) return 'competitive';
   return diff > 0 ? 'overpriced' : 'underpriced';
 }
 
-// A single competitor at a small fraction of the rest looks like a
-// clearance/liquidation listing, not the real going market rate -- anchoring
-// against it would recommend a price Kapruka can't sustain. When that
-// happens anchor off the median of all competitor prices instead of the
-// single cheapest one.
+// A competitor at a small fraction of the rest isn't the going market rate --
+// it's a clearance listing, an accessory that slipped through matching, or a
+// marketplace junk listing ("5 Ps5 /", LKR 5,049, next to LKR 180k consoles).
+// Those are DROPPED, and the anchor is the cheapest price left. The previous
+// rule jumped the anchor to the market median whenever any such outlier
+// existed, which made the recommendation hinge on whether one junk listing
+// happened to turn up: the same product, searched two ways, came back at LKR
+// 157,268 and LKR 200,572 purely because one phrasing surfaced a LKR 5k
+// marketplace row and the other didn't. Dropping the outlier instead leaves
+// the answer the same either way.
 const OUTLIER_FRACTION_OF_MEDIAN = 0.5;
 // Undercut the anchor by 1%, minimum LKR 1, so the recommendation is always
 // strictly below a real competitor price rather than tying it.
@@ -66,17 +70,17 @@ function median(nums) {
 }
 
 // Deterministic replacement for what used to be the model's own arithmetic.
-// Returns { idealPriceLkr, anchor, isOutlier } -- anchor/isOutlier are only
-// exposed so the prompt can tell the model which case applied.
+// Returns { idealPriceLkr, anchor, dropped } -- anchor/dropped are exposed so
+// the prompt (and the verdict) can use the same numbers.
 function computeIdealPrice(competitors) {
   const prices = competitors.map((c) => c.price);
-  const cheapest = Math.min(...prices);
   const mid = median(prices);
-  const isOutlier = prices.length > 1 && cheapest < mid * OUTLIER_FRACTION_OF_MEDIAN;
-  const anchor = isOutlier ? mid : cheapest;
-  if (isOutlier) return { idealPriceLkr: Math.round(anchor), anchor, isOutlier };
+  const floor = mid * OUTLIER_FRACTION_OF_MEDIAN;
+  const sane = prices.length > 1 ? prices.filter((p) => p >= floor) : prices;
+  const usable = sane.length ? sane : prices;
+  const anchor = Math.min(...usable);
   const margin = Math.max(1, Math.round(anchor * UNDERCUT_FRACTION));
-  return { idealPriceLkr: Math.round(anchor) - margin, anchor, isOutlier };
+  return { idealPriceLkr: Math.round(anchor) - margin, anchor, dropped: prices.length - usable.length };
 }
 
 /**
@@ -96,14 +100,14 @@ export async function recommendPrice(kaprukaRef, competitors) {
   // established facts, so its reasoning prose explains them instead of
   // potentially re-deriving and contradicting them.
   const hasKaprukaPrice = kaprukaRef?.price != null;
-  const verdict = hasKaprukaPrice ? computeVerdict(kaprukaRef.price, competitors) : 'not_listed';
-  const { idealPriceLkr, anchor, isOutlier } = computeIdealPrice(competitors);
+  const { idealPriceLkr, anchor, dropped } = computeIdealPrice(competitors);
+  const verdict = hasKaprukaPrice ? computeVerdict(kaprukaRef.price, anchor) : 'not_listed';
   const lines = competitors
     .map((c) => `- ${c.site}: LKR ${c.price}${c.matchRate != null ? ` (match confidence ${c.matchRate}%)` : ''}`)
     .join('\n');
-  const anchorNote = isOutlier
-    ? `The cheapest listing (LKR ${Math.min(...competitors.map((c) => c.price))}) looks like an unsustainable ` +
-      `clearance price compared to the rest, so the target is anchored to the market median of LKR ${anchor} instead.`
+  const anchorNote = dropped
+    ? `${dropped} listing(s) priced far below the rest were ignored as clearance/mismatched listings, so the ` +
+      `target undercuts the cheapest credible competitor price of LKR ${anchor}.`
     : `The target undercuts the cheapest competitor price of LKR ${anchor} to stay the best deal.`;
   const kaprukaLine = hasKaprukaPrice
     ? `Kapruka product: "${kaprukaRef.name}"\nKapruka's current price: LKR ${kaprukaRef.price}\n\n`

@@ -24,7 +24,25 @@ function badge(rate) {
   return `<span class="badge ${cls}">${rate}%</span>`;
 }
 
-function buildTable(list) {
+// Where a row came from, shown per row now that one table mixes our own
+// scraped catalogue with a live web search (and Daraz). 'database' rows are
+// periodically refreshed, not this second's price — that caveat is repeated
+// under the table too.
+const SOURCE_LABEL = {
+  database: { text: 'our database', cls: 'b-md', title: 'From our own scraped/matched catalogue — refreshed periodically, not a live fetch.' },
+  curated: { text: 'live web', cls: 'b-hi', title: 'Fetched live just now from a curated Sri Lankan shop.' },
+  web: { text: 'live web', cls: 'b-hi', title: 'Fetched live just now from a web-search result.' },
+  daraz: { text: 'Daraz (live)', cls: 'b-hi', title: 'Fetched live just now from the Daraz.lk marketplace.' },
+};
+function sourceBadge(r) {
+  const s = SOURCE_LABEL[r.source] || SOURCE_LABEL.web;
+  const broad = r.matchKind === 'broad'
+    ? ` <span class="badge b-lo" title="Matched on the product name alone — no shared model code or spec to confirm it.">name match</span>`
+    : '';
+  return `<span class="badge ${s.cls}" title="${escapeHtml(s.title)}">${s.text}</span>${broad}`;
+}
+
+function buildTable(list, { showSource = false } = {}) {
   const rows = list
     .map((r) => {
       const st = STATUS_LABEL[r.status] || STATUS_LABEL.error;
@@ -49,17 +67,21 @@ function buildTable(list) {
       const thumb = r.image
         ? `<img src="${escapeHtml(r.image)}" alt="" loading="lazy" onerror="this.remove()" style="width:40px;height:40px;object-fit:cover;border-radius:6px;vertical-align:middle;margin-right:8px">`
         : '';
+      // Which Kapruka product this row was matched through — only set (and
+      // only worth showing) when the query covered more than one Kapruka SKU.
+      const via = showSource && r.via ? `<div class="ctx">vs Kapruka: ${escapeHtml(r.via)}</div>` : '';
       return `<tr>
         <td><strong>${escapeHtml(r.site)}</strong><div class="ctx">${escapeHtml(r.domain || '')}</div></td>
-        <td>${thumb}${title}${reason}</td>
+        <td>${thumb}${title}${reason}${via}</td>
         <td><span class="price">${fmtPrice(r)}</span>${ctx}</td>
         <td>${badge(r.matchRate)}</td>
+        ${showSource ? `<td>${sourceBadge(r)}</td>` : ''}
         <td class="${st.cls}">${st.text}${note}</td>
       </tr>`;
     })
     .join('');
   return `<table><thead><tr>
-      <th>Site</th><th>Matched product</th><th>Price</th><th>Match rate</th><th>Status</th>
+      <th>Site</th><th>Matched product</th><th>Price</th><th>Match rate</th>${showSource ? '<th>Source</th>' : ''}<th>Status</th>
     </tr></thead><tbody>${rows}</tbody></table>`;
 }
 
@@ -105,42 +127,37 @@ function priceInsightBlock(insight) {
   </div>`;
 }
 
-// Browse mode: the typed query was too short/generic to identify one
-// specific product (e.g. "iphone"), so the database returned every
-// reasonably-matching product instead of one. Render each as its own
-// mini-section with its own site-comparison table underneath.
-function buildBrowseSections(products) {
-  return products
-    .map((p) => {
-      const kaprukaLine = p.kaprukaPrice != null
-        ? `<span class="price">Rs. ${Number(p.kaprukaPrice).toLocaleString('en-LK')}</span> on Kapruka`
-        : 'price not listed on Kapruka';
-      return `<div class="card" style="margin-bottom:14px">
-        <h4 style="margin:0 0 4px">${p.url ? `<a href="${escapeHtml(p.url)}" target="_blank" rel="noopener">${escapeHtml(p.name)}</a>` : escapeHtml(p.name)}</h4>
-        <div class="ctx" style="margin-bottom:10px">${kaprukaLine}</div>
-        ${p.results.length ? buildTable(p.results) : '<p class="empty" style="margin:0">No competitor matches cached for this product.</p>'}
-      </div>`;
+// A short query ("playstation 5") can legitimately cover more than one
+// Kapruka SKU — the 1TB Slim disc console and the "Slim Disc And Digital
+// Version" listing are genuinely different products at different prices.
+// Say that plainly above the table instead of silently answering about
+// whichever one happened to score highest.
+function kaprukaCandidatesBlock(candidates, ref) {
+  const list = (candidates || []).filter((c) => c && c.url);
+  if (list.length < 2) return '';
+  const rows = list
+    .map((c) => {
+      const price = c.price != null ? `Rs. ${Number(c.price).toLocaleString('en-LK')}` : 'price not listed';
+      const isRef = ref && ref.url === c.url ? ' <span class="badge b-hi">used for the insight above</span>' : '';
+      // Only the audited candidates carry a match rate; the ones resolved
+      // live from Kapruka's own search don't, and showing them an "approx"
+      // badge (what badge(null) renders) would read as a scored match.
+      const rate = c.matchRate != null ? ` ${badge(c.matchRate)}` : '';
+      return `<li><a href="${escapeHtml(c.url)}" target="_blank" rel="noopener">${escapeHtml(c.name)}</a>
+        — <span class="price">${price}</span>${rate}${isRef}</li>`;
     })
     .join('');
+  return `<div class="card" style="margin-bottom:16px">
+    <div class="ctx">Your search matched ${list.length} different Kapruka listings</div>
+    <ul style="margin:6px 0 0 18px;padding:0">${rows}</ul>
+    <div class="ctx" style="margin-top:6px">These are separate Kapruka products, not duplicates —
+      competitor rows below say which one they were matched against.</div>
+  </div>`;
 }
 
 function render(data) {
   const out = $('out');
-  if (data.mode === 'browse') {
-    const products = data.products || [];
-    if (!products.length) {
-      out.innerHTML = '<p class="empty">No results.</p>';
-      return;
-    }
-    let html = `<h3 style="margin:24px 0 4px">Matched ${products.length} product${products.length === 1 ? '' : 's'} from our database</h3>
-      <p class="note" style="margin-top:0">Your search matched more than one product — showing each separately.
-        Type a more specific name (e.g. include the model/storage) for a single side-by-side comparison instead.</p>`;
-    html += buildBrowseSections(products);
-    out.innerHTML = html;
-    return;
-  }
-
-  const dbResults = data.results || [];
+  const results = data.results || [];
   const discovered = data.discovered || [];
   // Prefer the ref resolved server-side for this search (a plain name-typed
   // query that hit a database single-mode match) over the client-tracked
@@ -151,29 +168,38 @@ function render(data) {
   // matches (e.g. the same helmet from more than one seller) — filter out
   // the error/no_result placeholder entries, everything else is a real row.
   const darazRows = (data.daraz || []).filter((r) => r.status && r.status !== 'error' && r.status !== 'no_result');
-  if (dbResults.length === 0 && discovered.length === 0 && darazRows.length === 0) {
+  if (results.length === 0 && discovered.length === 0 && darazRows.length === 0) {
     out.innerHTML = kaprukaRefBlock(ref) + '<p class="empty">No results.</p>';
     return;
   }
-  let html = kaprukaRefBlock(ref) + priceInsightBlock(data.priceInsight);
-  if (data.source === 'database') {
-    html += '<h3 style="margin:24px 0 4px">Matched from our database</h3>' + buildTable(dbResults);
+  let html = kaprukaRefBlock(ref)
+    + priceInsightBlock(data.priceInsight)
+    + kaprukaCandidatesBlock(data.kaprukaCandidates, ref);
+  // One table, every source: our own catalogue AND a live web search run on
+  // the same query, de-duplicated per listing and sorted strongest-match
+  // first. Which source a row came from is a column, not a separate section —
+  // the old either/or split meant the answer changed depending on how the
+  // query was phrased.
+  const dbCount = data.dbCount != null ? data.dbCount : results.filter((r) => r.source === 'database').length;
+  const webCount = data.webCount != null ? data.webCount : results.filter((r) => r.source !== 'database').length;
+  if (results.length) {
+    html += `<h3 style="margin:24px 0 4px">All matches (${results.length})</h3>
+      <p class="note" style="margin-top:0">${dbCount} from our database · ${webCount} from a live web search,
+        merged and de-duplicated. Strongest match first.</p>`
+      + buildTable(results, { showSource: true });
     html += `<p class="note" style="margin-top:14px">
-      Prices come from our own scraped/matched catalogue, not a live fetch — refreshed periodically, not
-      guaranteed to be this second's price. Click through to verify before acting on it.
+      <strong>our database</strong> rows come from our own scraped/matched catalogue, not a live fetch —
+      refreshed periodically, not guaranteed to be this second's price.
+      <strong>live web</strong> rows were pulled just now; a non-LKR currency means the site geo-rendered for
+      a different region, and web-search results exclude Daraz, Big Deals, ikman, Facebook and foreign sites
+      (Daraz is checked separately below).
+      Click through to verify before acting on any of it.
     </p>`;
-  } else {
-    html += `<p class="note" style="margin-top:0">No confident match in our database yet —
-      showing results from a live web search instead.</p>`;
-    if (discovered.length) {
-      html += '<h3 style="margin:24px 0 4px">Top Sri Lankan shops (from web search)</h3>' + buildTable(discovered);
-    }
-    html += `<p class="note" style="margin-top:14px">
-      Flagged rows still link to the source page so you can verify manually.
-      Web-search results exclude Daraz, Big Deals, ikman, Facebook and foreign sites (Daraz is checked
-      separately below).
-      Prices are pulled live; a non-LKR currency means the site geo-rendered for a different region.
-    </p>`;
+  }
+  if (data.webError) {
+    html += `<p class="note" style="margin-top:0">⚠️ The live web search returned nothing this time
+      (${escapeHtml(data.webError)}) — the rows above are database-only, so treat the prices as
+      periodically refreshed rather than live.</p>`;
   }
   if (darazRows.length) {
     html += `<h3 style="margin:24px 0 4px">Daraz.lk (live marketplace search)</h3>` + buildTable(darazRows);
@@ -280,6 +306,7 @@ async function run() {
   let discoveredTotal = null;
   let discoveredDone = 0;
   let checkingDb = true;
+  let dbFound = null;
   const partial = [];
   $('out').innerHTML = progressShell();
 
@@ -294,7 +321,8 @@ async function run() {
     const pct = known ? Math.round((done / known) * 100) : 4;
     $('pbarFill').style.width = pct + '%';
     const more = discoveredTotal == null ? ' · finding more shops…' : '';
-    $('pcount').textContent = `Checked ${done} of ${known} sites${more}`;
+    const fromDb = dbFound ? ` · ${dbFound} already in our database` : '';
+    $('pcount').textContent = `Checked ${done} of ${known} sites${more}${fromDb}`;
     $('plist').innerHTML = partial
       .map(
         (r) => `<div class="row"><span class="nm">${escapeHtml(r.site || r.domain || '—')}</span>
@@ -310,8 +338,9 @@ async function run() {
   es.addEventListener('progress', (e) => {
     const ev = JSON.parse(e.data);
     if (ev.type === 'db-search-start') checkingDb = true;
-    else if (ev.type === 'db-search-empty') checkingDb = false;
-    else if (ev.type === 'db-browse-found') checkingDb = false;
+    // The database half is done; the live web search is still running (both
+    // always run now), so the progress bar switches to counting sites.
+    else if (ev.type === 'db-results') { checkingDb = false; dbFound = ev.count; }
     else if (ev.type === 'start') { checkingDb = false; curatedTotal = ev.curatedTotal; }
     else if (ev.type === 'discoveredTotal') discoveredTotal = ev.count;
     else if (ev.type === 'site') {

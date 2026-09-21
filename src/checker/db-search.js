@@ -1,8 +1,8 @@
 // Price Checker: search the already-scraped/matched database for a typed
 // product name (or one resolved from a pasted Kapruka URL) instead of
-// live-scraping every query from scratch. Live web search (pipeline.js /
-// runMatch) is only used as a fallback when nothing here clears the match
-// bar — see server.js.
+// live-scraping every query from scratch. The live web search (pipeline.js /
+// runMatch) is NOT a fallback for this — both run on every search and their
+// rows are merged into one table, see server.js's runCheckerSearch().
 //
 // Identity matching (scoreCandidate's token-containment check) still only
 // ever looks at the product NAME — same convention as every other matcher
@@ -14,8 +14,8 @@
 // it for a model/SKU code to add to the query's code set (see toIndexed()),
 // and as a fallback source of SQL search tokens when the name alone finds
 // nothing in competitor_products (see searchCompetitorProductsTable()). It's
-// also still passed through to the live-search fallback, where the LLM
-// identity check can use it directly.
+// also still passed through to the live web search, where the LLM identity
+// check can use it directly.
 //
 // Scans 3 tables:
 //   1. price_audit_items  - confirmed Kapruka<->competitor matches from the
@@ -32,8 +32,8 @@
 //      the newer audit tables.
 
 import { index } from '../compare/matcher.js';
-import { scoreCandidate, accessoryMismatch } from '../compare/audit-scoring.js';
-import { searchPrefixes, extractModelCodes } from '../compare/normalize.js';
+import { scoreCandidate, broadNameMatch } from '../compare/audit-scoring.js';
+import { searchPrefixes, extractModelCodes, specsConflict, tokenSequence } from '../compare/normalize.js';
 import { getPriceAuditItems, searchCompetitorProductsByTokens, allComparisonRows } from '../db.js';
 
 const AUDIT_ITEMS_SCAN_LIMIT = 6000; // comfortably above the ~2.5k rows currently stored
@@ -72,15 +72,32 @@ function getCachedComparisonRows() {
   return comparisonRowsCache.promise;
 }
 
-// scoreCandidate() requires >=2 shared distinctive words before it'll even
-// consider a candidate (MIN_INTERSECTION in audit-scoring.js) — a query with
-// fewer words than that can never clear it, no matter how many products
-// actually match (e.g. "iphone" alone can't score >=2 against ANY name).
-// Below this token count, if the strict identity search finds nothing, fall
-// through to the looser "browse" search instead of straight to live web
-// search — see searchDatabase().
-const BROAD_QUERY_MAX_TOKENS = 2;
-const MAX_BROAD_PRODUCTS = 20;
+// The strict identity search (scoreCandidate) needs >=2 shared distinctive
+// words, and >=3 for a spec-less name — a bar a short query for a real
+// product ("playstation 5", "ps5") can never clear, however well the
+// catalogue actually covers it. The looser containment search
+// (broadNameMatch) used to only run as a fallback for such queries, which is
+// what made the answer depend on how the query was phrased: "Sony playstation
+// 5" (3 tokens) took the strict path, "playstation 5" (2 tokens) took the
+// broad one, and the two paths returned different sites. Both now ALWAYS run
+// and their rows are unioned — see matchCandidate()/searchDatabase().
+const MAX_MATCHED_PRODUCTS = 20;
+// Ceiling on the merged table, so a very generic query ("iphone") can't
+// return a thousand rows. Applied after sorting, so what's dropped is always
+// the weakest/most expensive end of the list.
+const MAX_RESULTS = 60;
+
+// The checker's `k` side is a phrase a human typed, not a Kapruka product
+// title, so at most one plain word they did or didn't type (typically the
+// brand: "Sony") may be missing from a candidate. Numbers, SKUs and
+// qualifier words are never waived — see audit-scoring.js's isWaivableWord.
+const QUERY_WAIVE = 1;
+
+// A word-containment match is real evidence but weaker than a scored
+// identity match (no SKU agreement, no spec agreement behind it), so its
+// reported match rate is scaled down rather than ever being shown as a
+// verified 100% — a strict match always sorts above it.
+const BROAD_MAX_RATE = 90;
 
 // The ILIKE pre-filter that narrows competitor_products before anything is
 // scored. Two separate searches, because the two kinds of anchor fail in
@@ -102,6 +119,14 @@ const MAX_BROAD_PRODUCTS = 20;
 // "sery"/"accessory" matches nothing at all. Specs ("128gb") are already
 // excluded by searchPrefixes — too common across unrelated products to narrow
 // anything usefully.
+//
+// The AND-ed word pair has the same flaw as the code query when one of those
+// two words is a brand the listing doesn't print: "Sony playstation 5"
+// pre-filtered on "playstation" AND "sony", so every shop that titles the
+// console without "Sony" (nanotek, doctormobile, greenware) was invisible to
+// that phrasing while "playstation 5" found them all — the same two-phrasings-
+// two-answers bug, one layer down in the SQL. So the single most distinctive
+// word is also run on its own, and the rows are merged.
 const MAX_CODE_QUERIES = 2;
 function searchQueries(name) {
   const codes = [...extractModelCodes(name)];
@@ -111,6 +136,7 @@ function searchQueries(name) {
     .slice(0, 2);
   const queries = [];
   if (words.length) queries.push(words);
+  if (words.length > 1) queries.push([words[0]]);
   for (const code of codes.slice(0, MAX_CODE_QUERIES)) queries.push([code]);
   return queries;
 }
@@ -144,7 +170,13 @@ function domainFromUrl(u) {
   }
 }
 
-function resultRow({ site, domain, title, url, price, matchRate, sourceTable }) {
+// matchKind 'strict' — scoreCandidate() accepted it: every distinctive word
+//   the user typed is on the listing (bar one waivable plain word), specs
+//   agree, no qualifier/accessory mismatch. Reported at its real overlap.
+// matchKind 'broad'  — only broadNameMatch() accepted it: the words the user
+//   typed are all present, but with no SKU/spec agreement behind it, so its
+//   rate is capped at BROAD_MAX_RATE and it always sorts under a strict row.
+function resultRow({ site, domain, title, url, price, matchRate, sourceTable, matchKind, via }) {
   return {
     site,
     domain,
@@ -156,72 +188,43 @@ function resultRow({ site, domain, title, url, price, matchRate, sourceTable }) 
     status: price == null ? 'price_not_found' : 'ok',
     source: 'database',
     sourceTable,
+    matchKind: matchKind || 'strict',
+    // Which Kapruka product this row was matched through, when the query
+    // matched more than one (e.g. two different PS5 SKUs) — shown under the
+    // listing so a merged table still says where each row came from.
+    via: via || null,
   };
 }
 
-// Table 1: price_audit_items — identify which (if any) already-audited
-// Kapruka product the query refers to, then return all of its site matches.
-// Also surfaces the identified Kapruka product itself (url/name/price) as
-// `kaprukaRef`, not just its competitor matches -- the price-insight step
-// (see server.js's runCheckerSearch) needs Kapruka's OWN price to recommend
-// anything, and a plain name-typed search otherwise never carries it (only
-// the URL-search mode did, via /api/kapruka/resolve).
-async function searchPriceAuditItems(qIndexed) {
-  const rows = await getCachedPriceAuditItems();
-  if (!rows.length) return { kaprukaRef: null, results: [] };
-
-  const byKapruka = new Map();
-  for (const r of rows) {
-    if (!r.kapruka_url || !r.kapruka_name) continue;
-    if (!byKapruka.has(r.kapruka_url)) byKapruka.set(r.kapruka_url, { name: r.kapruka_name, price: r.kapruka_price_lkr, rows: [] });
-    byKapruka.get(r.kapruka_url).rows.push(r);
-  }
-
-  let best = null;
-  let bestUrl = null;
-  for (const [url, group] of byKapruka) {
-    const kIndexed = toIndexed(group.name);
-    const sc = scoreCandidate(qIndexed, kIndexed);
-    if (sc && (!best || sc.value > best.sc.value)) { best = { group, sc }; bestUrl = url; }
-  }
-  if (!best) return { kaprukaRef: null, results: [] };
-
-  const results = best.group.rows
-    .filter((r) => r.matched_url)
-    .map((r) =>
-      resultRow({
-        site: r.site_name || r.site_domain,
-        domain: r.site_domain,
-        title: r.matched_name,
-        url: r.matched_url,
-        price: r.matched_price_lkr,
-        matchRate: Math.round(best.sc.overlap * 100),
-        sourceTable: 'price_audit_items',
-      }),
-    );
-  const kaprukaRef = { url: bestUrl, name: best.group.name, price: best.group.price ?? null };
-  return { kaprukaRef, results };
+// Score one catalogue candidate against the query — strict first, broad
+// second. The single place both bars are applied, so every table below
+// decides "is this the product the user asked for" identically. Returns null,
+// or { kind, rate, value }, where `value` ranks candidates against each other
+// (a strict match always outranks a broad one).
+function matchCandidate(qIndexed, cIndexed) {
+  const sc = scoreCandidate(qIndexed, cIndexed, { waiveUnmatched: QUERY_WAIVE });
+  if (sc) return { kind: 'strict', rate: Math.round(sc.overlap * 100), value: 10 + sc.value };
+  // The strict path already vetoes conflicting specs; the broad one has to do
+  // that itself, or "PlayStation 5 1TB" would match an 825GB listing purely
+  // on the typed words all being present in its title.
+  if (specsConflict(qIndexed._specs, cIndexed._specs)) return null;
+  const bm = broadNameMatch(qIndexed._tokens, cIndexed._tokens, {
+    waive: QUERY_WAIVE,
+    // Position matters for a containment-only match — see leadsWithQuery().
+    qSeq: tokenSequence(qIndexed.name),
+    cSeq: tokenSequence(cIndexed.name),
+  });
+  if (!bm) return null;
+  return { kind: 'broad', rate: Math.round(Math.min(BROAD_MAX_RATE, bm.overlap * 100)), value: bm.overlap };
 }
 
-// Broad/browse search — used only when the strict identity search above
-// finds nothing AND the query is short enough that it plausibly couldn't
-// (see BROAD_QUERY_MAX_TOKENS). Deliberately much looser than
-// scoreCandidate(): "does every word the user typed appear in this
-// product's name" is a relevance filter, not an identity check, so a
-// generic query like "iphone" surfaces every audited iPhone product instead
-// of matching none. Only draws from price_audit_items, since that's the one
-// source that's already cleanly grouped into (product, site-matches) —
-// competitor_products/comparison_runs have no equivalent per-product
-// grouping to browse by.
-function broadTokenMatch(queryTokens, candidateTokens) {
-  if (accessoryMismatch(queryTokens, candidateTokens)) return false;
-  for (const t of queryTokens) {
-    if (!candidateTokens.has(t)) return false;
-  }
-  return true;
-}
-
-async function searchPriceAuditItemsBroad(qIndexed) {
+// Table 1: price_audit_items — confirmed Kapruka<->competitor matches from
+// the 5-category audit system. Returns EVERY Kapruka product the query
+// matches (not just the single best one), each with all of its site matches:
+// a query like "playstation 5" legitimately refers to more than one tracked
+// SKU, and silently picking one of them is what let two phrasings of the same
+// search answer with two different competitor sets.
+async function searchPriceAuditProducts(qIndexed) {
   const rows = await getCachedPriceAuditItems();
   if (!rows.length) return [];
 
@@ -237,12 +240,18 @@ async function searchPriceAuditItemsBroad(qIndexed) {
   const products = [];
   for (const [kaprukaUrl, group] of byKapruka) {
     const kIndexed = toIndexed(group.name);
-    if (!broadTokenMatch(qIndexed._tokens, kIndexed._tokens)) continue;
+    const m = matchCandidate(qIndexed, kIndexed);
+    if (!m) continue;
     products.push({
-      name: group.name,
       url: kaprukaUrl,
-      kaprukaPrice: group.price,
-      extraTokens: kIndexed._tokens.size - qIndexed._tokens.size, // fewer extra words = closer to what was typed
+      name: group.name,
+      price: group.price ?? null,
+      matchRate: m.rate,
+      matchKind: m.kind,
+      value: m.value,
+      // Fewer words beyond what was typed = closer to what was asked for;
+      // breaks ties between two equally-scoring SKUs.
+      extraTokens: kIndexed._tokens.size - qIndexed._tokens.size,
       results: group.rows
         .filter((r) => r.matched_url)
         .map((r) =>
@@ -252,19 +261,22 @@ async function searchPriceAuditItemsBroad(qIndexed) {
             title: r.matched_name,
             url: r.matched_url,
             price: r.matched_price_lkr,
-            // No scoreCandidate ran here (that's what "broad" means) — the
-            // confidence that IS meaningful is the original audit match's
-            // own confidence, carried over rather than fabricating a number.
-            matchRate: r.match_confidence === 'high' ? 95 : 70,
+            // Two independent pieces of evidence: how much of the query the
+            // Kapruka product accounts for, and how confident the STORED
+            // audit match between that product and this listing was. A
+            // medium/low-confidence audit row is discounted rather than
+            // inheriting the query's own match rate wholesale.
+            matchRate: Math.round(m.rate * (r.match_confidence === 'high' ? 1 : 0.8)),
             sourceTable: 'price_audit_items',
+            matchKind: m.kind,
+            via: group.name,
           }),
-        )
-        .sort((a, b) => (a.price ?? Infinity) - (b.price ?? Infinity)),
+        ),
     });
   }
 
-  products.sort((a, b) => a.extraTokens - b.extraTokens || a.name.localeCompare(b.name));
-  return products.slice(0, MAX_BROAD_PRODUCTS).map(({ extraTokens, ...p }) => p);
+  products.sort((a, b) => b.value - a.value || a.extraTokens - b.extraTokens || a.name.localeCompare(b.name));
+  return products.slice(0, MAX_MATCHED_PRODUCTS);
 }
 
 // Table 2: competitor_products — raw scraped catalogue, matched live.
@@ -302,25 +314,30 @@ async function searchCompetitorProductsTable(qIndexed, name, description = '') {
     false,
   );
 
-  const bestPerSite = new Map();
+  // EVERY matching listing, not one "best" per shop. A shop genuinely stocks
+  // several variants of what a short query asks for (a disc and a digital
+  // PS5 at different prices), and keeping only one of them meant an arbitrary
+  // tie-break decided which price that shop "had" — two phrasings of the same
+  // query then showed two different prices for the same shop. The overall
+  // list is capped (MAX_RESULTS) and sorted deterministically instead.
+  const out = [];
   for (const c of indexed) {
-    const sc = scoreCandidate(qIndexed, c);
-    if (!sc) continue;
-    const cur = bestPerSite.get(c.siteDomain);
-    if (!cur || sc.value > cur.sc.value) bestPerSite.set(c.siteDomain, { c, sc });
+    const m = matchCandidate(qIndexed, c);
+    if (!m) continue;
+    out.push(
+      resultRow({
+        site: c.siteName || c.siteDomain,
+        domain: c.siteDomain,
+        title: c.name,
+        url: c.url,
+        price: c.priceLKR,
+        matchRate: m.rate,
+        sourceTable: 'competitor_products',
+        matchKind: m.kind,
+      }),
+    );
   }
-
-  return [...bestPerSite.values()].map(({ c, sc }) =>
-    resultRow({
-      site: c.siteName || c.siteDomain,
-      domain: c.siteDomain,
-      title: c.name,
-      url: c.url,
-      price: c.priceLKR,
-      matchRate: Math.round(sc.overlap * 100),
-      sourceTable: 'competitor_products',
-    }),
-  );
+  return out;
 }
 
 // Table 3: comparison_runs — the older single-partner tool's stored payloads.
@@ -340,93 +357,127 @@ async function searchComparisonRunsTable(qIndexed) {
     const partnerDomain = domainFromUrl(payload.partner?.partnerSite) || partnerName;
     for (const m of payload.matched || []) {
       if (!m.partnerName || !m.partnerUrl) continue;
-      const sc = scoreCandidate(qIndexed, toIndexed(m.partnerName));
-      if (!sc) continue;
+      const match = matchCandidate(qIndexed, toIndexed(m.partnerName));
+      if (!match) continue;
       const cur = bestPerPartner.get(partnerDomain);
-      if (!cur || sc.value > cur.sc.value) bestPerPartner.set(partnerDomain, { m, sc, partnerName, partnerDomain });
+      if (!cur || match.value > cur.match.value) {
+        bestPerPartner.set(partnerDomain, { m, match, partnerName, partnerDomain });
+      }
     }
   }
 
-  return [...bestPerPartner.values()].map(({ m, sc, partnerName, partnerDomain }) =>
+  return [...bestPerPartner.values()].map(({ m, match, partnerName, partnerDomain }) =>
     resultRow({
       site: partnerName,
       domain: partnerDomain,
       title: m.partnerName,
       url: m.partnerUrl,
       price: m.partnerPrice,
-      matchRate: Math.round(sc.overlap * 100),
+      matchRate: match.rate,
       sourceTable: 'comparison_runs',
+      matchKind: match.kind,
     }),
   );
 }
 
-// One row per site domain — price_audit_items (human-reviewed audit match)
-// wins over competitor_products (live-scored against the raw catalogue),
-// which wins over comparison_runs (the older tool), when more than one
-// source has a candidate for the same domain.
-function mergeByDomain(...lists) {
-  const byDomain = new Map();
+// One row per LISTING (site + product page), not per site: the same shop can
+// legitimately carry two of the SKUs a short query covers, and collapsing
+// those to one row hides a real price. Within one listing, the strongest
+// evidence wins — a strict match over a broad one, then the higher match
+// rate, then price_audit_items (a reviewed audit match) over
+// competitor_products (scored live against the raw catalogue) over
+// comparison_runs (the older tool). Exported so server.js can run the same
+// de-duplication across the database rows AND the live web-search rows.
+const TABLE_RANK = { price_audit_items: 3, competitor_products: 2, comparison_runs: 1 };
+function listingKey(r) {
+  const url = String(r.url || '')
+    .toLowerCase()
+    .replace(/^https?:\/\//, '')
+    .replace(/^www\./, '')
+    .replace(/[?#].*$/, '')
+    .replace(/\/+$/, '');
+  return `${r.domain || r.site || ''}|${url || String(r.title || '').toLowerCase()}`;
+}
+// Second key, for the same shop listing the same product twice under two
+// URLs (a duplicated catalogue entry) — same site, same title, same price is
+// one listing however many URLs point at it.
+function productKey(r) {
+  return `${r.domain || r.site || ''}|${String(r.title || '').trim().toLowerCase()}|${r.price ?? ''}`;
+}
+function rowStrength(r) {
+  return (r.matchKind === 'broad' ? 0 : 1000) + (r.matchRate || 0) * 10 + (TABLE_RANK[r.sourceTable] || 0);
+}
+export function mergeListings(...lists) {
+  const byListing = new Map();
   for (const list of lists) {
     for (const r of list) {
-      if (!byDomain.has(r.domain)) byDomain.set(r.domain, r);
+      if (!r) continue;
+      const key = listingKey(r);
+      const cur = byListing.get(key);
+      if (!cur || rowStrength(r) > rowStrength(cur)) byListing.set(key, r);
     }
   }
-  return [...byDomain.values()];
+  const byProduct = new Map();
+  for (const r of byListing.values()) {
+    const key = productKey(r);
+    const cur = byProduct.get(key);
+    if (!cur || rowStrength(r) > rowStrength(cur)) byProduct.set(key, r);
+  }
+  return [...byProduct.values()];
 }
 
-function byBestValue(a, b) {
+// Strongest match first, then usable rows before flagged ones, then cheapest.
+// The final domain/URL tie-break isn't cosmetic: without it, equally-scoring
+// rows come out in whatever order the database happened to return them, which
+// is exactly the kind of thing that made the same search look different twice.
+export function byBestValue(a, b) {
   if ((b.matchRate || 0) !== (a.matchRate || 0)) return (b.matchRate || 0) - (a.matchRate || 0);
-  return (a.price ?? Infinity) - (b.price ?? Infinity);
+  const aOk = a.status === 'ok' ? 0 : 1;
+  const bOk = b.status === 'ok' ? 0 : 1;
+  if (aOk !== bOk) return aOk - bOk;
+  if ((a.price ?? Infinity) !== (b.price ?? Infinity)) return (a.price ?? Infinity) - (b.price ?? Infinity);
+  return String(a.domain || a.site || '').localeCompare(String(b.domain || b.site || ''))
+    || String(a.url || '').localeCompare(String(b.url || ''));
 }
 
+/**
+ * Every database row matching the query, from all 3 tables, in one flat list.
+ * There is deliberately no "mode" any more: a query either finds rows or it
+ * doesn't, and the caller unions these with the live web search either way
+ * (see server.js's runCheckerSearch). Returns:
+ *   results           - de-duplicated listings, strongest match first
+ *   kaprukaRef        - best-matching Kapruka product (for the price insight)
+ *   kaprukaCandidates - EVERY Kapruka product the query matched, so the UI can
+ *                       say plainly that more than one SKU is involved instead
+ *                       of silently answering about one of them.
+ */
 export async function searchDatabase({ name, description }) {
   const cleanName = String(name || '').trim();
   const cleanDescription = String(description || '').trim();
-  if (!cleanName) return { hasMatch: false, mode: null };
+  if (!cleanName) return { hasMatch: false, results: [], kaprukaRef: null, kaprukaCandidates: [] };
   const qIndexed = toIndexed(cleanName, cleanDescription);
-  const isShortQuery = qIndexed._tokens.size > 0 && qIndexed._tokens.size <= BROAD_QUERY_MAX_TOKENS;
 
-  // 0) A short query ("iPhone 15") can legitimately refer to several
-  // distinct catalogued products at once -- different storage/color SKUs
-  // that all share that same short name (price_audit_items really can hold
-  // "iPhone 15 128GB Black", "...Pink", "...256GB", etc. as separate rows).
-  // Checked BEFORE the strict identity search below: a single stray exact-
-  // text match elsewhere (e.g. some competitor's own generically-titled
-  // "iPhone 15" listing, no storage/color given at all) would otherwise win
-  // strict mode outright and silently hide every other real SKU -- the
-  // opposite of what "browse multiple candidates" exists for. Only takes
-  // over when there's genuine ambiguity (>1 distinct product); a short query
-  // that resolves to exactly one tracked product still goes through the
-  // strict path below so it also picks up competitor_products/
-  // comparison_runs matches, not just price_audit_items.
-  if (isShortQuery) {
-    const ambiguous = await searchPriceAuditItemsBroad(qIndexed);
-    if (ambiguous.length > 1) {
-      return { hasMatch: true, mode: 'browse', products: ambiguous };
-    }
-  }
-
-  // 1) Strict identity search — unchanged behavior for a well-specified
-  // query: merges all 3 tables into one product's site-by-site comparison.
-  const [audit, competitorResults, comparisonResults] = await Promise.all([
-    searchPriceAuditItems(qIndexed),
+  const [auditProducts, competitorResults, comparisonResults] = await Promise.all([
+    searchPriceAuditProducts(qIndexed),
     searchCompetitorProductsTable(qIndexed, cleanName, cleanDescription),
     searchComparisonRunsTable(qIndexed),
   ]);
-  const merged = mergeByDomain(audit.results, competitorResults, comparisonResults).sort(byBestValue);
-  if (merged.length > 0) {
-    return { hasMatch: true, mode: 'single', results: merged, kaprukaRef: audit.kaprukaRef };
-  }
 
-  // 2) Broad/browse fallback — only reached for a short, generic query where
-  // the strict search structurally never had a chance (see
-  // BROAD_QUERY_MAX_TOKENS). Returns multiple products instead of one.
-  if (isShortQuery) {
-    const products = await searchPriceAuditItemsBroad(qIndexed);
-    if (products.length > 0) {
-      return { hasMatch: true, mode: 'browse', products };
-    }
-  }
-
-  return { hasMatch: false, mode: null };
+  const auditResults = auditProducts.flatMap((p) => p.results);
+  const results = mergeListings(auditResults, competitorResults, comparisonResults)
+    .sort(byBestValue)
+    .slice(0, MAX_RESULTS);
+  const kaprukaCandidates = auditProducts.map((p) => ({
+    url: p.url,
+    name: p.name,
+    price: p.price,
+    matchRate: p.matchRate,
+  }));
+  const best = auditProducts[0] || null;
+  return {
+    hasMatch: results.length > 0,
+    results,
+    kaprukaRef: best ? { url: best.url, name: best.name, price: best.price } : null,
+    kaprukaCandidates,
+  };
 }

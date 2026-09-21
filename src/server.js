@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 import { loadCategories, runMatch, addCategorySites, OTHER_CATEGORY } from './pipeline.js';
-import { searchDatabase } from './checker/db-search.js';
+import { searchDatabase, mergeListings, byBestValue } from './checker/db-search.js';
 import { searchDaraz } from './daraz.js';
 import { runComparison } from './compare/run.js';
 import { recommendPrice } from './price-insight.js';
@@ -14,7 +14,7 @@ import {
   detectPartnerPlatform,
   parseKaprukaSource,
   fetchKaprukaProduct,
-  findKaprukaProduct,
+  findKaprukaProducts,
 } from './compare/sources.js';
 import {
   savePriceCheck,
@@ -260,25 +260,29 @@ app.post('/api/discovered-sites/:id/reject', async (req, res) => {
   }
 });
 
-// Try the database first (price_audit_items + competitor_products +
-// comparison_runs — see checker/db-search.js), falling back to a live web
-// search (pipeline.js/runMatch, general discovery — no curated category)
-// only when nothing in the database clears the match bar. `onProgress` (if
-// given) only fires for the live-search fallback path, since the DB search
-// itself is a single fast pass with nothing to stream incrementally.
-// db.mode 'single': a well-specified query matched exactly one product,
-// site-by-site comparison as before. db.mode 'browse': the query was too
-// short/generic for identity matching to ever fire (e.g. "iphone" alone),
-// so multiple candidate products are returned instead — see
-// checker/db-search.js's BROAD_QUERY_MAX_TOKENS.
-// Third source: a direct live lookup on Daraz.lk (see daraz.js), run
-// concurrently with the database/web-search path rather than after it, since
-// it's an independent network call. Daraz is deliberately left out of the
-// generic web-search step (serp.js's DISCOVERY_BLOCKLIST) — this is the
-// purpose-built replacement for it, always attached to the result as its own
-// `daraz` array (searchDaraz() tries several query variations and can return
-// more than one match). Skipped for the DB "browse" mode (many candidate
-// products, no single query to match Daraz's results against).
+// Every checker search runs ALL of its sources and merges them, rather than
+// picking one:
+//   1. our own database (price_audit_items + competitor_products +
+//      comparison_runs — see checker/db-search.js),
+//   2. a live web search (pipeline.js/runMatch, general discovery — no
+//      curated category),
+//   3. a direct live lookup on Daraz.lk (see daraz.js; Daraz is deliberately
+//      excluded from the generic web step by serp.js's DISCOVERY_BLOCKLIST,
+//      this is its purpose-built replacement).
+// The database used to be tried FIRST and the web search only run when
+// nothing in it cleared the match bar. That made the answer depend on how
+// the query happened to be phrased — "Sony playstation 5" hit the database
+// and reported cyberdeals/lifemobile, "playstation 5" missed it and reported
+// a completely different, live-scraped set, with a suggested price LKR 38k
+// apart. Both now always run, their rows are de-duplicated per listing
+// (mergeListings) and labelled with where they came from, and the AI price
+// insight is computed over that one merged set so the recommendation can't
+// depend on which source happened to be shown.
+//
+// Cost of that: every search now pays for the live web search (~30-60s and a
+// SerpAPI call) instead of returning instantly on a database hit. The
+// database rows are streamed to the browser as soon as they're ready (see
+// the `db-results` progress event) so the page isn't blank while it waits.
 async function runCheckerSearch(query, onProgress = () => {}) {
   const darazPromise = searchDaraz(query.name, query.description).catch((err) => [{
     site: 'Daraz',
@@ -292,42 +296,65 @@ async function runCheckerSearch(query, onProgress = () => {}) {
   // price for products someone has already run a category audit against, so
   // a query that's never been audited (most of them) had no Kapruka price to
   // recommend against at all. Started eagerly alongside Daraz so it costs no
-  // extra latency on whichever branch below ends up needing it.
-  const kaprukaRefPromise = findKaprukaProduct(query.name).catch(() => null);
-  const db = await searchDatabase(query);
-  if (db.hasMatch && db.mode === 'single') {
-    // Automatic "ideal price to set" insight -- runs on every single-product
-    // search that has both a Kapruka price and at least one real competitor
-    // price, no manual trigger. Checker-only by design: one call per search
-    // a person actually makes, not something that'd scale to reviewing an
-    // entire dashboard's worth of items unattended.
-    const competitors = db.results
-      .filter((r) => r.price != null && (r.status === 'ok' || r.status === 'low_confidence'))
-      .map((r) => ({ site: r.site, price: r.price, matchRate: r.matchRate }));
-    const kaprukaRef = db.kaprukaRef?.price ? db.kaprukaRef : await kaprukaRefPromise;
-    // Runs even when Kapruka doesn't carry the product (kaprukaRef null) --
-    // recommendPrice() falls back to a market-only launch-price suggestion,
-    // so every search with at least one competitor price gets an insight.
-    const priceInsightPromise = competitors.length
-      ? recommendPrice(kaprukaRef, competitors)
-      : Promise.resolve(null);
-    const [daraz, priceInsight] = await Promise.all([darazPromise, priceInsightPromise]);
-    return {
-      category: 'Database', query, results: db.results, discovered: [],
-      source: 'database', mode: 'single', daraz, kaprukaRef, priceInsight,
-    };
-  }
-  if (db.hasMatch && db.mode === 'browse') {
-    return { category: 'Database', query, products: db.products, source: 'database', mode: 'browse' };
-  }
-  const out = await runMatch(OTHER_CATEGORY, query, onProgress);
-  const daraz = await darazPromise;
-  const competitors = [...out.results, ...out.discovered, ...daraz]
+  // extra latency.
+  const kaprukaLivePromise = findKaprukaProducts(query.name).catch(() => []);
+  const dbPromise = searchDatabase(query)
+    .then((db) => {
+      onProgress({ type: 'db-results', count: db.results.length });
+      return db;
+    })
+    .catch((err) => {
+      console.warn('! database search failed:', err.message);
+      return { hasMatch: false, results: [], kaprukaRef: null, kaprukaCandidates: [], error: err.message };
+    });
+  // A web search that fails (no SERP_API_KEY, SerpAPI down, every site
+  // timing out) must not take the database half of the answer down with it —
+  // that half is exactly what the merge exists to keep.
+  const webPromise = runMatch(OTHER_CATEGORY, query, onProgress).catch((err) => {
+    console.warn('! live web search failed:', err.message);
+    return { category: OTHER_CATEGORY, query, results: [], discovered: [], error: err.message };
+  });
+  const [db, web, daraz] = await Promise.all([dbPromise, webPromise, darazPromise]);
+
+  // One table, both sources, each row still carrying its own `source`
+  // ('database' | 'curated' | 'web') and match rate for the UI to label.
+  const results = mergeListings(db.results, web.results || [], web.discovered || []).sort(byBestValue);
+
+  // Automatic "ideal price to set" insight -- over the MERGED competitor set
+  // (including Daraz, which the database path used to leave out), so the
+  // recommendation is the same number regardless of which source found which
+  // listing. Runs even when Kapruka doesn't carry the product (kaprukaRef
+  // null) -- recommendPrice() falls back to a market-only launch price.
+  const competitors = [...results, ...daraz]
     .filter((r) => r.price != null && (r.status === 'ok' || r.status === 'low_confidence'))
     .map((r) => ({ site: r.site, price: r.price, matchRate: r.matchRate }));
-  const kaprukaRef = competitors.length ? await kaprukaRefPromise : null;
+  // Kapruka's own listings for this query: the audited one if we have it,
+  // otherwise whatever Kapruka's own search returns. Both are kept — a short
+  // query really does cover more than one Kapruka SKU, and the page says so
+  // rather than quietly comparing against one of them.
+  const kaprukaLive = await kaprukaLivePromise;
+  const kaprukaCandidates = [...(db.kaprukaCandidates || [])];
+  for (const p of kaprukaLive) {
+    if (!kaprukaCandidates.some((c) => c.url === p.url)) kaprukaCandidates.push(p);
+  }
+  const kaprukaRef = db.kaprukaRef?.price ? db.kaprukaRef : kaprukaLive[0] || null;
   const priceInsight = competitors.length ? await recommendPrice(kaprukaRef, competitors) : null;
-  return { ...out, source: 'web', mode: 'web', daraz, kaprukaRef, priceInsight };
+
+  return {
+    category: web.category || OTHER_CATEGORY,
+    query,
+    results,
+    discovered: [], // merged into `results` above; kept for payload compatibility
+    source: 'merged',
+    mode: 'single',
+    daraz,
+    kaprukaRef,
+    kaprukaCandidates,
+    dbCount: db.results.length,
+    webCount: (web.results || []).length + (web.discovered || []).length,
+    webError: web.error || web.discoveryError || null,
+    priceInsight,
+  };
 }
 
 // Run a price-checker match. Every query is persisted to the database.
@@ -368,13 +395,6 @@ app.get('/api/match/stream', async (req, res) => {
     const query = { name, description: description || '' };
     send('progress', { type: 'db-search-start' });
     const out = await runCheckerSearch(query, (ev) => send('progress', ev));
-    if (out.mode === 'single') {
-      out.results.forEach((r, i) =>
-        send('progress', { type: 'site', phase: 'curated', label: r.site, done: i + 1, total: out.results.length, result: r }),
-      );
-    } else if (out.mode === 'browse') {
-      send('progress', { type: 'db-browse-found', count: out.products.length });
-    }
     try {
       out.recordId = await savePriceCheck({ category: out.category, query, result: out });
     } catch (e) {

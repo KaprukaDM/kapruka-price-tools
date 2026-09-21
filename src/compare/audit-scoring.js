@@ -149,12 +149,24 @@ function codeExplainedBy(code, cTokens) {
   return rest.length <= CODE_RESIDUE_MAX && code.length - rest.length >= CODE_EXPLAINED_MIN_CHARS;
 }
 
-function unmatchedDistinctiveToken(kTokens, cTokens, { kCodes, cCodes, specsAgree } = {}) {
+// Which tokens may be waived by the `waive` budget below (see
+// scoreCandidate's `waiveUnmatched` option). Deliberately only plain words --
+// a brand ("sony"), a category word ("console"), a descriptor. Anything
+// carrying a digit (a model number, a SKU, a capacity) and anything in the
+// product-line qualifier list ("pro", "max", "lite") is never waivable: those
+// are exactly what tells two products of the same family apart.
+function isWaivableWord(t) {
+  return !/\d/.test(t) && !QUALIFIER_WORDS.has(t);
+}
+
+function unmatchedDistinctiveToken(kTokens, cTokens, { kCodes, cCodes, specsAgree, waive = 0 } = {}) {
   const canWaiveCodes = Boolean(kCodes && cCodes && cCodes.size === 0);
+  let budget = waive;
   for (const t of kTokens) {
     if (COLOR_WORDS.has(t) || UNIT_WORDS.has(t) || SPEC_TOKEN.test(t)) continue;
     if (cTokens.has(t)) continue;
     if (canWaiveCodes && kCodes.has(t) && (specsAgree || codeExplainedBy(t, cTokens))) continue;
+    if (budget > 0 && isWaivableWord(t)) { budget--; continue; }
     return t;
   }
   return null;
@@ -198,7 +210,32 @@ const ACCESSORY_WORDS = new Set([
   'joystick', 'controller', 'gamepad', 'headset', 'earphone', 'earphones',
   'earbud', 'earbuds', 'dock', 'docking', 'remote', 'faceplate',
   'thumbstick', 'thumbgrip', 'grip', 'grips',
+  // Companion products that sell FOR a console and whose titles quote the
+  // console's full name: a game ("Call of Duty – PlayStation 5", LKR 15k), a
+  // charging station, a spare disc drive. Without these, a generic console
+  // query pulled LKR 13k game discs into the same table as LKR 180k consoles,
+  // and the cheapest of them became the price the insight anchors on.
+  'game', 'games', 'drive', 'charging', 'station', 'bundle',
 ]);
+
+// A few of the words above are only a companion-product signal when the query
+// isn't itself about that kind of product. "Drive" next to a console means a
+// spare disc drive; next to "SanDisk Cruzer Blade 32GB" it's the product
+// itself. So 'drive' only vetoes when the query says nothing about storage —
+// either a storage word or a bare capacity token ("32gb", "1tb"). The
+// blanket query-side exemption below (hasAnyAccessoryWord) already covers the
+// case where the query spells the word out; this covers the case where it
+// clearly means the same category without using that exact word.
+const CAPACITY_TOKEN = /^\d+(gb|tb|mb)$/;
+const CONTEXT_WORDS = {
+  drive: new Set(['ssd', 'hdd', 'nvme', 'sata', 'usb', 'flash', 'pen', 'portable', 'external', 'storage', 'sd', 'microsd', 'hard', 'thumb', 'enclosure']),
+};
+function contextExempt(word, qTokens) {
+  const ctx = CONTEXT_WORDS[word];
+  if (!ctx) return false;
+  for (const t of qTokens) if (ctx.has(t) || CAPACITY_TOKEN.test(t)) return true;
+  return false;
+}
 // Per-word exemption ("query has 'cover', candidate also has 'cover'" ->
 // fine) missed the common case of two DIFFERENT accessory words meaning the
 // same kind of thing -- a "iPhone 12 cover" query against a listing titled
@@ -215,7 +252,12 @@ function hasAnyAccessoryWord(tokens) {
 }
 export function accessoryMismatch(kTokens, cTokens) {
   if (hasAnyAccessoryWord(kTokens)) return false;
-  return hasAnyAccessoryWord(cTokens);
+  for (const w of ACCESSORY_WORDS) {
+    if (!cTokens.has(w)) continue;
+    if (contextExempt(w, kTokens)) continue;
+    return true;
+  }
+  return false;
 }
 
 // True if the candidate is an accessory listing at all, ignoring whether the
@@ -248,11 +290,75 @@ export function isAccessoryWord(word) {
   return ACCESSORY_WORDS.has(String(word || '').toLowerCase());
 }
 
+// "Does this product's name contain what the user typed" — a relevance
+// filter, not the identity check scoreCandidate() performs. Used by the
+// Price Checker, where the `k` side is a phrase a human typed rather than a
+// Kapruka product name, so a short query ("playstation 5") that can never
+// reach MIN_INTERSECTION-style bars still finds the real catalogue rows.
+// `waive` allows at most N plain words the user typed to be absent from the
+// candidate (see isWaivableWord) — that's what makes "Sony playstation 5"
+// and "playstation 5" land on the same products instead of two different
+// answers. Numbers, SKUs and qualifier words are never waivable, and a
+// candidate carrying a qualifier the query doesn't ("... 5 Pro") is still
+// rejected, so the waiver can't quietly blend two product tiers together.
+// Returns null (no match) or { overlap, intersection }, where overlap is the
+// fraction of the typed words actually found.
+export function broadNameMatch(qTokens, cTokens, { waive = 0, qSeq, cSeq } = {}) {
+  if (!qTokens.size) return null;
+  if (accessoryMismatch(qTokens, cTokens)) return null;
+  if (qualifierMismatch(qTokens, cTokens)) return null;
+  let budget = waive;
+  let matched = 0;
+  for (const t of qTokens) {
+    if (cTokens.has(t)) { matched++; continue; }
+    if (budget > 0 && isWaivableWord(t)) { budget--; continue; }
+    return null;
+  }
+  if (matched < MIN_INTERSECTION) return null;
+  if (qSeq && cSeq && !leadsWithQuery(qSeq, cSeq, cTokens)) return null;
+  return { overlap: matched / qTokens.size, intersection: matched };
+}
+
+// A product listing LEADS with the product ("Sony PlayStation 5 Slim
+// Console"); a listing for something that merely works with it names itself
+// first and mentions the product later ("Dobe Cooling Fan For PlayStation 5",
+// "Spider-Man Miles Morales - PlayStation 5", "Call of Duty ... PlayStation
+// 5"). With no code or spec agreement to lean on, word containment alone
+// can't tell those apart — which is how LKR 7k-15k game discs ended up in
+// the same table as LKR 180k consoles, dragging the suggested price down.
+// So a broad match additionally requires the words the user typed to appear
+// in the listing's title IN THE ORDER THEY TYPED THEM, starting within the
+// first few words. Word-list-free and product-agnostic: it's a rule about
+// where a title puts its own subject, not about any particular product.
+const BROAD_MAX_LEAD_WORDS = 2; // room for a brand ("Sony") and one adjective
+export function leadsWithQuery(qSeq, cSeq, cTokens) {
+  // Only the query words the candidate actually has: a waived word (a brand
+  // the listing omits) can't be positioned, and shouldn't break the order.
+  const wanted = qSeq.filter((t) => cTokens.has(t));
+  if (!wanted.length) return false;
+  const start = cSeq.indexOf(wanted[0]);
+  if (start < 0 || start > BROAD_MAX_LEAD_WORDS) return false;
+  let at = start;
+  for (let i = 1; i < wanted.length; i++) {
+    const next = cSeq.indexOf(wanted[i], at + 1);
+    if (next < 0) return false;
+    at = next;
+  }
+  return true;
+}
+
 // k/c are indexed products (see matcher.js's index()) with ._tokens,
 // ._codes, ._specs already computed. Returns null (reject) or
 // { value, codes, overlap } for ranking candidates against one Kapruka
 // product — the highest `value` wins.
-export function scoreCandidate(k, c) {
+//
+// opts.waiveUnmatched (default 0, i.e. unchanged behaviour for every audit/
+// comparison caller): allow up to N plain words on the `k` side to be absent
+// from the candidate. Only the Price Checker sets it, because there `k` is a
+// typed query, not a product title — the brand word someone did or didn't
+// type shouldn't decide whether the catalogue has the product.
+export function scoreCandidate(k, c, opts = {}) {
+  const waiveUnmatched = opts.waiveUnmatched || 0;
   const codes = sharedCodeCount(k._codes, c._codes);
   const { overlap, intersection } = overlapCoefficient(k._tokens, c._tokens);
   if (intersection < MIN_INTERSECTION || specsConflict(k._specs, c._specs)) return null;
@@ -300,6 +406,7 @@ export function scoreCandidate(k, c) {
         kCodes: k._codes,
         cCodes: c._codes,
         specsAgree: eitherHasSpecs && hasAgreeingSpec(k._specs, c._specs),
+        waive: waiveUnmatched,
       })
     ) {
       return null;

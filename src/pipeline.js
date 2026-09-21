@@ -297,6 +297,7 @@ export async function runMatch(category, query, onProgress = () => {}) {
   onProgress({ type: 'start', curatedTotal: sites.length });
   let curatedDone = 0;
   let discoveredDone = 0;
+  let discoveryError = null;
 
   // 1) Curated category sites (custom scrapers where available).
   const curatedPromise = Promise.all(
@@ -316,7 +317,12 @@ export async function runMatch(category, query, onProgress = () => {}) {
     matchQuery.name,
     sites.map((s) => s.domain),
     discoveryLimit,
-  ).then(({ sites: shops }) => {
+  ).then(({ sites: shops, error }) => {
+    // Why discovery came back empty (no SERP key configured, provider error)
+    // — the checker now always shows a merged table, so "0 from a live web
+    // search" needs a reason next to it rather than looking like "nothing
+    // exists out there".
+    if (error) discoveryError = error;
     onProgress({ type: 'discoveredTotal', count: shops.length });
     // Best-effort logging for the discovered-sites review queue (see
     // discovered-sites.html) — a human decides whether a site that keeps
@@ -347,7 +353,7 @@ export async function runMatch(category, query, onProgress = () => {}) {
   results.sort(byBestValue);
   discovered.sort(byBestValue);
 
-  return { category: isOther ? OTHER_CATEGORY : category, query, results, discovered };
+  return { category: isOther ? OTHER_CATEGORY : category, query, results, discovered, discoveryError };
 }
 
 // Usable results first (by match rate, then cheapest), flagged last.

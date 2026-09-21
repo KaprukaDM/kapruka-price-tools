@@ -45,22 +45,61 @@ function normalizeSizes(s) {
     .replace(/(\d)-?in\b(?![\s-]*\d)/g, '$1 inch');
 }
 
+// A model number glued to the word in front of it ("PlayStation5", "iPhone15",
+// "Xbox360") vs. the same name written with a space ("PlayStation 5") used to
+// tokenize to two completely different things -- one token "playstation5" on
+// one side, two tokens "playstation"+"5" on the other, sharing nothing. Split
+// the glued form so BOTH spellings end up as the same tokens. Only fires on a
+// real word (>=4 letters) followed by a short number: SKU-style codes prefix
+// their digits with 1-3 letters ("bhd340", "mg3710", "rtx4060", "cfi2116"),
+// so those stay fused and keep working as strong model codes.
+function splitGluedModelNumbers(s) {
+  return s.replace(/\b([a-z]{4,})(\d{1,4})\b/g, '$1 $2');
+}
+
+// Abbreviations that mean the identical product line but share no token with
+// the spelled-out form ("PS5" vs "PlayStation 5"). Both the query and the
+// stored title go through this same table inside normalizeName(), so the two
+// spellings converge on one canonical form before anything is compared --
+// rather than any matcher carrying a special case for a particular product.
+// Add a pair here when a line is routinely written both ways; keep it to
+// genuine synonyms for the same thing, never near-relations (a "Pro"/"Plus"
+// variant is a different product and must stay a different token).
+const ABBREVIATIONS = [
+  [/\bplay\s+station\b/g, 'playstation'],
+  [/\bps\s*([2-5])\b/g, 'playstation $1'],
+  [/\bmac\s*book\b/g, 'macbook'],
+  [/\bair\s*pods\b/g, 'airpods'],
+  [/\bpower\s*bank\b/g, 'powerbank'],
+  [/\bsmart\s*watch\b/g, 'smartwatch'],
+];
+function expandAbbreviations(s) {
+  let out = s;
+  for (const [re, to] of ABBREVIATIONS) out = out.replace(re, to);
+  return out;
+}
+
 // Lowercase, decode, drop everything after a "|" (RankMath SEO tail), strip
-// punctuation to spaces, collapse whitespace.
+// punctuation to spaces, split glued model numbers, canonicalize known
+// abbreviations, collapse whitespace.
 export function normalizeName(s) {
-  return normalizeSizes(
-    decodeEntities(s)
-      .split('|')[0]
-      .toLowerCase(),
+  return expandAbbreviations(
+    splitGluedModelNumbers(
+      normalizeSizes(
+        decodeEntities(s)
+          .split('|')[0]
+          .toLowerCase(),
+      )
+        // A mid-word "*" self-censoring a brand/word ("Org*e", "F*ck") gets
+        // removed WITHOUT inserting a space, unlike every other punctuation
+        // mark below -- the general rule would split it into two fragments
+        // ("org"/"e"), which never token-matches the SAME product's name on a
+        // site that shows the word uncensored ("Orge"). Every other symbol
+        // still becomes a space as before; this only strips the asterisk itself.
+        .replace(/\*/g, '')
+        .replace(/[^a-z0-9]+/g, ' '),
+    ),
   )
-    // A mid-word "*" self-censoring a brand/word ("Org*e", "F*ck") gets
-    // removed WITHOUT inserting a space, unlike every other punctuation
-    // mark below -- the general rule would split it into two fragments
-    // ("org"/"e"), which never token-matches the SAME product's name on a
-    // site that shows the word uncensored ("Orge"). Every other symbol
-    // still becomes a space as before; this only strips the asterisk itself.
-    .replace(/\*/g, '')
-    .replace(/[^a-z0-9]+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 }
@@ -104,14 +143,37 @@ const QTY_SUFFIX = /^(\d+)(?:pcs?|pieces?|packs?|sets?)$/;
 const UNIT_NAMES = 'kwh|mah|ghz|mhz|inch|kw|wh|kg|mg|va|hz|gb|tb|mb|kb|mp|cm|mm|ml|in|w|l|g|v|k|p|th';
 const UNIT_SUFFIX = new RegExp(`^(\\d+)(${UNIT_NAMES})$`);
 
+// A single DIGIT is the one 1-character token that carries real identity:
+// "PlayStation 5", "iPhone 8", "Xbox One S" -- the model number IS the
+// product. Dropping it as noise (the old blanket <2-char rule) left
+// "playstation 5" with a single usable token, which can never clear
+// scoreCandidate's MIN_INTERSECTION of 2, so a 2-word query for a real
+// product matched nothing in our own catalogue while "Sony playstation 5"
+// matched it at 100%. A 1-char letter ("s", "x") stays excluded -- that's
+// genuine noise left over from punctuation stripping.
+function isNoiseToken(t) {
+  return t.length < 2 && !/^\d$/.test(t);
+}
+
 // Descriptive token set (model codes included), minus stopwords and 1-char noise.
 export function tokenize(s) {
-  const out = new Set();
+  return new Set(tokenSequence(s));
+}
+
+// The same tokens, but in the order they appear in the name and with
+// duplicates kept. Needed when WHERE a word sits in the title matters, not
+// just whether it's there: a listing for a product leads with that product
+// ("Sony PlayStation 5 Slim Console"), while a listing for something that
+// merely works with it mentions it later ("Dobe Cooling Fan For PlayStation
+// 5", "Spider-Man Miles Morales - PlayStation 5"). See audit-scoring.js's
+// leadsWithQuery().
+export function tokenSequence(s) {
+  const out = [];
   for (const raw of normalizeName(s).split(' ')) {
-    if (raw.length < 2 || STOPWORDS.has(raw)) continue;
+    if (isNoiseToken(raw) || STOPWORDS.has(raw)) continue;
     const qty = raw.match(QTY_SUFFIX);
     if (qty) {
-      out.add(qty[1]);
+      out.push(qty[1]);
       continue;
     }
     // Only split when the number itself is long enough to survive on its
@@ -121,11 +183,11 @@ export function tokenize(s) {
     // literally-spaced "6 l" would lose the same information anyway.
     const unit = raw.match(UNIT_SUFFIX);
     if (unit && unit[1].length >= 2) {
-      out.add(unit[1]);
-      if (unit[2].length >= 2 && !STOPWORDS.has(unit[2])) out.add(unit[2]);
+      out.push(unit[1]);
+      if (unit[2].length >= 2 && !STOPWORDS.has(unit[2])) out.push(unit[2]);
       continue;
     }
-    out.add(singularize(raw));
+    out.push(singularize(raw));
   }
   return out;
 }

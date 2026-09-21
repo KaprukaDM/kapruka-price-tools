@@ -14,7 +14,8 @@
 //     A partner on any other platform needs a bespoke adapter added here.
 
 import * as cheerio from 'cheerio';
-import { decodeEntities } from './normalize.js';
+import { decodeEntities, normalizeName, tokenSequence } from './normalize.js';
+import { accessoryMismatch, leadsWithQuery } from './audit-scoring.js';
 import { convertToLkr } from './fx.js';
 import { index } from './matcher.js';
 
@@ -826,16 +827,28 @@ function queryCoverage(qTokens, cTokens, qSpecs, cSpecs) {
 // one that's actually a model number -- require all of them.
 const KAPRUKA_MATCH_MIN_COVERAGE = 1;
 
-export async function findKaprukaProduct(name) {
-  const url = `https://www.kapruka.com/lk/find_online/${encodeURIComponent(name)}`;
+// Every Kapruka listing that covers the typed query, best first ("best" =
+// fewest words beyond the query itself, see below). Exported as a list, not
+// just the single winner, because a short query genuinely covers more than
+// one Kapruka SKU ("playstation 5" -> the 1TB disc console AND the
+// "Slim Disc And Digital Version" listing, at different prices) and the
+// checker should say so rather than silently answer about one of them.
+export async function findKaprukaProducts(name, limit = 5) {
+  // Search Kapruka with the NORMALISED query, not the raw string, so the
+  // spellings that mean the same thing ("PS5", "ps 5", "PlayStation5") hit
+  // Kapruka's own search with one identical phrase and therefore come back
+  // with one identical product — the same normaliser the local matching uses
+  // (normalize.js), not a second set of rules.
+  const query = normalizeName(name) || String(name || '');
+  const url = `https://www.kapruka.com/lk/find_online/${encodeURIComponent(query)}`;
   let html;
   try {
     html = await fetchText(url);
   } catch {
-    return null;
+    return [];
   }
   const candidates = parseKaprukaPage(html).filter((p) => p.price != null);
-  if (!candidates.length) return null;
+  if (!candidates.length) return [];
 
   const [qIndexed] = index([{ name, url: 'query' }], false);
   const indexed = index(candidates, false);
@@ -848,20 +861,37 @@ export async function findKaprukaProduct(name) {
   // trusted that ordering blindly; instead, among every candidate clearing
   // the coverage floor, prefer whichever has the fewest tokens beyond the
   // query itself -- the title closest to just being the product name, not a
-  // bouquet/gift-box description that happens to also contain it. Kapruka's
-  // own order only breaks remaining ties.
-  let best = null;
-  let bestExtraTokens = Infinity;
+  // bouquet/gift-box description that happens to also contain it. Price
+  // breaks remaining ties, so the order never depends on Kapruka's own.
+  //
+  // Full coverage on its own isn't enough for the same reason it isn't on a
+  // competitor's site: a companion product quotes the whole product name in
+  // its own title. Kapruka's search for "playstation 5" returns "PS5 Game
+  // Demon's Souls" (LKR 17,750) alongside the console (LKR 320,000), and the
+  // game has FEWER extra words, so it won "closest to what was typed" and
+  // became the Kapruka price the whole insight was computed against. Same two
+  // vetoes the catalogue matching uses, so both sides of the comparison agree
+  // on what counts as the product.
+  const qSeq = tokenSequence(name);
+  const ranked = [];
   for (const c of indexed) {
     if (queryCoverage(qIndexed._tokens, c._tokens, qIndexed._specs, c._specs) < KAPRUKA_MATCH_MIN_COVERAGE) continue;
-    const extraTokens = [...c._tokens].filter((t) => !qIndexed._tokens.has(t)).length;
-    if (extraTokens < bestExtraTokens) {
-      best = c;
-      bestExtraTokens = extraTokens;
-    }
+    if (accessoryMismatch(qIndexed._tokens, c._tokens)) continue;
+    if (!leadsWithQuery(qSeq, tokenSequence(c.name), c._tokens)) continue;
+    ranked.push({
+      name: c.name,
+      url: c.url.startsWith('http') ? c.url : `https://www.kapruka.com${c.url}`,
+      price: c.price,
+      extraTokens: [...c._tokens].filter((t) => !qIndexed._tokens.has(t)).length,
+    });
   }
-  if (!best) return null;
-  return { name: best.name, url: best.url.startsWith('http') ? best.url : `https://www.kapruka.com${best.url}`, price: best.price };
+  ranked.sort((a, b) => a.extraTokens - b.extraTokens || a.price - b.price);
+  return ranked.slice(0, limit).map(({ extraTokens, ...p }) => p);
+}
+
+export async function findKaprukaProduct(name) {
+  const [best] = await findKaprukaProducts(name, 1);
+  return best || null;
 }
 
 // `source` is a descriptor from parseKaprukaSource(), or a raw link/slug string.
