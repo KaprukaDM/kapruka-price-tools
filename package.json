@@ -18,6 +18,7 @@
     "refresh:pending": "node src/tools/refresh-all-partners.js",
     "refresh:all": "node src/tools/force-refresh-all-partners.js",
     "relevancy": "node src/tools/find-online-relevancy.js",
+    "export:partner-sites": "node src/tools/export-partner-sites.js",
     "clear-supabase": "node src/tools/clear-supabase-data.js"
   },
   "dependencies": {
