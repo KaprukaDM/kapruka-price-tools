@@ -851,6 +851,42 @@ async function makePostgresBackend(connectionString) {
 //   ALTER TABLE intl_gift_snapshots ENABLE ROW LEVEL SECURITY;
 //   CREATE POLICY "Public read" ON intl_gift_snapshots FOR SELECT USING (true);
 
+// Connection-level faults worth trying again on a Supabase call, mirroring
+// RETRYABLE_NETWORK_CODES in compare/sources.js. ENOTFOUND stays out: a project
+// ref that doesn't resolve won't start resolving three seconds later, and
+// selectBackend() already handles that case by falling back to SQLite.
+const RETRYABLE_REST_CODES = new Set([
+  'ECONNRESET',
+  'ECONNABORTED',
+  'ECONNREFUSED',
+  'ETIMEDOUT',
+  'EPIPE',
+  'ENETUNREACH',
+  'ENETRESET',
+  'EHOSTUNREACH',
+  'EAI_AGAIN',
+  'UND_ERR_SOCKET',
+  'UND_ERR_CONNECT_TIMEOUT',
+  'UND_ERR_HEADERS_TIMEOUT',
+  'UND_ERR_BODY_TIMEOUT',
+]);
+
+// undici hides the real reason one or two `cause` levels down, which is why
+// these surface as a bare, unactionable "fetch failed".
+function restErrorCode(err) {
+  for (let e = err, depth = 0; e && depth < 5; e = e.cause, depth++) {
+    if (typeof e.code === 'string') return e.code;
+    if (e.name === 'AbortError' || e.name === 'TimeoutError') return 'ETIMEDOUT';
+    if (/socket hang up/i.test(e.message || '')) return 'ECONNRESET';
+  }
+  return null;
+}
+
+let restRetries = 0;
+export function supabaseRetryCount() {
+  return restRetries;
+}
+
 async function makeSupabaseRestBackend(baseUrl, serviceKey) {
   const REST = `${baseUrl.replace(/\/$/, '')}/rest/v1`;
   const headers = {
@@ -859,16 +895,60 @@ async function makeSupabaseRestBackend(baseUrl, serviceKey) {
     'Content-Type': 'application/json',
   };
 
+  // Every Supabase call used to be a single attempt, so one blip in the
+  // connection to Supabase failed whatever was running. Seen live in the
+  // 2026-09-26 full sweep: Supabase went unreachable around partner 43 and the
+  // remaining 87 partners each failed in ~0s with "fetch failed" — not one of
+  // them was actually scraped or saved, and the sweep reported 92 failures for
+  // what was a few seconds of bad network. Retrying transient faults (and
+  // Supabase's own 429/5xx) makes a blip cost seconds instead of a whole run.
+  //
+  // Worth knowing about writes: if a POST reaches Supabase but its *response*
+  // is lost, the retry inserts a second row. For the append-only run/check
+  // tables that means a duplicate row with identical content, which the
+  // "latest run per partner" readers ignore — a far cheaper failure than
+  // dropping the run entirely.
+  const REST_RETRIES = 4; // 5 attempts total
   async function restFetch(path, opts = {}) {
-    const res = await fetch(`${REST}${path}`, { ...opts, headers: { ...headers, ...(opts.headers || {}) } });
-    if (!res.ok) {
-      const text = await res.text().catch(() => '');
-      throw new Error(`Supabase REST ${res.status} on ${path}: ${text}`);
+    for (let attempt = 0; ; attempt++) {
+      let res;
+      try {
+        res = await fetch(`${REST}${path}`, { ...opts, headers: { ...headers, ...(opts.headers || {}) } });
+      } catch (err) {
+        const code = restErrorCode(err);
+        if (code && RETRYABLE_REST_CODES.has(code) && attempt < REST_RETRIES) {
+          const waitMs = Math.min(1000 * 2 ** attempt, 15000); // 1s, 2s, 4s, 8s
+          restRetries += 1;
+          console.warn(`  · Supabase connection failed (${code}), retrying in ${waitMs}ms: ${path}`);
+          await new Promise((r) => setTimeout(r, waitMs));
+          continue;
+        }
+        // Name the underlying code so a failure report says something useful
+        // instead of a bare "fetch failed".
+        throw new Error(`Supabase REST unreachable on ${path}${code ? ` (${code})` : ''}: ${err.message}`);
+      }
+      if (!res.ok) {
+        // 429 = Supabase rate limiting, 5xx = its gateway/pooler having a
+        // moment. Both are worth another go; a 4xx is a real answer about the
+        // request itself and must surface immediately.
+        if ((res.status === 429 || res.status >= 500) && attempt < REST_RETRIES) {
+          const retryAfter = Number(res.headers.get('retry-after'));
+          const waitMs = Number.isFinite(retryAfter) && retryAfter > 0
+            ? retryAfter * 1000
+            : Math.min(1000 * 2 ** attempt, 15000);
+          restRetries += 1;
+          console.warn(`  · Supabase REST ${res.status} on ${path}, retrying in ${waitMs}ms`);
+          await new Promise((r) => setTimeout(r, waitMs));
+          continue;
+        }
+        const text = await res.text().catch(() => '');
+        throw new Error(`Supabase REST ${res.status} on ${path}: ${text}`);
+      }
+      // PostgREST returns an empty body (not just on 204) whenever the request
+      // didn't ask for `Prefer: return=representation` — e.g. a plain upsert.
+      const text = await res.text();
+      return text ? JSON.parse(text) : null;
     }
-    // PostgREST returns an empty body (not just on 204) whenever the request
-    // didn't ask for `Prefer: return=representation` — e.g. a plain upsert.
-    const text = await res.text();
-    return text ? JSON.parse(text) : null;
   }
 
   // Fetch every row from a table in id-ascending order, in bounded batches

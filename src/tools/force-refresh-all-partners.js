@@ -38,7 +38,7 @@ import path from 'node:path';
 import { runComparison } from '../compare/run.js';
 import { rateLimitRetryCount, networkRetryCount, closeScrapeBrowsers } from '../compare/sources.js';
 import { listPartners } from '../compare/partners.js';
-import { saveComparisonRun, storageKind } from '../db.js';
+import { saveComparisonRun, storageKind, supabaseRetryCount } from '../db.js';
 
 const DEFAULT_CONCURRENCY = 4;
 const GEO_PROBE_URL = 'https://www.kapruka.com/partner/joey-clothing';
@@ -89,6 +89,10 @@ async function checkKaprukaGeo() {
 // than just echoing a stack-trace message.
 function classifyError(message) {
   const m = String(message).toLowerCase();
+  // Storage first: "Supabase REST 5xx / unreachable" is the app's own database
+  // failing, not the partner's site, and lumping it in with `network` hid a
+  // whole sweep's worth of Supabase outage as 87 "partner network" failures.
+  if (m.includes('supabase') || m.includes('postgres')) return 'storage';
   if (m.includes('read 0 products')) return 'empty-catalogue';
   if (m.includes('429') || m.includes('rate limit')) return 'rate-limited';
   if (m.includes('no valid kapruka link')) return 'misconfigured';
@@ -263,6 +267,7 @@ async function main() {
     concurrency: opts.concurrency,
     rateLimitRetriesTotal: rateLimitRetryCount(),
     networkRetriesTotal: networkRetryCount(),
+    supabaseRetriesTotal: supabaseRetryCount(),
     partners: results.length,
     refreshed: ok.length,
     failed: failed.length,
@@ -286,7 +291,8 @@ async function main() {
     `\nDone in ${report.durationMin}min — ${ok.length} refreshed, ${failed.length} failed ` +
       `(of ${results.length} stores). ${totals.matched} matched products, ` +
       `${totals.kaprukaHigher} where Kapruka is overpriced, ${totals.priceMissing} still price-missing. ` +
-      `${report.rateLimitRetriesTotal} HTTP 429 retries and ${report.networkRetriesTotal} dropped-connection retries along the way.`
+      `${report.rateLimitRetriesTotal} HTTP 429 retries, ${report.networkRetriesTotal} dropped-connection retries ` +
+      `and ${report.supabaseRetriesTotal} Supabase retries along the way.`
   );
   if (failed.length) {
     console.log('Failures by reason:', report.failuresByReason);
