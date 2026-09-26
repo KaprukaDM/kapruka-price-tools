@@ -137,13 +137,32 @@ function countBy(items, key) {
   return map;
 }
 
-// Category options always reflect the full dataset (not narrowed by the
-// store filter) — category is the primary filter, store is secondary/
-// cascading off it. See storeOptions() below.
+// The rows in scope for building ONE dropdown's options: everything the other
+// filters currently allow. `except` names the dropdown being rebuilt, so it's
+// never narrowed by its own selection (that would prune it down to the single
+// value already picked).
+function itemsForOptions(except) {
+  const category = $('category').value;
+  const store = $('store').value;
+  const hideOffline = $('hideOffline').checked;
+  return DATA.items.filter(
+    (m) =>
+      (except === 'category' || !category || m.category === category) &&
+      (except === 'store' || !store || m.partnerId === store) &&
+      (!hideOffline || m.siteActive !== false),
+  );
+}
+
+// Categories are scoped to the selected store, so every category on offer
+// actually falls inside that partner — and its count is that partner's count,
+// not a site-wide one. Listing all 16 categories regardless of store was a
+// dead end: picking one the store has nothing in just emptied the table.
+// Offline stores' categories drop out while offline stores are hidden, same
+// rule storeOptions() applies to the stores themselves.
 function categoryOptions() {
   const sel = $('category');
   const current = sel.value;
-  const counts = countBy(DATA.items, 'category');
+  const counts = countBy(itemsForOptions('category'), 'category');
   const cats = [...counts.keys()].sort((a, b) => counts.get(b) - counts.get(a));
   sel.innerHTML = '<option value="">All categories</option>' +
     cats.map((c) => `<option value="${escapeHtml(c)}">${escapeHtml(c)} · ${counts.get(c)}</option>`).join('');
@@ -158,10 +177,7 @@ function categoryOptions() {
 function storeOptions() {
   const sel = $('store');
   const current = sel.value;
-  const category = $('category').value;
-  const hideOffline = $('hideOffline').checked;
-  let items = category ? DATA.items.filter((m) => m.category === category) : DATA.items;
-  if (hideOffline) items = items.filter((m) => m.siteActive !== false);
+  const items = itemsForOptions('store');
   const byPartner = new Map(); // partnerId -> { name, count, offline }
   for (const m of items) {
     if (!m.partnerId) continue;
@@ -501,13 +517,16 @@ function exportCsv() {
 }
 
 $('search').addEventListener('input', () => { PAGE = 1; render(); });
-$('category').addEventListener('change', () => { PAGE = 1; storeOptions(); render(); });
-$('store').addEventListener('change', () => { PAGE = 1; render(); });
+// Each dropdown rebuilds the other one after a change (and then itself, so its
+// own counts follow a selection the rebuild may have had to clear).
+$('category').addEventListener('change', () => { PAGE = 1; storeOptions(); categoryOptions(); render(); });
+$('store').addEventListener('change', () => { PAGE = 1; categoryOptions(); storeOptions(); render(); });
 $('hideOffline').addEventListener('change', () => {
   PAGE = 1;
   saveHideOffline();
   statCards(DATA); // headline totals follow the filter
   offlineBanner(); // the banner says whether those stores are hidden or shown
+  categoryOptions(); // ditto for categories that only offline stores had
   storeOptions(); // offline stores appear/disappear from the dropdown
   render();
 });

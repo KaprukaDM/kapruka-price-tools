@@ -88,10 +88,26 @@ function allItems() {
   return [...DATA.partnerOutOfStock, ...DATA.kaprukaOutOfStock, ...DATA.bothOutOfStock];
 }
 
+// Rows in scope for building ONE dropdown's options: everything the other
+// filter currently allows. `except` names the dropdown being rebuilt, so it's
+// not narrowed by its own selection.
+function itemsForOptions(except) {
+  const category = $('category').value;
+  const store = $('store').value;
+  return allItems().filter(
+    (m) =>
+      (except === 'category' || !category || m.category === category) &&
+      (except === 'store' || !store || m.partnerId === store),
+  );
+}
+
+// Categories are scoped to the selected store, so every category offered falls
+// inside that partner (with that partner's count) instead of offering one the
+// store has nothing out of stock in.
 function categoryOptions() {
   const sel = $('category');
   const current = sel.value;
-  const counts = countBy(allItems(), 'category');
+  const counts = countBy(itemsForOptions('category'), 'category');
   const cats = [...counts.keys()].sort((a, b) => counts.get(b) - counts.get(a));
   sel.innerHTML = '<option value="">All categories</option>' +
     cats.map((c) => `<option value="${escapeHtml(c)}">${escapeHtml(c)} · ${counts.get(c)}</option>`).join('');
@@ -101,8 +117,7 @@ function categoryOptions() {
 function storeOptions() {
   const sel = $('store');
   const current = sel.value;
-  const category = $('category').value;
-  const items = category ? allItems().filter((m) => m.category === category) : allItems();
+  const items = itemsForOptions('store');
   const byPartner = new Map();
   for (const m of items) {
     if (!m.partnerId) continue;
@@ -265,8 +280,10 @@ function resetPages() {
   PANELS.both.page = 1;
 }
 $('search').addEventListener('input', () => { resetPages(); render(); });
-$('category').addEventListener('change', () => { resetPages(); storeOptions(); render(); });
-$('store').addEventListener('change', () => { resetPages(); render(); });
+// Each dropdown rebuilds the other after a change (then itself, so its counts
+// follow a selection the rebuild may have had to clear).
+$('category').addEventListener('change', () => { resetPages(); storeOptions(); categoryOptions(); render(); });
+$('store').addEventListener('change', () => { resetPages(); categoryOptions(); storeOptions(); render(); });
 $('activeExport').addEventListener('click', () => exportCsv(ACTIVE_DIR));
 
 load();
