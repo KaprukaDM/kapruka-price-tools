@@ -5,6 +5,7 @@ import { fetchKaprukaCatalog, fetchPartnerCatalog, fetchKaprukaProduct, parseKap
 import { matchCatalogs, summarize } from "./matcher.js";
 import { getPartner } from "./partners.js";
 import { hydrateComparisonResultFromMcp } from "./mcpPrices.js";
+import { verifyWithImages } from "./image-match.js";
 
 const CACHE_TTL_MS = Number(process.env.COMPARE_CACHE_TTL_MS || 30 * 60 * 1000);
 const CACHE_DIR = path.resolve(
@@ -141,6 +142,22 @@ async function compute(partner, log, previousPayload) {
 
   const result = matchCatalogs(kapruka, partnerCat.products, partner.name);
 
+  // Second opinion from the product photos (see image-match.js): confirms or
+  // undoes uncertain title matches and picks up pairs the titles missed.
+  // Runs before the stock re-check so photo-rescued matches get one too.
+  let imageStats = null;
+  let imageChecks = previousPayload?.imageChecks || [];
+  try {
+    ({ stats: imageStats, imageChecks } = await verifyWithImages(result, { previousChecks: imageChecks, log }));
+    log(
+      `  Photo check: ${imageStats.sameFile} same image file, ${imageStats.modelChecks} compared by vision model ` +
+        `(${imageStats.cached} cached) -> ${imageStats.confirmed} confirmed, ${imageStats.rejected} rejected, ` +
+        `${imageStats.rescued} added${imageStats.failed ? `, ${imageStats.failed} failed` : ''}`,
+    );
+  } catch (err) {
+    log(`  Photo check skipped: ${err.message}`);
+  }
+
   const stock = await hydrateKaprukaStock(result.matched, log);
   if (stock.checked) {
     log(`  Kapruka stock re-checked: ${stock.checked} matched product(s), ${stock.flippedOos} corrected to out-of-stock`);
@@ -169,6 +186,8 @@ async function compute(partner, log, previousPayload) {
       partner: partnerCat.products.length
     },
     mcp,
+    imageStats,
+    imageChecks,
     summary: result.summary || summarize(result),
     ...result
   };

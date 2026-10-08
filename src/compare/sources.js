@@ -711,6 +711,23 @@ function kaprukaLkrPriceMap(html) {
   return { priceMap, stockMap };
 }
 
+// First product photo inside a listing card, as an absolute URL. Lazy-loading
+// themes keep the real URL in data-src / data-lazy-src / srcset and a
+// placeholder in src, so those win when present. Used by the partner
+// comparison's image check (see image-match.js).
+function cardImage($card, base) {
+  const $img = $card.find('img').first();
+  if (!$img.length) return null;
+  const srcset = ($img.attr('data-srcset') || $img.attr('srcset') || '').split(',')[0].trim().split(/\s+/)[0];
+  const raw = $img.attr('data-src') || $img.attr('data-lazy-src') || srcset || $img.attr('src') || '';
+  if (!raw || raw.startsWith('data:')) return null;
+  try {
+    return new URL(raw, base).toString();
+  } catch {
+    return null;
+  }
+}
+
 function parseKaprukaPage(html) {
   const $ = cheerio.load(html);
   const { priceMap: lkrByKid, stockMap: stockByKid } = kaprukaLkrPriceMap(html);
@@ -743,7 +760,7 @@ function parseKaprukaPage(html) {
     // Default to in-stock when a card has no JSON-LD availability of its own
     // (rare) rather than assuming the worse case for missing data.
     const inStock = kidKey && stockByKid.has(kidKey) ? stockByKid.get(kidKey) : true;
-    out.push({ name, price, url: href, inStock });
+    out.push({ name, price, url: href, inStock, image: cardImage($a, href) });
   });
   return out;
 }
@@ -1078,6 +1095,7 @@ async function fetchWooCatalog(origin, log, fetchJson = fetchJsonSafe) {
         regularPrice,
         url: p.permalink,
         inStock: p.is_in_stock !== false,
+        image: p.images?.[0]?.thumbnail || p.images?.[0]?.src || null,
       });
     }
     log(`  partner (woo) page ${page}: +${arr.length}, total ${out.length}`);
@@ -1142,6 +1160,7 @@ async function fetchShopifyCatalog(origin, log, fetchJson = fetchJsonSafe) {
         regularPrice,
         url: `${origin}/products/${p.handle}`,
         inStock: variants.some((v) => v.available),
+        image: p.images?.[0]?.src || p.image?.src || null,
       });
     }
     log(`  partner (shopify) page ${page}: +${products.length}, total ${out.length}`);
@@ -1199,7 +1218,7 @@ async function parseWooHtmlPage(html, origin) {
     if (!title) return;
 
     seen.add(href);
-    out.push({ id: `woohtml-${href}`, name: title, price: parsed.price, url: href, _currency: parsed.currency });
+    out.push({ id: `woohtml-${href}`, name: title, price: parsed.price, url: href, _currency: parsed.currency, image: cardImage(found, href) });
   });
   return convertForeignItems(out);
 }
