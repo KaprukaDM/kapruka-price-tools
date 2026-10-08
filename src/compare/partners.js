@@ -5,7 +5,7 @@
 // recurring source of confusion once this app started running from more
 // than one server.
 
-import { listPartnerRows, getPartnerRow, insertPartnerRow, requestPartnerRefresh } from '../db.js';
+import { listPartnerRows, getPartnerRow, insertPartnerRow, requestPartnerRefresh, setPartnerExcluded } from '../db.js';
 
 const slugify = (s) =>
   String(s).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'partner';
@@ -46,7 +46,11 @@ export async function getPartner(id) {
 
 // Lightweight list for the UI dropdown / API. Includes refreshRequestedAt so
 // refresh-all-partners.js can decide whether a pending "Refresh" click still
-// needs picking up, without a second round-trip per partner.
+// needs picking up, without a second round-trip per partner. Includes
+// `excluded` too (NOT filtered out here) so callers that manage the partner
+// list itself (the dropdown, the exclude/restore UI) can still see and act on
+// a hidden partner — it's the dashboard reports that drop excluded partners,
+// not this list.
 export async function listPartners() {
   const rows = await listPartnerRows();
   return rows.map((p) => ({
@@ -55,6 +59,7 @@ export async function listPartners() {
     kaprukaSlug: p.kaprukaSlug,
     partnerLabel: p.partnerLabel || p.partnerSite,
     refreshRequestedAt: p.refreshRequestedAt,
+    excluded: !!p.excluded,
   }));
 }
 
@@ -63,4 +68,15 @@ export async function listPartners() {
 // Kapruka-geo host) is what actually acts on it, next time it runs.
 export async function requestRefresh(id) {
   await requestPartnerRefresh(id);
+}
+
+// Durable manual hide/restore. Unlike siteActive/siteStatus (recomputed every
+// comparison run from checkSiteHealth(), so it just reflects whether the LAST
+// scrape could reach the site), this is a standing decision that only a human
+// sets or clears — the next refresh can't silently undo it. Historical
+// comparison_runs rows for the partner are left alone; excluding only affects
+// what the dashboards and refresh jobs show/do going forward.
+export async function setExcluded(id, excluded) {
+  if (!(await getPartnerRow(id))) throw new Error(`Unknown partner id "${id}"`);
+  await setPartnerExcluded(id, excluded);
 }

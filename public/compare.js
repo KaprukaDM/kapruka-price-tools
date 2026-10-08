@@ -469,10 +469,49 @@ async function loadPartners(selectId) {
   const partners = await res.json();
   PARTNERS = partners;
   $('partner').innerHTML = partners
-    .map((p) => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}</option>`)
+    .map((p) => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}${p.excluded ? ' (hidden)' : ''}</option>`)
     .join('');
   $('partner').value = selectId || (partners[0] && partners[0].id) || '';
   syncPartnerSearchLabel();
+  syncExcludeButton();
+}
+
+// Durable manual hide/restore (see POST /api/partners/:id/exclude in
+// server.js) — unlike the automatic "offline" badge elsewhere (recomputed
+// every scrape from the site's own reachability), this is a standing
+// decision only a human sets or clears, and it's what actually removes the
+// store from every comparison dashboard. History is kept either way.
+function syncExcludeButton() {
+  const p = PARTNERS.find((p) => p.id === $('partner').value);
+  const btn = $('toggleExclude');
+  if (!btn) return;
+  btn.textContent = p?.excluded ? '✅ Restore to dashboards' : '🚫 Hide from dashboards';
+  btn.disabled = !p;
+}
+
+async function toggleExclude() {
+  const partnerId = $('partner').value;
+  const p = PARTNERS.find((p) => p.id === partnerId);
+  if (!p) return;
+  const nextExcluded = !p.excluded;
+  $('toggleExclude').disabled = true;
+  $('excludeHint').textContent = '';
+  try {
+    const res = await fetch(`/api/partners/${encodeURIComponent(partnerId)}/${nextExcluded ? 'exclude' : 'include'}`, {
+      method: 'POST',
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not update this store');
+    p.excluded = nextExcluded;
+    $('excludeHint').textContent = nextExcluded
+      ? `${p.name} is now hidden from every comparison dashboard (history kept — restore any time).`
+      : `${p.name} is back on every comparison dashboard.`;
+    await loadPartners(partnerId);
+  } catch (err) {
+    $('excludeHint').textContent = 'Error: ' + err.message;
+  } finally {
+    $('toggleExclude').disabled = false;
+  }
 }
 
 function syncPartnerSearchLabel() {
@@ -533,7 +572,8 @@ $('search').addEventListener('input', () => { PAGE = 1; render(); });
 $('category').addEventListener('change', () => { PAGE = 1; render(); });
 $('overOnly').addEventListener('change', () => { PAGE = 1; render(); });
 $('exportCsv').addEventListener('click', exportCsv);
-$('partner').addEventListener('change', () => load());
+$('partner').addEventListener('change', () => { syncExcludeButton(); load(); });
+$('toggleExclude').addEventListener('click', toggleExclude);
 // Clicking a pre-filled box should offer the full list to pick a different
 // partner from, not just filter down to the one already selected.
 $('partnerSearch').addEventListener('focus', () => { $('partnerSearch').select(); renderPartnerMenu(''); });

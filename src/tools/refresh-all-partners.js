@@ -46,7 +46,10 @@ import { saveComparisonRun, recentComparisonRuns, storageKind } from '../db.js';
 // instead of shelling out to a separate process. `log` lets the server route
 // output wherever it wants; defaults to the console for the CLI path.
 export async function refreshPendingPartners({ log = console.log } = {}) {
-  const partners = await listPartners();
+  // Excluded partners are a deliberate, durable hide (see setExcluded() in
+  // compare/partners.js) — don't spend scrape time keeping their data fresh
+  // for dashboards they've been removed from.
+  const partners = (await listPartners()).filter((p) => !p.excluded);
   log(`Checking ${partners.length} partner(s) for new additions / refresh requests…`);
 
   let refreshed = 0;

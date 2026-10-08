@@ -45,6 +45,17 @@ const cachedLatestComparisonRows = cached(latestComparisonRowsPerPartner);
 const cachedGetPriceAuditItems = cached(getPriceAuditItems);
 const cachedRemovedUrlSet = cached(removedUrlSet);
 const cachedAllPriceCheckRows = cached(allPriceCheckRows);
+const cachedListPartners = cached(listPartners);
+
+// Partners manually hidden via POST /api/partners/:id/exclude (see
+// setExcluded() in compare/partners.js) — a durable decision, unlike
+// siteActive/siteStatus below which is recomputed on every scrape. Every
+// report in this file that walks all partners' comparison runs drops these
+// ids, same way they already drop removed_products by kaprukaUrl.
+async function excludedPartnerIdSet() {
+  const partners = await cachedListPartners();
+  return new Set(partners.filter((p) => p.excluded).map((p) => p.id));
+}
 
 // Removing/restoring a product changes removedUrlSet() immediately (it's a
 // direct DB write, not a scheduled scrape), so the 5h TTL above would leave
@@ -325,6 +336,7 @@ function categoryFromKaprukaUrl(url) {
 // id *inside* the payload, and legacy rows exist where those disagree.
 async function latestRunPerPartner() {
   await invalidateIfNewRuns(); // a sweep on the trusted host may have landed since the last load
+  const excluded = await excludedPartnerIdSet();
   const latest = new Map(); // partnerId -> { created_at, payload }
   for (const row of await cachedLatestComparisonRows()) {
     let payload;
@@ -334,6 +346,7 @@ async function latestRunPerPartner() {
       continue;
     }
     const pid = payload.partner?.id || `row-${row.id}`;
+    if (excluded.has(pid)) continue; // manually hidden — see excludedPartnerIdSet()
     // Rows arrive ordered by id ascending, so a later row overwrites an earlier
     // one for the same partner — leaving the most recent run.
     latest.set(pid, { created_at: row.created_at, payload });
@@ -781,13 +794,14 @@ async function priceChangesReportUncached() {
   let partnersChecked = 0;
   let lastUpdated = null;
 
-  const [{ products, partnerRunCounts, partnerMeta }, partners] = await Promise.all([
+  const [{ products, partnerRunCounts, partnerMeta }, partners, excluded] = await Promise.all([
     priceChangeEventsPerPartner(),
     listPartners(),
+    excludedPartnerIdSet(),
   ]);
 
   for (const [pid, byUrl] of products) {
-    if (PRICE_CHANGES_HIDDEN_PARTNER_IDS.has(pid)) continue;
+    if (PRICE_CHANGES_HIDDEN_PARTNER_IDS.has(pid) || excluded.has(pid)) continue;
     if ((partnerRunCounts.get(pid) || 0) < 2) continue; // needs at least 2 scrapes to compare
     partnersChecked++;
 
@@ -830,7 +844,7 @@ async function priceChangesReportUncached() {
   return {
     lastUpdated,
     partnersChecked,
-    partnersTotal: partners.filter((p) => !PRICE_CHANGES_HIDDEN_PARTNER_IDS.has(p.id)).length,
+    partnersTotal: partners.filter((p) => !PRICE_CHANGES_HIDDEN_PARTNER_IDS.has(p.id) && !excluded.has(p.id)).length,
     count: items.length,
     increasedCount: increased.length,
     decreasedCount: decreased.length,

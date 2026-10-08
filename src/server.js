@@ -8,7 +8,7 @@ import { searchDatabase, mergeListings, byBestValue } from './checker/db-search.
 import { searchDaraz } from './daraz.js';
 import { runComparison } from './compare/run.js';
 import { recommendPrice } from './price-insight.js';
-import { listPartners, addPartner, siteLabel, getPartner, requestRefresh } from './compare/partners.js';
+import { listPartners, addPartner, siteLabel, getPartner, requestRefresh, setExcluded } from './compare/partners.js';
 import {
   probeKaprukaSource,
   detectPartnerPlatform,
@@ -576,6 +576,35 @@ app.post('/api/compare/refresh-request', async (req, res) => {
   }
 });
 
+// Durable manual hide/restore for a partner store — e.g. a store the team
+// has decided to stop showing on the comparison dashboards (closed down,
+// asked to be removed, etc.), as opposed to siteActive/siteStatus which is
+// purely automatic and gets recomputed (and can silently flip back to
+// "active") on every scrape. Excluding a partner removes it from every
+// dashboard report (overpriced, all-products-overpriced, stock mismatch,
+// price changes, and their CSV exports — see export.js) and from the
+// refresh jobs, but keeps its historical comparison_runs data in the
+// database untouched, so restoring it brings its history straight back.
+app.post('/api/partners/:id/exclude', async (req, res) => {
+  try {
+    await setExcluded(req.params.id, true);
+    invalidateReportCache();
+    res.json({ ok: true, id: req.params.id, excluded: true });
+  } catch (err) {
+    res.status(err.message?.startsWith('Unknown partner') ? 404 : 500).json({ error: err.message });
+  }
+});
+
+app.post('/api/partners/:id/include', async (req, res) => {
+  try {
+    await setExcluded(req.params.id, false);
+    invalidateReportCache();
+    res.json({ ok: true, id: req.params.id, excluded: false });
+  } catch (err) {
+    res.status(err.message?.startsWith('Unknown partner') ? 404 : 500).json({ error: err.message });
+  }
+});
+
 // Partner price reconciliation. Always serves the latest STORED run for the
 // partner (written by the scheduled refresh job, src/tools/refresh-all-
 // partners.js) — never live-scrapes on a page view. Kapruka geo-detects the
@@ -917,7 +946,10 @@ async function refreshAllPartners(reason) {
   // request per partner (the same Supabase flag the single-store Refresh
   // button writes) so the scheduled job on the trusted host picks them up.
   if (!TRUSTED_SCRAPE_HOST) {
-    const partners = await listPartners();
+    // Excluded partners are deliberately hidden from every dashboard — don't
+    // waste a scrape slot (or Kapruka/partner-site request budget) keeping
+    // their data fresh. See setExcluded()/POST /api/partners/:id/exclude.
+    const partners = (await listPartners()).filter((p) => !p.excluded);
     console.log(`↻ Not a trusted-geo host — queuing ${partners.length} refresh requests instead of scraping (${reason})`);
     await Promise.all(partners.map((p) => requestRefresh(p.id)));
     REFRESH_STATE.lastRunAt = new Date().toISOString();
@@ -930,7 +962,7 @@ async function refreshAllPartners(reason) {
   REFRESH_STATE.running = true;
   const startedAt = Date.now();
   try {
-    const partners = await listPartners();
+    const partners = (await listPartners()).filter((p) => !p.excluded);
     console.log(`↻ Refreshing ${partners.length} partner comparisons (${reason})…`);
     let refreshed = 0;
     for (const p of partners) {

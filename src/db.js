@@ -150,6 +150,11 @@ function rowToPartner(r) {
     platform: r.platform || undefined,
     viaBrowser: !!r.via_browser,
     refreshRequestedAt: r.refresh_requested_at || null,
+    // Manual, durable hide — see setPartnerExcluded(). Missing/NULL on a row
+    // written before this column existed must read as false (visible), not
+    // true, so an old partner doesn't vanish from every dashboard the moment
+    // this ships.
+    excluded: !!r.excluded,
   };
 }
 
@@ -161,6 +166,12 @@ export const recentComparisonRuns = (limit = 50, partnerId = null) =>
 export const getComparisonRun = (id) => backend.getComparisonRun(id);
 export const allPriceCheckRows = () => backend.allPriceCheckRows();
 export const requestPartnerRefresh = (id) => backend.requestPartnerRefresh(id);
+// Durable manual hide/restore — unlike siteActive/siteStatus (recomputed on
+// every comparison run from checkSiteHealth(), so it reflects the LAST
+// scrape, not a decision), this is a standing flag a human sets and only a
+// human clears. Every dashboard report filters these out; historical
+// comparison_runs data is left untouched so un-excluding restores it.
+export const setPartnerExcluded = (id, excluded) => backend.setPartnerExcluded(id, excluded);
 export const allComparisonRows = (partnerId = null) => backend.allComparisonRows(partnerId);
 export const latestComparisonRowsPerPartner = () => backend.latestComparisonRowsPerPartner();
 export const listPartnerRows = () => backend.listPartnerRows();
@@ -270,8 +281,12 @@ async function makePostgresBackend(connectionString) {
       platform              TEXT,
       via_browser           BOOLEAN DEFAULT false,
       created_at            TEXT NOT NULL,
-      refresh_requested_at  TEXT
+      refresh_requested_at  TEXT,
+      excluded              BOOLEAN DEFAULT false
     );
+    -- Already had a partners table before the excluded column existed? This
+    -- picks it up without needing a manual migration step on any instance.
+    ALTER TABLE partners ADD COLUMN IF NOT EXISTS excluded BOOLEAN DEFAULT false;
     CREATE TABLE IF NOT EXISTS intl_gift_pairings (
       id                BIGSERIAL PRIMARY KEY,
       country           TEXT NOT NULL,
@@ -545,7 +560,7 @@ async function makePostgresBackend(connectionString) {
 
     async listPartnerRows() {
       const { rows } = await pool.query(
-        `SELECT id, name, kapruka_url, kapruka_slug, partner_site, partner_label, platform, via_browser, refresh_requested_at
+        `SELECT id, name, kapruka_url, kapruka_slug, partner_site, partner_label, platform, via_browser, refresh_requested_at, excluded
          FROM partners ORDER BY created_at ASC`,
       );
       return rows.map(rowToPartner);
@@ -553,7 +568,7 @@ async function makePostgresBackend(connectionString) {
 
     async getPartnerRow(id) {
       const { rows } = await pool.query(
-        `SELECT id, name, kapruka_url, kapruka_slug, partner_site, partner_label, platform, via_browser, refresh_requested_at
+        `SELECT id, name, kapruka_url, kapruka_slug, partner_site, partner_label, platform, via_browser, refresh_requested_at, excluded
          FROM partners WHERE id = $1`,
         [id],
       );
@@ -573,6 +588,10 @@ async function makePostgresBackend(connectionString) {
 
     async requestPartnerRefresh(id) {
       await pool.query(`UPDATE partners SET refresh_requested_at = $1 WHERE id = $2`, [nowIso(), id]);
+    },
+
+    async setPartnerExcluded(id, excluded) {
+      await pool.query(`UPDATE partners SET excluded = $1 WHERE id = $2`, [!!excluded, id]);
     },
 
     async getIntlGiftPairings(country) {
@@ -772,8 +791,11 @@ async function makePostgresBackend(connectionString) {
 //     platform      TEXT,
 //     via_browser   BOOLEAN DEFAULT false,
 //     created_at    TEXT NOT NULL,
-//     refresh_requested_at TEXT
+//     refresh_requested_at TEXT,
+//     excluded      BOOLEAN DEFAULT false
 //   );
+//   -- Already had a partners table before `excluded` existed? Run:
+//   -- ALTER TABLE partners ADD COLUMN IF NOT EXISTS excluded BOOLEAN DEFAULT false;
 //   CREATE TABLE IF NOT EXISTS intl_gift_pairings (
 //     id                BIGSERIAL PRIMARY KEY,
 //     country           TEXT NOT NULL,
@@ -1262,7 +1284,7 @@ async function makeSupabaseRestBackend(baseUrl, serviceKey) {
 
     async listPartnerRows() {
       const rows = await restFetch(
-        '/partners?select=id,name,kapruka_url,kapruka_slug,partner_site,partner_label,platform,via_browser,refresh_requested_at' +
+        '/partners?select=id,name,kapruka_url,kapruka_slug,partner_site,partner_label,platform,via_browser,refresh_requested_at,excluded' +
           '&order=created_at.asc',
       );
       return rows.map(rowToPartner);
@@ -1270,7 +1292,7 @@ async function makeSupabaseRestBackend(baseUrl, serviceKey) {
 
     async getPartnerRow(id) {
       const rows = await restFetch(
-        '/partners?select=id,name,kapruka_url,kapruka_slug,partner_site,partner_label,platform,via_browser,refresh_requested_at' +
+        '/partners?select=id,name,kapruka_url,kapruka_slug,partner_site,partner_label,platform,via_browser,refresh_requested_at,excluded' +
           `&id=eq.${encodeURIComponent(id)}&limit=1`,
       );
       return rows[0] ? rowToPartner(rows[0]) : null;
@@ -1298,6 +1320,13 @@ async function makeSupabaseRestBackend(baseUrl, serviceKey) {
       await restFetch(`/partners?id=eq.${encodeURIComponent(id)}`, {
         method: 'PATCH',
         body: JSON.stringify({ refresh_requested_at: nowIso() }),
+      });
+    },
+
+    async setPartnerExcluded(id, excluded) {
+      await restFetch(`/partners?id=eq.${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ excluded: !!excluded }),
       });
     },
 
@@ -1515,7 +1544,8 @@ async function makeSqliteBackend() {
       platform              TEXT,
       via_browser           INTEGER DEFAULT 0,
       created_at            TEXT NOT NULL,
-      refresh_requested_at  TEXT
+      refresh_requested_at  TEXT,
+      excluded              INTEGER DEFAULT 0
     );
     CREATE TABLE IF NOT EXISTS intl_gift_pairings (
       id                INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1608,6 +1638,12 @@ async function makeSqliteBackend() {
   if (!competitorProductCols.some((c) => c.name === 'category')) {
     db.exec(`ALTER TABLE competitor_products ADD COLUMN category TEXT`);
   }
+  // Already had a partners table before `excluded` existed? Pick it up here
+  // rather than requiring a manual migration on every existing instance.
+  const partnerCols = db.prepare(`PRAGMA table_info(partners)`).all();
+  if (!partnerCols.some((c) => c.name === 'excluded')) {
+    db.exec(`ALTER TABLE partners ADD COLUMN excluded INTEGER DEFAULT 0`);
+  }
 
   const rowToRemovedSqlite = (r) => ({
     id: r.id,
@@ -1662,16 +1698,17 @@ async function makeSqliteBackend() {
        same_price, only_kapruka, only_partner, payload_json)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
   const selPartners = db.prepare(`
-    SELECT id, name, kapruka_url, kapruka_slug, partner_site, partner_label, platform, via_browser, refresh_requested_at
+    SELECT id, name, kapruka_url, kapruka_slug, partner_site, partner_label, platform, via_browser, refresh_requested_at, excluded
     FROM partners ORDER BY created_at ASC`);
   const selPartner = db.prepare(`
-    SELECT id, name, kapruka_url, kapruka_slug, partner_site, partner_label, platform, via_browser, refresh_requested_at
+    SELECT id, name, kapruka_url, kapruka_slug, partner_site, partner_label, platform, via_browser, refresh_requested_at, excluded
     FROM partners WHERE id = ?`);
   const insPartner = db.prepare(`
     INSERT INTO partners
       (id, name, kapruka_url, kapruka_slug, partner_site, partner_label, platform, via_browser, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`);
   const updPartnerRefreshRequest = db.prepare(`UPDATE partners SET refresh_requested_at = ? WHERE id = ?`);
+  const updPartnerExcluded = db.prepare(`UPDATE partners SET excluded = ? WHERE id = ?`);
   const selPairings = db.prepare(
     `SELECT kapruka_sku, fnp_url, match_source, match_confidence FROM intl_gift_pairings WHERE country = ?`,
   );
@@ -1853,6 +1890,10 @@ async function makeSqliteBackend() {
 
     async requestPartnerRefresh(id) {
       updPartnerRefreshRequest.run(nowIso(), id);
+    },
+
+    async setPartnerExcluded(id, excluded) {
+      updPartnerExcluded.run(excluded ? 1 : 0, id);
     },
 
     async getIntlGiftPairings(country) {
