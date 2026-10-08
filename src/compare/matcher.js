@@ -96,7 +96,7 @@ const HIGH_CONFIDENCE_MIN_JACCARD = 0.3;
 // manual review while genuinely uncertain ones went unflagged.
 const NAME_ONLY_HIGH_CONFIDENCE_JACCARD = 0.9;
 
-export function jaccard(a, b) {
+function jaccard(a, b) {
   if (a.size === 0 || b.size === 0) return 0;
   let inter = 0;
   for (const t of a) if (b.has(t)) inter++;
@@ -171,7 +171,7 @@ export function score(k, s, brandTokens) {
   return { value: (codes >= 1 ? 1 : 0) + jac, codes, jaccard: jac };
 }
 
-export function priceComparison(k, s) {
+function priceComparison(k, s) {
   const kp = k.price;
   const sp = s.price;
   if (kp == null || sp == null) {
@@ -254,7 +254,18 @@ export function matchCatalogs(kapruka, partner, partnerName) {
     usedPartner.add(p);
     const price = priceComparison(k, p);
     matched.push({
-      ...matchedRow(k, p),
+      name: k.name,
+      kaprukaUrl: k.url,
+      kaprukaPrice: k.price,
+      kaprukaInStock: k.inStock !== false,
+      partnerName: p.name,
+      partnerUrl: p.url,
+      partnerSku: p.sku,
+      partnerBrand: p.brand || '',
+      partnerCategory: p.category || '',
+      partnerPrice: p.price,
+      partnerRegularPrice: p.regularPrice,
+      partnerInStock: p.inStock !== false,
       confidence:
         (sc.codes >= 1 && sc.jaccard >= HIGH_CONFIDENCE_MIN_JACCARD) ||
         sc.jaccard >= NAME_ONLY_HIGH_CONFIDENCE_JACCARD
@@ -269,41 +280,10 @@ export function matchCatalogs(kapruka, partner, partnerName) {
   const matchedKaprukaUrls = new Set(matched.map((m) => m.kaprukaUrl));
   const onlyKapruka = kIndexed
     .filter((k) => !matchedKaprukaUrls.has(k.url))
-    .map(onlyKaprukaRow);
+    .map((k) => ({ name: k.name, price: k.price, url: k.url }));
   const onlyPartner = pIndexed
     .filter((p) => !usedPartner.has(p))
-    .map(onlyPartnerRow);
+    .map((p) => ({ name: p.name, sku: p.sku, price: p.price, url: p.url, brand: p.brand || '', category: p.category || '' }));
 
   return { matched, onlyKapruka, onlyPartner };
-}
-
-// Row shapes, shared with image-match.js, which moves products between the
-// three buckets after matchCatalogs() has run. `image` / `kaprukaImage` /
-// `partnerImage` feed its photo comparison.
-export function matchedRow(k, p) {
-  return {
-    name: k.name,
-    kaprukaUrl: k.url,
-    kaprukaPrice: k.price,
-    kaprukaInStock: k.inStock !== false,
-    kaprukaImage: k.image || null,
-    partnerName: p.name,
-    partnerUrl: p.url,
-    partnerSku: p.sku,
-    partnerBrand: p.brand || '',
-    partnerCategory: p.category || '',
-    partnerPrice: p.price,
-    partnerRegularPrice: p.regularPrice,
-    partnerInStock: p.inStock !== false,
-    partnerImage: p.image || null,
-  };
-}
-export function onlyKaprukaRow(k) {
-  return { name: k.name, price: k.price, url: k.url, inStock: k.inStock !== false, image: k.image || null };
-}
-export function onlyPartnerRow(p) {
-  return {
-    name: p.name, sku: p.sku, price: p.price, url: p.url, brand: p.brand || '', category: p.category || '',
-    regularPrice: p.regularPrice ?? null, inStock: p.inStock !== false, image: p.image || null,
-  };
 }

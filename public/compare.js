@@ -173,20 +173,6 @@ function categoryOptions() {
   sel.value = counts.has(current) ? current : '';
 }
 
-// What the photo check (src/compare/image-match.js) said about this pair.
-const PHOTO_LABEL = {
-  same_file: 'same photo',
-  same: 'photos match',
-  same_colour_variant: 'photos match (other colour)',
-  unsure: 'photos unclear',
-};
-function photoBadge(m) {
-  const label = PHOTO_LABEL[m.imageMatch];
-  if (!label) return '';
-  const how = m.matchedBy === 'image' ? ' · matched by photo' : '';
-  return ` · <span title="${escapeHtml(m.imageReason || '')}">📷 ${label}</span>${how}`;
-}
-
 function matchedRows(rows) {
   const order = { kapruka_higher: 0, price_missing: 1, kapruka_lower: 2, same: 3 };
   const sorted = MATCHED_SORT.key
@@ -202,7 +188,7 @@ function matchedRows(rows) {
         : '<span class="badge b-md">review</span>';
       return `<tr class="${v.row}">
         <td>${link(m.kaprukaUrl, m.name)}
-          <div class="ctx">matched: ${link(m.partnerUrl, m.partnerName)} · ${conf} · name sim ${m.nameSimilarity}%${photoBadge(m)}</div></td>
+          <div class="ctx">matched: ${link(m.partnerUrl, m.partnerName)} · ${conf} · name sim ${m.nameSimilarity}%</div></td>
         <td class="num price">${lkr(m.kaprukaPrice)}</td>
         <td class="num">${lkr(m.partnerPrice)}${discountBadge(m.partnerRegularPrice, m.partnerPrice)}</td>
         <td class="num">${m.diff == null ? '' : (m.diff > 0 ? '+' : '') + lkr(m.diff)}</td>
