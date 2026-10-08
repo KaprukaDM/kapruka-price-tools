@@ -72,6 +72,11 @@ const ABBREVIATIONS = [
   [/\bair\s*pods\b/g, 'airpods'],
   [/\bpower\s*bank\b/g, 'powerbank'],
   [/\bsmart\s*watch\b/g, 'smartwatch'],
+  [/\bck\b/g, 'calvin klein'],
+  // Fragrance concentrations: "Eau De Parfum" / "Eau De Parfume" vs "EDP".
+  [/\beau\s+de\s+parf[a-z]*\b/g, 'edp'],
+  [/\beau\s+de\s+toilet+e?\b/g, 'edt'],
+  [/\beau\s+de\s+cologne\b/g, 'edc'],
 ];
 function expandAbbreviations(s) {
   let out = s;

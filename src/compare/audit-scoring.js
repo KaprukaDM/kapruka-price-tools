@@ -181,7 +181,7 @@ function unmatchedDistinctiveToken(kTokens, cTokens, { kCodes, cCodes, specsAgre
 const QUALIFIER_WORDS = new Set([
   'pro', 'plus', 'max', 'ultra', 'lite', 'mini', 'se', 'neo', 'air', 'note', 'prime', 'edge',
 ]);
-function qualifierMismatch(a, b) {
+export function qualifierMismatch(a, b) {
   for (const w of QUALIFIER_WORDS) {
     if (a.has(w) !== b.has(w)) return true;
   }
@@ -198,7 +198,7 @@ function qualifierMismatch(a, b) {
 // no-code branches) rather than folded into either path's own bar. Doesn't
 // fire when the QUERY itself is for the accessory ("iPhone 15 case") --
 // only when the accessory word appears on just one side.
-const ACCESSORY_WORDS = new Set([
+export const ACCESSORY_WORDS = new Set([
   'case', 'cover', 'pouch', 'sleeve', 'skin', 'sticker', 'decal', 'tempered',
   'protector', 'charger', 'cable', 'adapter', 'holder', 'mount', 'stand',
   'strap', 'bumper', 'magsafe', 'lanyard', 'shell', 'casing',

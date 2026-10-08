@@ -32,9 +32,10 @@
 //      the newer audit tables.
 
 import { index } from '../compare/matcher.js';
-import { scoreCandidate, broadNameMatch } from '../compare/audit-scoring.js';
-import { searchPrefixes, extractModelCodes, specsConflict, tokenSequence } from '../compare/normalize.js';
+import { scoreCandidate } from '../compare/audit-scoring.js';
+import { searchPrefixes, extractModelCodes } from '../compare/normalize.js';
 import { getPriceAuditItems, searchCompetitorProductsByTokens, allComparisonRows } from '../db.js';
+import { understandQuery, fanOutQueries, relevanceMatch, relevanceVeto } from './relevance.js';
 
 const AUDIT_ITEMS_SCAN_LIMIT = 6000; // comfortably above the ~2.5k rows currently stored
 const COMPETITOR_SEARCH_LIMIT = 500;
@@ -75,12 +76,12 @@ function getCachedComparisonRows() {
 // The strict identity search (scoreCandidate) needs >=2 shared distinctive
 // words, and >=3 for a spec-less name — a bar a short query for a real
 // product ("playstation 5", "ps5") can never clear, however well the
-// catalogue actually covers it. The looser containment search
-// (broadNameMatch) used to only run as a fallback for such queries, which is
-// what made the answer depend on how the query was phrased: "Sony playstation
-// 5" (3 tokens) took the strict path, "playstation 5" (2 tokens) took the
-// broad one, and the two paths returned different sites. Both now ALWAYS run
-// and their rows are unioned — see matchCandidate()/searchDatabase().
+// catalogue actually covers it. A second, looser judge used to only run as a
+// fallback for such queries, which is what made the answer depend on how the
+// query was phrased: "Sony playstation 5" (3 tokens) took the strict path,
+// "playstation 5" (2 tokens) took the broad one, and the two paths returned
+// different sites. Both judges now ALWAYS run (the second is relevance.js's
+// rarity-weighted score) — see matchCandidate()/searchDatabase().
 const MAX_MATCHED_PRODUCTS = 20;
 // Ceiling on the merged table, so a very generic query ("iphone") can't
 // return a thousand rows. Applied after sorting, so what's dropped is always
@@ -92,12 +93,6 @@ const MAX_RESULTS = 60;
 // brand: "Sony") may be missing from a candidate. Numbers, SKUs and
 // qualifier words are never waived — see audit-scoring.js's isWaivableWord.
 const QUERY_WAIVE = 1;
-
-// A word-containment match is real evidence but weaker than a scored
-// identity match (no SKU agreement, no spec agreement behind it), so its
-// reported match rate is scaled down rather than ever being shown as a
-// verified 100% — a strict match always sorts above it.
-const BROAD_MAX_RATE = 90;
 
 // The ILIKE pre-filter that narrows competitor_products before anything is
 // scored. Two separate searches, because the two kinds of anchor fail in
@@ -173,9 +168,10 @@ function domainFromUrl(u) {
 // matchKind 'strict' — scoreCandidate() accepted it: every distinctive word
 //   the user typed is on the listing (bar one waivable plain word), specs
 //   agree, no qualifier/accessory mismatch. Reported at its real overlap.
-// matchKind 'broad'  — only broadNameMatch() accepted it: the words the user
-//   typed are all present, but with no SKU/spec agreement behind it, so its
-//   rate is capped at BROAD_MAX_RATE and it always sorts under a strict row.
+// matchKind 'broad'  — only relevance.js accepted it, without SKU/spec
+//   agreement behind it: its rate is capped at RELEVANCE_BROAD_MAX_RATE so it
+//   never outranks a solid strict match, and a price far from the strict
+//   rows' drops it altogether (dropPriceOutliers).
 function resultRow({ site, domain, title, url, price, matchRate, sourceTable, matchKind, via }) {
   return {
     site,
@@ -196,26 +192,27 @@ function resultRow({ site, domain, title, url, price, matchRate, sourceTable, ma
   };
 }
 
-// Score one catalogue candidate against the query — strict first, broad
-// second. The single place both bars are applied, so every table below
+// Score one catalogue candidate against the understood query (see
+// relevance.js). The single place the bars are applied, so every table below
 // decides "is this the product the user asked for" identically. Returns null,
 // or { kind, rate, value }, where `value` ranks candidates against each other
 // (a strict match always outranks a broad one).
-function matchCandidate(qIndexed, cIndexed) {
-  const sc = scoreCandidate(qIndexed, cIndexed, { waiveUnmatched: QUERY_WAIVE });
-  if (sc) return { kind: 'strict', rate: Math.round(sc.overlap * 100), value: 10 + sc.value };
-  // The strict path already vetoes conflicting specs; the broad one has to do
-  // that itself, or "PlayStation 5 1TB" would match an 825GB listing purely
-  // on the typed words all being present in its title.
-  if (specsConflict(qIndexed._specs, cIndexed._specs)) return null;
-  const bm = broadNameMatch(qIndexed._tokens, cIndexed._tokens, {
-    waive: QUERY_WAIVE,
-    // Position matters for a containment-only match — see leadsWithQuery().
-    qSeq: tokenSequence(qIndexed.name),
-    cSeq: tokenSequence(cIndexed.name),
-  });
-  if (!bm) return null;
-  return { kind: 'broad', rate: Math.round(Math.min(BROAD_MAX_RATE, bm.overlap * 100)), value: bm.overlap };
+//
+// Two independent judges, best verdict wins: the audit system's exact-token
+// identity check (scoreCandidate), and the rarity-weighted relevance score,
+// which is what tolerates a common word the listing leaves out ("Jar"), a
+// misspelling ("Marshmellow"), and rejects a listing missing the query's
+// rare word ("Handbag"). The old word-containment "broad" path is gone: it
+// let a listing through on its shared common words alone.
+function matchCandidate(u, cIndexed) {
+  const sc = scoreCandidate(u.indexed, cIndexed, { waiveUnmatched: QUERY_WAIVE });
+  const strict = sc && !relevanceVeto(u, cIndexed)
+    ? { kind: 'strict', rate: Math.round(sc.overlap * 100), value: 10 + sc.value }
+    : null;
+  const rel = relevanceMatch(u, cIndexed);
+  if (!strict) return rel;
+  if (rel?.kind === 'strict' && rel.rate > strict.rate) return { ...strict, rate: rel.rate };
+  return strict;
 }
 
 // Table 1: price_audit_items — confirmed Kapruka<->competitor matches from
@@ -224,7 +221,8 @@ function matchCandidate(qIndexed, cIndexed) {
 // a query like "playstation 5" legitimately refers to more than one tracked
 // SKU, and silently picking one of them is what let two phrasings of the same
 // search answer with two different competitor sets.
-async function searchPriceAuditProducts(qIndexed) {
+async function searchPriceAuditProducts(u) {
+  const qIndexed = u.indexed;
   const rows = await getCachedPriceAuditItems();
   if (!rows.length) return [];
 
@@ -240,7 +238,7 @@ async function searchPriceAuditProducts(qIndexed) {
   const products = [];
   for (const [kaprukaUrl, group] of byKapruka) {
     const kIndexed = toIndexed(group.name);
-    const m = matchCandidate(qIndexed, kIndexed);
+    const m = matchCandidate(u, kIndexed);
     if (!m) continue;
     products.push({
       url: kaprukaUrl,
@@ -279,9 +277,12 @@ async function searchPriceAuditProducts(qIndexed) {
   return products.slice(0, MAX_MATCHED_PRODUCTS);
 }
 
-// Table 2: competitor_products — raw scraped catalogue, matched live.
-async function searchCompetitorProductsTable(qIndexed, name, description = '') {
-  const queries = searchQueries(name);
+// Table 2: competitor_products — raw scraped catalogue, matched live. The
+// name's searches come from the relevance fan-out (rarest words alone and in
+// pairs, model codes, misspelling-tolerant patterns — see relevance.js);
+// searchQueries() above is kept for the description fallback.
+async function searchCompetitorProductsTable(u, description = '') {
+  const queries = fanOutQueries(u);
   if (!queries.length) return [];
   const byUrl = new Map();
   for (const rows of await Promise.all(
@@ -322,7 +323,7 @@ async function searchCompetitorProductsTable(qIndexed, name, description = '') {
   // list is capped (MAX_RESULTS) and sorted deterministically instead.
   const out = [];
   for (const c of indexed) {
-    const m = matchCandidate(qIndexed, c);
+    const m = matchCandidate(u, c);
     if (!m) continue;
     out.push(
       resultRow({
@@ -341,7 +342,7 @@ async function searchCompetitorProductsTable(qIndexed, name, description = '') {
 }
 
 // Table 3: comparison_runs — the older single-partner tool's stored payloads.
-async function searchComparisonRunsTable(qIndexed) {
+async function searchComparisonRunsTable(u) {
   const rows = await getCachedComparisonRows();
   if (!rows.length) return [];
 
@@ -357,7 +358,7 @@ async function searchComparisonRunsTable(qIndexed) {
     const partnerDomain = domainFromUrl(payload.partner?.partnerSite) || partnerName;
     for (const m of payload.matched || []) {
       if (!m.partnerName || !m.partnerUrl) continue;
-      const match = matchCandidate(qIndexed, toIndexed(m.partnerName));
+      const match = matchCandidate(u, toIndexed(m.partnerName));
       if (!match) continue;
       const cur = bestPerPartner.get(partnerDomain);
       if (!cur || match.value > cur.match.value) {
@@ -426,6 +427,26 @@ export function mergeListings(...lists) {
   return [...byProduct.values()];
 }
 
+// A broad (no SKU/spec evidence) match priced at a third or less — or three
+// times or more — of what the confirmed listings cost is almost always a
+// different product sharing the query's words ("peanut butter" -> a LKR 125
+// peanut-butter cup next to LKR 1,500 jars). Measured against the median of
+// every priced row, not just the strict ones: a couple of strict rows can
+// themselves be wrong (nasertech.com's PS5 rows are priced in another
+// currency, "525"), and anchoring on them dropped every real LKR console.
+const OUTLIER_FACTOR = 3;
+function median(values) {
+  const v = [...values].sort((a, b) => a - b);
+  return v.length ? v[Math.floor(v.length / 2)] : null;
+}
+function dropPriceOutliers(rows) {
+  const ref = median(rows.filter((r) => r.price != null && r.price > 0).map((r) => r.price));
+  if (!ref) return rows;
+  return rows.filter(
+    (r) => r.matchKind !== 'broad' || r.price == null || (r.price > ref / OUTLIER_FACTOR && r.price < ref * OUTLIER_FACTOR),
+  );
+}
+
 // Strongest match first, then usable rows before flagged ones, then cheapest.
 // The final domain/URL tie-break isn't cosmetic: without it, equally-scoring
 // rows come out in whatever order the database happened to return them, which
@@ -455,16 +476,16 @@ export async function searchDatabase({ name, description }) {
   const cleanName = String(name || '').trim();
   const cleanDescription = String(description || '').trim();
   if (!cleanName) return { hasMatch: false, results: [], kaprukaRef: null, kaprukaCandidates: [] };
-  const qIndexed = toIndexed(cleanName, cleanDescription);
+  const u = await understandQuery(toIndexed(cleanName, cleanDescription));
 
   const [auditProducts, competitorResults, comparisonResults] = await Promise.all([
-    searchPriceAuditProducts(qIndexed),
-    searchCompetitorProductsTable(qIndexed, cleanName, cleanDescription),
-    searchComparisonRunsTable(qIndexed),
+    searchPriceAuditProducts(u),
+    searchCompetitorProductsTable(u, cleanDescription),
+    searchComparisonRunsTable(u),
   ]);
 
   const auditResults = auditProducts.flatMap((p) => p.results);
-  const results = mergeListings(auditResults, competitorResults, comparisonResults)
+  const results = dropPriceOutliers(mergeListings(auditResults, competitorResults, comparisonResults))
     .sort(byBestValue)
     .slice(0, MAX_RESULTS);
   const kaprukaCandidates = auditProducts.map((p) => ({

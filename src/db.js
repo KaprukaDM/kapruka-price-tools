@@ -196,6 +196,12 @@ export const competitorProductStats = (siteDomain) => backend.competitorProductS
 // `tokens` are ANDed (every token must appear somewhere in product_name).
 export const searchCompetitorProductsByTokens = (tokens, limit = 500) =>
   backend.searchCompetitorProductsByTokens(tokens, limit);
+// How many competitor_products names match one LIKE pattern (caller supplies
+// the % / _ wildcards; '%' alone counts the whole table). The Price Checker
+// uses it to learn how rare each word of a query is across the catalogue —
+// see checker/relevance.js.
+export const countCompetitorProductsMatching = (pattern) =>
+  backend.countCompetitorProductsMatching(pattern);
 export const listRemovedProducts = () => backend.listRemovedProducts();
 export const addRemovedProduct = (row) => backend.addRemovedProduct(row);
 export const deleteRemovedProduct = (id) => backend.deleteRemovedProduct(id);
@@ -457,6 +463,14 @@ async function makePostgresBackend(connectionString) {
         [...params, limit],
       );
       return rows;
+    },
+
+    async countCompetitorProductsMatching(pattern) {
+      const { rows } = await pool.query(
+        `SELECT COUNT(*)::int AS n FROM competitor_products WHERE product_name ILIKE $1`,
+        [pattern],
+      );
+      return rows[0].n;
     },
 
     async upsertPriceAuditItem(item) {
@@ -909,7 +923,9 @@ async function makeSupabaseRestBackend(baseUrl, serviceKey) {
   // "latest run per partner" readers ignore — a far cheaper failure than
   // dropping the run entirely.
   const REST_RETRIES = 4; // 5 attempts total
-  async function restFetch(path, opts = {}) {
+  // opts.countOnly: return the row total from PostgREST's Content-Range header
+  // (pair with Prefer: count=exact) instead of the response body.
+  async function restFetch(path, { countOnly = false, ...opts } = {}) {
     for (let attempt = 0; ; attempt++) {
       let res;
       try {
@@ -944,6 +960,7 @@ async function makeSupabaseRestBackend(baseUrl, serviceKey) {
         const text = await res.text().catch(() => '');
         throw new Error(`Supabase REST ${res.status} on ${path}: ${text}`);
       }
+      if (countOnly) return Number((res.headers.get('content-range') || '').split('/')[1]) || 0;
       // PostgREST returns an empty body (not just on 204) whenever the request
       // didn't ask for `Prefer: return=representation` — e.g. a plain upsert.
       const text = await res.text();
@@ -1149,6 +1166,16 @@ async function makeSupabaseRestBackend(baseUrl, serviceKey) {
       return restFetch(
         `/competitor_products?select=site_domain,site_name,product_url,product_name,price_lkr&${filters}&limit=${limit}`,
       );
+    },
+
+    async countCompetitorProductsMatching(pattern) {
+      // PostgREST spells the LIKE wildcard % as *; `_` passes through as-is.
+      const filter = pattern === '%' ? '' : `&product_name=ilike.${encodeURIComponent(pattern.replace(/%/g, '*'))}`;
+      return restFetch(`/competitor_products?select=id${filter}&limit=1`, {
+        method: 'HEAD',
+        headers: { Prefer: 'count=exact' },
+        countOnly: true,
+      });
     },
 
     async upsertPriceAuditItem(item) {
@@ -1577,6 +1604,11 @@ async function makeSqliteBackend() {
     );
   `);
 
+  const competitorProductCols = db.prepare(`PRAGMA table_info(competitor_products)`).all();
+  if (!competitorProductCols.some((c) => c.name === 'category')) {
+    db.exec(`ALTER TABLE competitor_products ADD COLUMN category TEXT`);
+  }
+
   const rowToRemovedSqlite = (r) => ({
     id: r.id,
     createdAt: r.created_at,
@@ -1753,6 +1785,12 @@ async function makeSqliteBackend() {
            FROM competitor_products WHERE ${conds} LIMIT ?`,
         )
         .all(...params, limit);
+    },
+
+    async countCompetitorProductsMatching(pattern) {
+      return db
+        .prepare(`SELECT COUNT(*) AS n FROM competitor_products WHERE product_name LIKE ?`)
+        .get(pattern).n;
     },
 
     async upsertPriceAuditItem(item) {
