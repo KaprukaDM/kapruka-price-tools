@@ -60,6 +60,32 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
 
 app.use(express.json());
+
+// The /api/export/* endpoints (unified product sheet, comparison/overpriced/
+// stock-mismatch/price-changes CSVs) hand out the full catalogue + pricing
+// data, so they're gated behind HTTP Basic Auth — credentials in .env,
+// shared between this instance and the VPS the same way SUPABASE_URL etc.
+// already are. Everything else (dashboards, checker, comparison tool) stays
+// open, unchanged. EXPORT_AUTH_USER/EXPORT_AUTH_PASS unset = exports stay
+// open too (e.g. a fresh local dev checkout with no .env secrets yet) rather
+// than silently locking someone out with no way to know the credentials.
+const EXPORT_AUTH_USER = process.env.EXPORT_AUTH_USER || '';
+const EXPORT_AUTH_PASS = process.env.EXPORT_AUTH_PASS || '';
+if (EXPORT_AUTH_USER && EXPORT_AUTH_PASS) {
+  app.use('/api/export', (req, res, next) => {
+    const header = req.headers.authorization || '';
+    const [scheme, encoded] = header.split(' ');
+    if (scheme === 'Basic' && encoded) {
+      const [user, pass] = Buffer.from(encoded, 'base64').toString('utf8').split(':');
+      if (user === EXPORT_AUTH_USER && pass === EXPORT_AUTH_PASS) return next();
+    }
+    res.set('WWW-Authenticate', 'Basic realm="Kapruka Price Tools exports"');
+    res.status(401).send('Authentication required to download exports.');
+  });
+} else {
+  console.warn('! EXPORT_AUTH_USER/EXPORT_AUTH_PASS not set — /api/export/* is unprotected on this instance.');
+}
+
 app.use(express.static(join(__dirname, '..', 'public')));
 // International (FNP.ae vs Kapruka UAE) price dashboard — static page already
 // served above from public/uae-compare/; this adds its /api/uae-compare/* routes.
