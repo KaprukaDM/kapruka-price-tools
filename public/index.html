@@ -30,6 +30,7 @@
       <span class="logo">kapruka<span class="dot">.</span></span>
       <span class="pill">Price Tools</span>
       <span class="tag">Pricing intelligence for the Kapruka marketplace</span>
+      <button id="restartAllBtn" style="margin-left:auto;">Restart all apps</button>
     </div>
   </header>
 
@@ -143,6 +144,41 @@
     // here). Keep those working by forwarding into uae-compare/.
     if (new URLSearchParams(location.search).has('country')) {
       location.replace('uae-compare/' + location.search);
+    }
+
+    // Restart-all only works against the Express server (src/server.js), not
+    // the static GitHub Pages copy of this page.
+    const restartBtn = document.getElementById('restartAllBtn');
+    if (restartBtn) {
+      if (location.hostname.endsWith('github.io')) {
+        restartBtn.style.display = 'none';
+      } else {
+        restartBtn.addEventListener('click', async () => {
+          const password = prompt('Enter password to restart all apps:');
+          if (password === null) return;
+          restartBtn.disabled = true;
+          restartBtn.textContent = 'Restarting…';
+          try {
+            const res = await fetch('/api/restart-all', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ password }),
+            });
+            if (res.status === 403) {
+              alert('Wrong password.');
+            } else if (res.ok) {
+              alert('Restart triggered. Apps will be back up in about 30 seconds.');
+            } else {
+              alert('Restart failed.');
+            }
+          } catch (e) {
+            alert('Restart request failed: ' + e.message);
+          } finally {
+            restartBtn.disabled = false;
+            restartBtn.textContent = 'Restart all apps';
+          }
+        });
+      }
     }
   </script>
 </body>

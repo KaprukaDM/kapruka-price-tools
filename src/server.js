@@ -2,6 +2,7 @@ import 'dotenv/config';
 import express from 'express';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { spawn } from 'node:child_process';
 
 import { loadCategories, runMatch, addCategorySites, OTHER_CATEGORY } from './pipeline.js';
 import { searchDatabase, mergeListings, byBestValue } from './checker/db-search.js';
@@ -87,6 +88,20 @@ if (EXPORT_AUTH_USER && EXPORT_AUTH_PASS) {
 }
 
 app.use(express.static(join(__dirname, '..', 'public')));
+
+const RESTART_PASSWORD = '1111';
+const RESTART_SCRIPT = 'C:\\apps\\restart-apps.ps1';
+
+app.post('/api/restart-all', (req, res) => {
+  if (req.body?.password !== RESTART_PASSWORD) {
+    return res.status(403).json({ ok: false, error: 'Wrong password' });
+  }
+  spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', RESTART_SCRIPT], {
+    detached: true,
+    stdio: 'ignore',
+  }).unref();
+  res.json({ ok: true });
+});
 // International (FNP.ae vs Kapruka UAE) price dashboard — static page already
 // served above from public/uae-compare/; this adds its /api/uae-compare/* routes.
 app.use(uaeCompareApiRouter());
