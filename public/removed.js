@@ -40,11 +40,11 @@ const RemovedProducts = (function () {
     return data;
   }
 
-  async function remove({ kaprukaUrl, name, category, partnerName, sourcePage, snapshot, reason, removedBy }) {
+  async function remove({ kaprukaUrl, name, category, partnerName, sourcePage, snapshot, reason, removedBy, matchScope }) {
     const res = await fetch('/api/removed-products', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ kaprukaUrl, name, category, partnerName, sourcePage, snapshot, reason, removedBy }),
+      body: JSON.stringify({ kaprukaUrl, name, category, partnerName, sourcePage, snapshot, reason, removedBy, matchScope }),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Failed to remove product');
@@ -57,12 +57,27 @@ const RemovedProducts = (function () {
     if (!res.ok) throw new Error(data.error || 'Failed to restore product');
   }
 
-  // Small centered modal asking who's removing the product and why. Resolves
-  // { removedBy, reason }, or null if the user cancelled.
-  function promptRemoval(itemLabel) {
+  // Small centered modal asking who's removing the product and why. When
+  // siblingCount > 0 — other currently-live items share this exact product
+  // name + partner under a different Kapruka URL (clothing size/colour
+  // variants are the common case: each is its own product page) — also offers
+  // a checkbox to exclude all of them, not just this one exact URL. Off by
+  // default, so a single click keeps doing the narrow, exact-URL-only thing
+  // people expect; see the removed_products note in db.js. Resolves
+  // { removedBy, reason, matchScope }, or null if the user cancelled.
+  function promptRemoval(itemLabel, siblingCount = 0) {
     return new Promise((resolve) => {
       const overlay = document.createElement('div');
       overlay.className = 'rp-overlay';
+      const siblingNote = siblingCount > 0
+        ? `<label class="rp-sibling-check">
+             <input type="checkbox" id="rpBroad" />
+             Also remove ${siblingCount} other currently-listed size/variant${siblingCount === 1 ? '' : 's'}
+             of this product from this store
+           </label>
+           <p class="rp-sibling-hint">Matches by exact product name + store — e.g. other sizes/colours of the
+             same shirt listed under their own Kapruka URL.</p>`
+        : '';
       overlay.innerHTML = `
         <div class="rp-modal">
           <h3>Remove product from dashboard</h3>
@@ -71,6 +86,7 @@ const RemovedProducts = (function () {
           <input id="rpBy" type="text" placeholder="Who's removing this?" autocomplete="off" />
           <label for="rpReason">Reason for removing this product</label>
           <textarea id="rpReason" placeholder="e.g. Partner price includes a free add-on that justifies the difference"></textarea>
+          ${siblingNote}
           <div class="rp-actions">
             <button type="button" class="ghost" id="rpCancel">Cancel</button>
             <button type="button" id="rpConfirm">Remove product</button>
@@ -83,22 +99,26 @@ const RemovedProducts = (function () {
       overlay.querySelector('#rpConfirm').addEventListener('click', () => {
         const byEl = overlay.querySelector('#rpBy');
         const reasonEl = overlay.querySelector('#rpReason');
+        const broadEl = overlay.querySelector('#rpBroad');
         const removedBy = byEl.value.trim();
         const reason = reasonEl.value.trim();
         if (!removedBy) { byEl.focus(); return; }
         if (!reason) { reasonEl.focus(); return; }
-        close({ removedBy, reason });
+        close({ removedBy, reason, matchScope: broadEl && broadEl.checked ? 'name_partner' : 'url' });
       });
       overlay.querySelector('#rpBy').focus();
     });
   }
 
   // Shows the removal modal, then POSTs the removal if confirmed. Returns
-  // true if the product was removed, false if the user cancelled.
-  async function removeWithPrompt(item) {
-    const result = await promptRemoval(item.name || item.kaprukaUrl);
+  // true if the product was removed, false if the user cancelled. Pass
+  // siblingCount (how many OTHER currently-live items share this item's
+  // name+partner) so the modal can offer the broader removal and tell the
+  // person how many other listings it would additionally exclude.
+  async function removeWithPrompt(item, siblingCount = 0) {
+    const result = await promptRemoval(item.name || item.kaprukaUrl, siblingCount);
     if (result == null) return false;
-    await remove({ ...item, reason: result.reason, removedBy: result.removedBy });
+    await remove({ ...item, reason: result.reason, removedBy: result.removedBy, matchScope: result.matchScope });
     return true;
   }
 
@@ -110,7 +130,11 @@ const RemovedProducts = (function () {
       <td>${escapeHtml(r.category)}</td>
       <td><span class="store-pill">${escapeHtml(r.partnerName)}</span></td>
       <td class="col-product">
-        <div class="prod-name">${link(r.kaprukaUrl, r.name || r.kaprukaUrl)}</div>
+        <div class="prod-name">${link(r.kaprukaUrl, r.name || r.kaprukaUrl)}${
+          r.matchScope === 'name_partner'
+            ? ' <span class="rp-scope-badge" title="Also excludes every other currently-listed size/variant of this product from this store">+ variants</span>'
+            : ''
+        }</div>
         <div class="prod-name prod-partner">${link(otherUrl(s), otherName(s) || '—')}</div>
       </td>
       <td class="num price">${lkr(s.kaprukaPrice)}</td>

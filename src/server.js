@@ -669,7 +669,7 @@ app.get('/api/compare', async (req, res) => {
         // own comparison view instead of just the aggregate reports.
         const removed = await removedUrlSet();
         if (removed.size) {
-          const matched = stored.matched.filter((m) => !removed.has(m.kaprukaUrl));
+          const matched = stored.matched.filter((m) => !removed.isRemoved(m.kaprukaUrl, m.name, partner.name));
           res.json({
             ...stored,
             matched,
@@ -916,7 +916,7 @@ app.get('/api/removed-products', async (_req, res) => {
 });
 
 app.post('/api/removed-products', async (req, res) => {
-  const { kaprukaUrl, name, category, partnerName, reason, removedBy, sourcePage, snapshot } = req.body || {};
+  const { kaprukaUrl, name, category, partnerName, reason, removedBy, sourcePage, snapshot, matchScope } = req.body || {};
   if (!kaprukaUrl || !String(reason || '').trim() || !String(removedBy || '').trim()) {
     return res.status(400).json({ error: 'kaprukaUrl, a reason, and the name of who removed it are required.' });
   }
@@ -930,6 +930,12 @@ app.post('/api/removed-products', async (req, res) => {
       removedBy: String(removedBy).trim(),
       sourcePage: sourcePage || '',
       snapshot: snapshot || {},
+      // 'name_partner' = also exclude every other product sharing this exact
+      // name + partner (sibling size/colour variants under a different
+      // kapruka_url) from every overpriced/stock-mismatch dashboard — see the
+      // removed_products note in db.js. Anything else, including omitted,
+      // stays the original exact-URL-only behavior.
+      matchScope: matchScope === 'name_partner' ? 'name_partner' : 'url',
     });
     invalidateReportCache();
     res.json(row);

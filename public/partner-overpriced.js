@@ -287,6 +287,17 @@ function render() {
   wireRemoveButtons();
 }
 
+// How many OTHER currently-live items share this item's exact name + partner
+// under a different Kapruka URL — e.g. other sizes/colours of the same
+// shirt, each its own product page. Shown in the removal modal so removing
+// one doesn't look fixed while its siblings silently stay overpriced.
+function countSiblings(item) {
+  if (!DATA || !item.name || !item.partner) return 0;
+  return DATA.items.filter(
+    (i) => i.kaprukaUrl !== item.kaprukaUrl && i.name === item.name && i.partner === item.partner,
+  ).length;
+}
+
 // Wires each row's Remove button: opens the shared reason modal, POSTs the
 // removal, then reloads /api/overpriced (which already excludes removed
 // products server-side) so this table and the stat cards stay in sync.
@@ -304,7 +315,7 @@ function wireRemoveButtons() {
           partnerName: m.partner,
           sourcePage: 'partner-overpriced',
           snapshot: m,
-        });
+        }, countSiblings(m));
         if (removed) await load();
         else btn.disabled = false;
       } catch (err) {

@@ -366,8 +366,13 @@ export async function overpricedReport() {
     if (!lastUpdated || at > lastUpdated) lastUpdated = at;
 
     // Team-curated exclusions (e.g. the partner's higher price is explained
-    // by a bundled add-on) — see removed_products in db.js.
-    const over = (payload.matched || []).filter((m) => m.verdict === 'kapruka_higher' && !removed.has(m.kaprukaUrl));
+    // by a bundled add-on) — see removed_products in db.js. isRemoved() also
+    // catches sibling variants (same product name, same partner, different
+    // kapruka_url) when the removal was made with the broad "also remove
+    // other sizes/variants" scope.
+    const over = (payload.matched || []).filter(
+      (m) => m.verdict === 'kapruka_higher' && !removed.isRemoved(m.kaprukaUrl, m.name, p.name),
+    );
     // false when the store's own website failed its health check on the last
     // refresh (see checkSiteHealth() in compare/sources.js): unreachable, a
     // dead shop front, or no products at all. The items below are that
@@ -486,7 +491,7 @@ export async function stockMismatchReport() {
     if (!lastUpdated || at > lastUpdated) lastUpdated = at;
 
     for (const m of payload.matched || []) {
-      if (!m.kaprukaUrl || removed.has(m.kaprukaUrl)) continue;
+      if (!m.kaprukaUrl || removed.isRemoved(m.kaprukaUrl, m.name, p.name)) continue;
       const kIn = m.kaprukaInStock !== false;
       const pIn = m.partnerInStock !== false;
       if (kIn && pIn) continue; // both in stock — not interesting
@@ -609,8 +614,11 @@ export async function allProductsOverpricedReport() {
   const items = [];
   for (const p of products.values()) {
     if (p.kaprukaPrice == null) continue;
-    // Team-curated exclusions — see removed_products in db.js.
-    if (removed.has(p.kaprukaUrl)) continue;
+    // Team-curated exclusions — see removed_products in db.js. Only a
+    // configured partner match carries a partner name here (audit-only rows
+    // from price_audit_items have no partner), so a broad "name_partner"
+    // removal only ever matches items that do have p.partner set.
+    if (removed.isRemoved(p.kaprukaUrl, p.name, p.partner?.name)) continue;
     const candidates = [];
     if (p.partner) candidates.push({ type: 'partner', ...p.partner });
     for (const s of p.otherSites) candidates.push({ type: 'other', ...s });
@@ -811,7 +819,7 @@ async function priceChangesReportUncached() {
 
     for (const state of byUrl.values()) {
       const ev = state.event;
-      if (!ev || removed.has(ev.kaprukaUrl)) continue;
+      if (!ev || removed.isRemoved(ev.kaprukaUrl, ev.name, p.name)) continue;
 
       const diff = ev.currentPrice - ev.previousPrice;
       items.push({

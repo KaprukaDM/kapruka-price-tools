@@ -214,6 +214,15 @@ function matchedRows(rows) {
     .join('');
 }
 
+// How many OTHER matched items for this same partner share this item's
+// exact name under a different Kapruka URL — e.g. other sizes/colours of
+// the same shirt, each its own product page. Shown in the removal modal so
+// removing one doesn't look fixed while its siblings silently stay.
+function countSiblings(item) {
+  if (!DATA?.matched || !item.name) return 0;
+  return DATA.matched.filter((m) => m.kaprukaUrl !== item.kaprukaUrl && m.name === item.name).length;
+}
+
 // Wires each matched row's Remove button: opens the shared reason modal,
 // POSTs the removal, then reloads /api/compare (which already excludes
 // removed products server-side) so this table and the summary stats stay in
@@ -232,7 +241,7 @@ function wireRemoveButtons() {
           partnerName: DATA.partner?.name || '',
           sourcePage: 'compare',
           snapshot: m,
-        });
+        }, countSiblings(m));
         if (removed) load();
         else btn.disabled = false;
       } catch (err) {

@@ -148,12 +148,19 @@ a:hover { text-decoration: underline; }
 .rp-item { font-size:13px; color:var(--mut); margin:0 0 12px; }
 .rp-modal label { margin-top:0; }
 .rp-modal input, .rp-modal textarea { margin-bottom:2px; }
+.rp-sibling-check { display:flex; align-items:flex-start; gap:8px; margin-top:14px;
+              font-size:13px; font-weight:600; }
+.rp-sibling-check input { margin-top:3px; }
+.rp-sibling-hint { font-size:12px; color:var(--mut); margin:4px 0 0; }
 .rp-actions { display:flex; justify-content:flex-end; gap:10px; margin-top:16px; }
 .rp-actions button { margin-top:0; }
 .rp-restore { padding:5px 12px; font-size:12px; margin-top:0; white-space:nowrap; }
 .rp-over-amt { color:var(--bad); font-weight:700; }
 .removed-toggle .rp-badge { display:inline-block; background:rgba(194,65,59,.12); color:var(--bad);
               border-radius:999px; padding:1px 7px; font-size:11px; font-weight:700; margin-left:5px; }
+.rp-scope-badge { display:inline-block; background:rgba(31,27,46,.08); color:var(--mut);
+              border-radius:999px; padding:1px 7px; font-size:10px; font-weight:700; margin-left:5px;
+              vertical-align:middle; white-space:nowrap; }
 
 /* Product column stacking (Kapruka name on top, the matched/competing
    product's own name below) used by the overpriced tables and the Removed

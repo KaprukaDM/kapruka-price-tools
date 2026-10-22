@@ -62,6 +62,17 @@
 //                         Products card view on each dashboard reads this same
 //                         table so a removal made from any page is reflected
 //                         everywhere, and can be undone (restored) from any page.
+//                         match_scope ('url' by default, or 'name_partner')
+//                         controls how broadly a row filters: 'url' (every row
+//                         written before this column existed reads as this)
+//                         excludes only that exact kapruka_url, same as always.
+//                         'name_partner' additionally excludes every OTHER
+//                         product with the same name + partner_name — needed
+//                         because many Kapruka listings have sibling variants
+//                         under separate URLs (e.g. clothing size/colour
+//                         variants are separate product pages with the same
+//                         display name), and removing one exact URL was never
+//                         enough to actually hide "this shirt" from a partner.
 //
 // Each row keeps flat summary columns for easy SQL plus a full JSON payload so
 // nothing is lost. ALL exported functions are async (Postgres/REST are async;
@@ -120,7 +131,19 @@ function rowToRemoved(r) {
     removedBy: r.removed_by || '',
     sourcePage: r.source_page || '',
     snapshot: r.snapshot || null,
+    // Missing/NULL on a row written before this column existed must read as
+    // 'url' (exact-URL-only), the behavior every existing row already had —
+    // see the removed_products note above.
+    matchScope: r.match_scope || 'url',
   };
+}
+
+// name+partner key used by the 'name_partner' broad match scope — lowercased
+// and whitespace-collapsed so trivial formatting differences between two
+// sibling listings (double spaces, stray casing) don't defeat the match.
+function namePartnerKey(name, partnerName) {
+  const norm = (s) => String(s || '').trim().toLowerCase().replace(/\s+/g, ' ');
+  return `${norm(name)}|${norm(partnerName)}`;
 }
 
 // Shared shape for a discovered-site row across all three backends.
@@ -217,10 +240,35 @@ export const listRemovedProducts = () => backend.listRemovedProducts();
 export const addRemovedProduct = (row) => backend.addRemovedProduct(row);
 export const deleteRemovedProduct = (id) => backend.deleteRemovedProduct(id);
 // Convenience for callers that just need to filter items by kaprukaUrl (every
-// overpriced report) — avoids each caller re-deriving a Set from the full row list.
+// overpriced report) — avoids each caller re-deriving a Set from the full row
+// list. Returns an object (not a bare Set) with an `isRemoved(url, name,
+// partnerName)` test: a plain url Set can't express the 'name_partner' broad
+// match scope (see the removed_products note above), which needs to check
+// every OTHER product sharing that row's name+partner too, not just the
+// row's own exact URL.
 export async function removedUrlSet() {
   const rows = await listRemovedProducts();
-  return new Set(rows.map((r) => r.kaprukaUrl));
+  const urls = new Set(rows.map((r) => r.kaprukaUrl));
+  const namePartnerKeys = new Set(
+    rows.filter((r) => r.matchScope === 'name_partner').map((r) => namePartnerKey(r.name, r.partnerName)),
+  );
+  return {
+    // Total removed_products rows, not just urls.size — a caller (e.g.
+    // /api/compare) uses this to decide whether filtering is worth doing at
+    // all, and a name_partner-only removal with no exact-URL rows must still
+    // count as "there's something to filter".
+    size: rows.length,
+    has(url) {
+      return urls.has(url);
+    },
+    // Full check used by report filters: exact URL match (as before), OR a
+    // broad 'name_partner' removal whose name+partner matches this item.
+    isRemoved(url, name, partnerName) {
+      if (urls.has(url)) return true;
+      if (!namePartnerKeys.size) return false;
+      return namePartnerKeys.has(namePartnerKey(name, partnerName));
+    },
+  };
 }
 
 // Domains the web-search discovery step keeps turning up that aren't yet a
@@ -360,9 +408,15 @@ async function makePostgresBackend(connectionString) {
       reason        TEXT NOT NULL,
       removed_by    TEXT,
       source_page   TEXT,
-      snapshot      JSONB
+      snapshot      JSONB,
+      match_scope   TEXT NOT NULL DEFAULT 'url'
     );
     ALTER TABLE removed_products ADD COLUMN IF NOT EXISTS removed_by TEXT;
+    -- 'url' (default, exact kapruka_url only) or 'name_partner' (also
+    -- excludes every other product sharing name+partner_name) — see the
+    -- removed_products note above. Existing rows default to 'url', which is
+    -- exactly their current behavior, so nothing needs backfilling.
+    ALTER TABLE removed_products ADD COLUMN IF NOT EXISTS match_scope TEXT NOT NULL DEFAULT 'url';
     CREATE TABLE IF NOT EXISTS discovered_sites (
       id            BIGSERIAL PRIMARY KEY,
       domain        TEXT NOT NULL UNIQUE,
@@ -405,16 +459,16 @@ async function makePostgresBackend(connectionString) {
       await pool.query(`UPDATE discovered_sites SET status = $1 WHERE id = $2`, [status, id]);
     },
 
-    async addRemovedProduct({ kaprukaUrl, name, category, partnerName, reason, removedBy, sourcePage, snapshot }) {
+    async addRemovedProduct({ kaprukaUrl, name, category, partnerName, reason, removedBy, sourcePage, snapshot, matchScope }) {
       const { rows } = await pool.query(
-        `INSERT INTO removed_products (created_at, kapruka_url, name, category, partner_name, reason, removed_by, source_page, snapshot)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb)
+        `INSERT INTO removed_products (created_at, kapruka_url, name, category, partner_name, reason, removed_by, source_page, snapshot, match_scope)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10)
          ON CONFLICT (kapruka_url) DO UPDATE SET
            created_at = EXCLUDED.created_at, name = EXCLUDED.name, category = EXCLUDED.category,
            partner_name = EXCLUDED.partner_name, reason = EXCLUDED.reason, removed_by = EXCLUDED.removed_by,
-           source_page = EXCLUDED.source_page, snapshot = EXCLUDED.snapshot
+           source_page = EXCLUDED.source_page, snapshot = EXCLUDED.snapshot, match_scope = EXCLUDED.match_scope
          RETURNING *`,
-        [nowIso(), kaprukaUrl, name || null, category || null, partnerName || null, reason, removedBy || null, sourcePage || null, JSON.stringify(snapshot || {})],
+        [nowIso(), kaprukaUrl, name || null, category || null, partnerName || null, reason, removedBy || null, sourcePage || null, JSON.stringify(snapshot || {}), matchScope === 'name_partner' ? 'name_partner' : 'url'],
       );
       return rowToRemoved(rows[0]);
     },
@@ -867,10 +921,12 @@ async function makePostgresBackend(connectionString) {
 //     reason        TEXT NOT NULL,
 //     removed_by    TEXT,
 //     source_page   TEXT,
-//     snapshot      JSONB
+//     snapshot      JSONB,
+//     match_scope   TEXT NOT NULL DEFAULT 'url'
 //   );
-//   -- Already had a removed_products table before removed_by existed? Run:
+//   -- Already had a removed_products table before removed_by/match_scope existed? Run:
 //   -- ALTER TABLE removed_products ADD COLUMN IF NOT EXISTS removed_by TEXT;
+//   -- ALTER TABLE removed_products ADD COLUMN IF NOT EXISTS match_scope TEXT NOT NULL DEFAULT 'url';
 //   CREATE TABLE IF NOT EXISTS discovered_sites (
 //     id            BIGSERIAL PRIMARY KEY,
 //     domain        TEXT NOT NULL UNIQUE,
@@ -1049,23 +1105,47 @@ async function makeSupabaseRestBackend(baseUrl, serviceKey) {
       return rows.map(rowToRemoved);
     },
 
-    async addRemovedProduct({ kaprukaUrl, name, category, partnerName, reason, removedBy, sourcePage, snapshot }) {
-      const rows = await restFetch('/removed_products?on_conflict=kapruka_url', {
-        method: 'POST',
-        headers: { Prefer: 'resolution=merge-duplicates,return=representation' },
-        body: JSON.stringify({
-          created_at: nowIso(),
-          kapruka_url: kaprukaUrl,
-          name: name || null,
-          category: category || null,
-          partner_name: partnerName || null,
-          reason,
-          removed_by: removedBy || null,
-          source_page: sourcePage || null,
-          snapshot: snapshot || {},
-        }),
-      });
-      return rowToRemoved(rows[0]);
+    async addRemovedProduct({ kaprukaUrl, name, category, partnerName, reason, removedBy, sourcePage, snapshot, matchScope }) {
+      const body = {
+        created_at: nowIso(),
+        kapruka_url: kaprukaUrl,
+        name: name || null,
+        category: category || null,
+        partner_name: partnerName || null,
+        reason,
+        removed_by: removedBy || null,
+        source_page: sourcePage || null,
+        snapshot: snapshot || {},
+        match_scope: matchScope === 'name_partner' ? 'name_partner' : 'url',
+      };
+      try {
+        const rows = await restFetch('/removed_products?on_conflict=kapruka_url', {
+          method: 'POST',
+          headers: { Prefer: 'resolution=merge-duplicates,return=representation' },
+          body: JSON.stringify(body),
+        });
+        return rowToRemoved(rows[0]);
+      } catch (err) {
+        // PostgREST can't run DDL — the match_scope column (see the
+        // removed_products note above) has to be added once by hand in the
+        // Supabase SQL Editor. Until that migration runs, PostgREST rejects
+        // any insert naming a column it doesn't recognize (PGRST204) and
+        // every ordinary single-URL removal would otherwise break outright.
+        // Retry once without match_scope so the existing exact-URL behavior
+        // keeps working; the broad "also remove other variants" option is
+        // simply unavailable until the column exists.
+        if (/PGRST204/.test(err.message) && /match_scope/.test(err.message)) {
+          console.warn('! removed_products.match_scope column missing — run the ALTER TABLE in the Supabase SQL Editor (see db.js). Falling back to exact-URL-only removal.');
+          const { match_scope, ...fallbackBody } = body;
+          const rows = await restFetch('/removed_products?on_conflict=kapruka_url', {
+            method: 'POST',
+            headers: { Prefer: 'resolution=merge-duplicates,return=representation' },
+            body: JSON.stringify(fallbackBody),
+          });
+          return rowToRemoved(rows[0]);
+        }
+        throw err;
+      }
     },
 
     async deleteRemovedProduct(id) {
@@ -1619,7 +1699,8 @@ async function makeSqliteBackend() {
       reason        TEXT NOT NULL,
       removed_by    TEXT,
       source_page   TEXT,
-      snapshot_json TEXT
+      snapshot_json TEXT,
+      match_scope   TEXT NOT NULL DEFAULT 'url'
     );
     CREATE TABLE IF NOT EXISTS discovered_sites (
       id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1644,6 +1725,12 @@ async function makeSqliteBackend() {
   if (!partnerCols.some((c) => c.name === 'excluded')) {
     db.exec(`ALTER TABLE partners ADD COLUMN excluded INTEGER DEFAULT 0`);
   }
+  // Already had a removed_products table before `match_scope` existed? Pick
+  // it up here — existing rows default to 'url', their current behavior.
+  const removedProductCols = db.prepare(`PRAGMA table_info(removed_products)`).all();
+  if (!removedProductCols.some((c) => c.name === 'match_scope')) {
+    db.exec(`ALTER TABLE removed_products ADD COLUMN match_scope TEXT NOT NULL DEFAULT 'url'`);
+  }
 
   const rowToRemovedSqlite = (r) => ({
     id: r.id,
@@ -1656,16 +1743,17 @@ async function makeSqliteBackend() {
     removedBy: r.removed_by || '',
     sourcePage: r.source_page || '',
     snapshot: r.snapshot_json ? JSON.parse(r.snapshot_json) : null,
+    matchScope: r.match_scope || 'url',
   });
   const selRemoved = db.prepare(`SELECT * FROM removed_products ORDER BY created_at DESC`);
   const selRemovedByUrl = db.prepare(`SELECT * FROM removed_products WHERE kapruka_url = ?`);
   const upsertRemoved = db.prepare(`
-    INSERT INTO removed_products (created_at, kapruka_url, name, category, partner_name, reason, removed_by, source_page, snapshot_json)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO removed_products (created_at, kapruka_url, name, category, partner_name, reason, removed_by, source_page, snapshot_json, match_scope)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT (kapruka_url) DO UPDATE SET
       created_at = excluded.created_at, name = excluded.name, category = excluded.category,
       partner_name = excluded.partner_name, reason = excluded.reason, removed_by = excluded.removed_by,
-      source_page = excluded.source_page, snapshot_json = excluded.snapshot_json`);
+      source_page = excluded.source_page, snapshot_json = excluded.snapshot_json, match_scope = excluded.match_scope`);
   const delRemoved = db.prepare(`DELETE FROM removed_products WHERE id = ?`);
 
   const selDiscoveredByDomain = db.prepare(`SELECT * FROM discovered_sites WHERE domain = ?`);
@@ -1751,10 +1839,11 @@ async function makeSqliteBackend() {
       return selRemoved.all().map(rowToRemovedSqlite);
     },
 
-    async addRemovedProduct({ kaprukaUrl, name, category, partnerName, reason, removedBy, sourcePage, snapshot }) {
+    async addRemovedProduct({ kaprukaUrl, name, category, partnerName, reason, removedBy, sourcePage, snapshot, matchScope }) {
       upsertRemoved.run(
         nowIso(), kaprukaUrl, name || null, category || null, partnerName || null,
         reason, removedBy || null, sourcePage || null, JSON.stringify(snapshot || {}),
+        matchScope === 'name_partner' ? 'name_partner' : 'url',
       );
       return rowToRemovedSqlite(selRemovedByUrl.get(kaprukaUrl));
     },
