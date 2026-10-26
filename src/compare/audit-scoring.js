@@ -181,8 +181,29 @@ function unmatchedDistinctiveToken(kTokens, cTokens, { kCodes, cCodes, specsAgre
 const QUALIFIER_WORDS = new Set([
   'pro', 'plus', 'max', 'ultra', 'lite', 'mini', 'se', 'neo', 'air', 'note', 'prime', 'edge',
 ]);
+// Run-together spellings a shop uses for two qualifiers at once ("iPhone 15
+// PROMAX") — one token, so the plain 'pro'/'max' membership test never saw it.
+const COMPOUND_QUALIFIERS = { promax: ['pro', 'max'], proplus: ['pro', 'plus'], proplu: ['pro', 'plus'], proultra: ['pro', 'ultra'] };
+// The tokenizer singularizes, so "Plus" is stored as "plu" and a plain
+// tokens.has('plus') never fired — "iPhone 15 Plus" slipped past "iPhone 15".
+const STEMMED_QUALIFIER = { plus: 'plu' };
+function hasQualifier(tokens, w) {
+  if (tokens.has(w) || (STEMMED_QUALIFIER[w] && tokens.has(STEMMED_QUALIFIER[w]))) return true;
+  for (const [compound, parts] of Object.entries(COMPOUND_QUALIFIERS)) {
+    if (parts.includes(w) && tokens.has(compound)) return true;
+  }
+  return false;
+}
+// A second-hand/refurbished unit is not the same product as the new one at a
+// different price. Symmetric, like the qualifiers: a "used" query shouldn't
+// match new stock either. Both stemmed and unstemmed spellings, since the
+// tokenizer singularizes/stems.
+const CONDITION_WORDS = ['used', 'refurbished', 'refurbish', 'refurb', 'preowned', 'secondhand', 'renewed'];
 export function qualifierMismatch(a, b) {
   for (const w of QUALIFIER_WORDS) {
+    if (hasQualifier(a, w) !== hasQualifier(b, w)) return true;
+  }
+  for (const w of CONDITION_WORDS) {
     if (a.has(w) !== b.has(w)) return true;
   }
   return false;
