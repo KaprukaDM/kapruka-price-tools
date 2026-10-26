@@ -324,8 +324,20 @@ app.post('/api/discovered-sites/:id/reject', async (req, res) => {
 // SerpAPI call) instead of returning instantly on a database hit. The
 // database rows are streamed to the browser as soon as they're ready (see
 // the `db-results` progress event) so the page isn't blank while it waits.
+// Every source below is awaited before the stream's `done` event is sent, so
+// one that never answers (Daraz blocking the host, a model call hanging, ...)
+// used to leave the page on "Searching…" forever. Cap each one; a source that
+// times out falls through to its existing .catch() fallback like any failure.
+function withTimeout(promise, ms, label) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms / 1000}s`)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
 async function runCheckerSearch(query, onProgress = () => {}) {
-  const darazPromise = searchDaraz(query.name, query.description).catch((err) => [{
+  const darazPromise = withTimeout(searchDaraz(query.name, query.description), 45000, 'Daraz lookup').catch((err) => [{
     site: 'Daraz',
     domain: 'daraz.lk',
     status: 'error',
@@ -338,8 +350,8 @@ async function runCheckerSearch(query, onProgress = () => {}) {
   // a query that's never been audited (most of them) had no Kapruka price to
   // recommend against at all. Started eagerly alongside Daraz so it costs no
   // extra latency.
-  const kaprukaLivePromise = findKaprukaProducts(query.name).catch(() => []);
-  const dbPromise = searchDatabase(query)
+  const kaprukaLivePromise = withTimeout(findKaprukaProducts(query.name), 30000, 'Kapruka lookup').catch(() => []);
+  const dbPromise = withTimeout(searchDatabase(query), 30000, 'Database search')
     .then((db) => {
       onProgress({ type: 'db-results', count: db.results.length });
       return db;
@@ -351,7 +363,7 @@ async function runCheckerSearch(query, onProgress = () => {}) {
   // A web search that fails (no SERP_API_KEY, SerpAPI down, every site
   // timing out) must not take the database half of the answer down with it —
   // that half is exactly what the merge exists to keep.
-  const webPromise = runMatch(OTHER_CATEGORY, query, onProgress).catch((err) => {
+  const webPromise = withTimeout(runMatch(OTHER_CATEGORY, query, onProgress), 150000, 'Live web search').catch((err) => {
     console.warn('! live web search failed:', err.message);
     return { category: OTHER_CATEGORY, query, results: [], discovered: [], error: err.message };
   });
@@ -379,7 +391,12 @@ async function runCheckerSearch(query, onProgress = () => {}) {
     if (!kaprukaCandidates.some((c) => c.url === p.url)) kaprukaCandidates.push(p);
   }
   const kaprukaRef = db.kaprukaRef?.price ? db.kaprukaRef : kaprukaLive[0] || null;
-  const priceInsight = competitors.length ? await recommendPrice(kaprukaRef, competitors) : null;
+  const priceInsight = competitors.length
+    ? await withTimeout(recommendPrice(kaprukaRef, competitors), 30000, 'Price insight').catch((err) => {
+        console.warn('! price insight failed:', err.message);
+        return null;
+      })
+    : null;
 
   return {
     category: web.category || OTHER_CATEGORY,

@@ -201,7 +201,7 @@ function toTagSlug(name) {
 async function fetchJson(url) {
   let res;
   try {
-    res = await fetch(url, { headers: HEADERS });
+    res = await fetch(url, { headers: HEADERS, signal: AbortSignal.timeout(10000) });
   } catch (err) {
     console.warn(`[daraz] fetch failed for ${url}: ${err.message}`);
     return null;
