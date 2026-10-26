@@ -446,8 +446,15 @@ app.get('/api/match/stream', async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
   if (res.flushHeaders) res.flushHeaders();
   const send = (event, data) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  // The search has long silent stretches (Daraz, the web search, the AI
+  // insight). A proxy in front (Cloudflare) drops a connection that stays
+  // quiet, which the page reports as "Connection lost". An SSE comment line
+  // is ignored by EventSource but keeps the connection active.
+  const heartbeat = setInterval(() => res.write(': keep-alive\n\n'), 15000);
+  res.on('close', () => clearInterval(heartbeat));
 
   try {
     const query = { name, description: description || '' };
@@ -462,6 +469,7 @@ app.get('/api/match/stream', async (req, res) => {
   } catch (err) {
     send('failed', { error: err.message });
   } finally {
+    clearInterval(heartbeat);
     res.end();
   }
 });
