@@ -34,7 +34,7 @@
 import { index } from '../compare/matcher.js';
 import { scoreCandidate } from '../compare/audit-scoring.js';
 import { searchPrefixes, extractModelCodes } from '../compare/normalize.js';
-import { getPriceAuditItems, searchCompetitorProductsByTokens, allComparisonRows } from '../db.js';
+import { getPriceAuditItems, searchCompetitorProductsByTokens, latestComparisonRowsPerPartner } from '../db.js';
 import { understandQuery, fanOutQueries, relevanceMatch, relevanceVeto } from './relevance.js';
 
 const AUDIT_ITEMS_SCAN_LIMIT = 6000; // comfortably above the ~2.5k rows currently stored
@@ -66,7 +66,10 @@ function getCachedPriceAuditItems() {
 function getCachedComparisonRows() {
   const now = Date.now();
   if (!comparisonRowsCache || now - comparisonRowsCache.at >= TABLE_CACHE_TTL_MS) {
-    const promise = allComparisonRows();
+    // Newest run per partner only: allComparisonRows() drags every historical
+    // payload across the wire (hundreds of MB), which timed out and took the
+    // whole database search down with it.
+    const promise = latestComparisonRowsPerPartner();
     comparisonRowsCache = { at: now, promise };
     promise.catch(() => { comparisonRowsCache = null; });
   }
@@ -478,10 +481,17 @@ export async function searchDatabase({ name, description }) {
   if (!cleanName) return { hasMatch: false, results: [], kaprukaRef: null, kaprukaCandidates: [] };
   const u = await understandQuery(toIndexed(cleanName, cleanDescription));
 
+  // Each table fails on its own: one slow/erroring table must not blank the
+  // rows the other two found.
+  const settle = (label, p, fallback) =>
+    p.catch((err) => {
+      console.warn(`! checker ${label} search failed:`, err.message);
+      return fallback;
+    });
   const [auditProducts, competitorResults, comparisonResults] = await Promise.all([
-    searchPriceAuditProducts(u),
-    searchCompetitorProductsTable(u, cleanDescription),
-    searchComparisonRunsTable(u),
+    settle('price_audit_items', searchPriceAuditProducts(u), []),
+    settle('competitor_products', searchCompetitorProductsTable(u, cleanDescription), []),
+    settle('comparison_runs', searchComparisonRunsTable(u), []),
   ]);
 
   const auditResults = auditProducts.flatMap((p) => p.results);

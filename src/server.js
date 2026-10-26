@@ -326,7 +326,7 @@ async function runCheckerSearch(query, onProgress = () => {}) {
   // recommend against at all. Started eagerly alongside Daraz so it costs no
   // extra latency.
   const kaprukaLivePromise = withTimeout(findKaprukaProducts(query.name), 30000, 'Kapruka lookup').catch(() => []);
-  const dbPromise = withTimeout(searchDatabase(query), 30000, 'Database search')
+  const dbPromise = withTimeout(searchDatabase(query), 60000, 'Database search')
     .then((db) => {
       onProgress({ type: 'db-results', count: db.results.length });
       return db;
