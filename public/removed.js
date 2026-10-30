@@ -191,6 +191,37 @@ const RemovedProducts = (function () {
     return true;
   }
 
+  // Sortable columns: header label, whether it's numeric (right-aligned, and
+  // sorts biggest-first by default), and how to read the value off a row.
+  const SORTS = [
+    { key: 'category', label: 'Category', get: (r) => r.category },
+    { key: 'store', label: 'Store', get: (r) => r.partnerName },
+    { key: 'product', label: 'Product', get: (r) => r.name || r.kaprukaUrl },
+    { key: 'kapruka', label: 'Kapruka', num: true, get: (r) => r.snapshot?.kaprukaPrice },
+    { key: 'partner', label: 'Partner site', num: true, get: (r) => otherPrice(r.snapshot) },
+    { key: 'diff', label: 'Overcharge', num: true, get: (r) => r.snapshot?.diff },
+    { key: 'pct', label: '%', num: true, get: (r) => r.snapshot?.pct },
+    { key: 'sim', label: 'Name Sim %', num: true, get: (r) => r.snapshot?.nameSimilarity },
+    { key: 'by', label: 'Removed by', get: (r) => norm(r.removedBy) },
+    { key: 'reason', label: 'Reason', get: (r) => norm(r.reason) },
+    { key: 'createdAt', label: 'Removed at', num: true, get: (r) => (r.createdAt ? Date.parse(r.createdAt) : null) },
+  ];
+
+  // Rows with no value for the sorted column (e.g. a removal saved without a
+  // price snapshot) always go to the bottom, whichever direction is chosen.
+  function sortRows(rows, { key, dir }) {
+    const col = SORTS.find((s) => s.key === key);
+    const sign = dir === 'asc' ? 1 : -1;
+    return [...rows].sort((a, b) => {
+      const va = col.get(a);
+      const vb = col.get(b);
+      const ea = va == null || va === '';
+      const eb = vb == null || vb === '';
+      if (ea || eb) return ea === eb ? 0 : ea ? 1 : -1;
+      return sign * (col.num ? va - vb : String(va).localeCompare(String(vb), undefined, { sensitivity: 'base' }));
+    });
+  }
+
   function csvCell(v) {
     const s = v == null ? '' : String(v);
     return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
@@ -241,18 +272,22 @@ const RemovedProducts = (function () {
           <select class="rp-f-category" style="max-width:200px">${optionsHtml('All categories', rows.map((r) => r.category))}</select>
           <select class="rp-f-store" style="max-width:200px">${optionsHtml('All stores', rows.map((r) => r.partnerName))}</select>
           <select class="rp-f-by" style="max-width:200px">${optionsHtml('Anyone', rows.map((r) => r.removedBy), true)}</select>
+          <select class="rp-f-sort" style="max-width:220px" title="Sort the removed products">
+            ${SORTS.map((s) => `<option value="${s.key}">Sort: ${s.label}</option>`).join('')}
+          </select>
+          <button type="button" class="ghost rp-f-dir" title="Reverse the sort order"></button>
           <span class="rp-f-count" style="font-size:12px;color:var(--mut)"></span>
           <button type="button" class="ghost rp-export" style="margin-left:auto">⬇ Export removed (CSV)</button>
         </div>
         <div class="table-wrap"><table><thead><tr>
-          <th>Category</th><th>Store</th><th>Product</th><th class="num">Kapruka</th>
-          <th class="num">Partner site</th><th class="num">Overcharge</th><th class="num">%</th>
-          <th class="num">Name Sim %</th><th>Removed by</th><th>Reason</th><th>Removed at</th><th></th>
+          ${SORTS.map((s) => `<th class="${s.num ? 'num ' : ''}rp-sortable" data-sort="${s.key}" style="cursor:pointer;user-select:none;white-space:nowrap">${s.label}<span class="rp-arrow"></span></th>`).join('')}<th></th>
         </tr></thead><tbody></tbody></table></div>`;
 
       const $$ = (sel) => containerEl.querySelector(sel);
       const tbody = $$('tbody');
       let visible = rows;
+      // Newest removal first — the order the list has always been shown in.
+      let sort = { key: 'createdAt', dir: 'desc' };
       const apply = () => {
         const f = {
           q: $$('.rp-f-q').value.trim().toLowerCase(),
@@ -260,7 +295,12 @@ const RemovedProducts = (function () {
           store: $$('.rp-f-store').value,
           by: $$('.rp-f-by').value,
         };
-        visible = rows.filter((r) => matchesFilters(r, f));
+        visible = sortRows(rows.filter((r) => matchesFilters(r, f)), sort);
+        $$('.rp-f-sort').value = sort.key;
+        $$('.rp-f-dir').textContent = sort.dir === 'asc' ? '▲ Ascending' : '▼ Descending';
+        containerEl.querySelectorAll('.rp-sortable').forEach((th) => {
+          th.querySelector('.rp-arrow').textContent = th.dataset.sort === sort.key ? (sort.dir === 'asc' ? ' ▲' : ' ▼') : '';
+        });
         tbody.innerHTML = visible.length
           ? visible.map(rowHtml).join('')
           : '<tr><td colspan="12" class="empty">No removed products match this filter.</td></tr>';
@@ -269,6 +309,17 @@ const RemovedProducts = (function () {
       ['.rp-f-q', '.rp-f-category', '.rp-f-store', '.rp-f-by'].forEach((sel) =>
         $$(sel).addEventListener(sel === '.rp-f-q' ? 'input' : 'change', apply),
       );
+      // Same key again flips the direction; a new key starts at its natural
+      // direction (text A→Z, numbers and dates biggest/newest first).
+      const setSort = (key) => {
+        sort = key === sort.key
+          ? { key, dir: sort.dir === 'asc' ? 'desc' : 'asc' }
+          : { key, dir: SORTS.find((s) => s.key === key).num || key === 'createdAt' ? 'desc' : 'asc' };
+        apply();
+      };
+      $$('.rp-f-sort').addEventListener('change', (e) => { sort = { key: e.target.value, dir: SORTS.find((s) => s.key === e.target.value).num || e.target.value === 'createdAt' ? 'desc' : 'asc' }; apply(); });
+      $$('.rp-f-dir').addEventListener('click', () => { sort = { ...sort, dir: sort.dir === 'asc' ? 'desc' : 'asc' }; apply(); });
+      containerEl.querySelectorAll('.rp-sortable').forEach((th) => th.addEventListener('click', () => setSort(th.dataset.sort)));
       $$('.rp-export').addEventListener('click', () => downloadCsv(visible));
       apply();
 
