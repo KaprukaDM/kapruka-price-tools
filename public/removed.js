@@ -152,6 +152,80 @@ const RemovedProducts = (function () {
   // Renders the Removed Products table into containerEl; onRestore(count)
   // fires after load and after every successful restore, so the calling page
   // can refresh its own data/counts.
+  // One <option> per distinct value of a column, sorted, for the filter dropdowns.
+  // `caseInsensitive` folds spellings that differ only by case/spacing ("Iresha"
+  // / "iresha" / "IRESHA" — people type their own name in the removal modal)
+  // into one entry; the option's value is the lowercase key.
+  function optionsHtml(label, values, caseInsensitive = false) {
+    let opts;
+    if (caseInsensitive) {
+      const byKey = new Map();
+      for (const v of values) {
+        const key = norm(v);
+        if (key && !byKey.has(key)) byKey.set(key, String(v).trim());
+      }
+      opts = [...byKey.entries()].sort((a, b) => a[1].localeCompare(b[1]))
+        .map(([key, shown]) => `<option value="${escapeHtml(key)}">${escapeHtml(shown)}</option>`);
+    } else {
+      opts = [...new Set(values.filter(Boolean))].sort((a, b) => a.localeCompare(b))
+        .map((v) => `<option>${escapeHtml(v)}</option>`);
+    }
+    return `<option value="">${label}</option>` + opts.join('');
+  }
+  const norm = (v) => String(v == null ? '' : v).trim().toLowerCase();
+
+  // Does a removed row pass the current filter values? The text box searches
+  // every readable column — product names, store, who removed it, and the
+  // reason — so "free add-on" finds the rows removed for that reason.
+  function matchesFilters(r, f) {
+    if (f.category && r.category !== f.category) return false;
+    if (f.store && r.partnerName !== f.store) return false;
+    if (f.by && norm(r.removedBy) !== f.by) return false;
+    if (f.q) {
+      const s = r.snapshot || {};
+      const hay = [r.name, r.kaprukaUrl, r.category, r.partnerName, otherName(s), r.removedBy, r.reason]
+        .join(' ')
+        .toLowerCase();
+      if (!hay.includes(f.q)) return false;
+    }
+    return true;
+  }
+
+  function csvCell(v) {
+    const s = v == null ? '' : String(v);
+    return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  }
+
+  // Downloads exactly the rows currently shown (so a filtered view exports as
+  // filtered), with the removal reason, who removed it and when. Built in the
+  // browser from the same list the table uses, so the file always matches the
+  // screen. BOM so Excel opens the UTF-8 correctly.
+  function downloadCsv(rows) {
+    const header = [
+      'Category', 'Store', 'Kapruka product', 'Kapruka URL', 'Kapruka price (LKR)',
+      'Partner product', 'Partner URL', 'Partner price (LKR)', 'Overcharge (LKR)', 'Overcharge %',
+      'Name similarity %', 'Also removes variants', 'Removed by', 'Reason', 'Removed at',
+    ];
+    const lines = rows.map((r) => {
+      const s = r.snapshot || {};
+      return [
+        r.category, r.partnerName, r.name, r.kaprukaUrl, s.kaprukaPrice,
+        otherName(s), otherUrl(s), otherPrice(s), s.diff,
+        s.pct == null ? '' : s.pct.toFixed(1), s.nameSimilarity,
+        r.matchScope === 'name_partner' ? 'Yes' : 'No',
+        r.removedBy, r.reason, r.createdAt ? new Date(r.createdAt).toISOString() : '',
+      ].map(csvCell).join(',');
+    });
+    const csv = '﻿' + [header.map(csvCell).join(','), ...lines].join('\r\n');
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+    a.download = `removed-products-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }
+
   async function renderInto(containerEl, onRestore) {
     containerEl.innerHTML = '<p class="empty">Loading…</p>';
     try {
@@ -161,22 +235,55 @@ const RemovedProducts = (function () {
         if (onRestore) onRestore(0);
         return;
       }
-      containerEl.innerHTML = `<div class="table-wrap"><table><thead><tr>
+      containerEl.innerHTML = `
+        <div class="rp-filters" style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:12px">
+          <input type="search" class="rp-f-q" placeholder="Filter by product, store, reason…" style="max-width:280px" />
+          <select class="rp-f-category" style="max-width:200px">${optionsHtml('All categories', rows.map((r) => r.category))}</select>
+          <select class="rp-f-store" style="max-width:200px">${optionsHtml('All stores', rows.map((r) => r.partnerName))}</select>
+          <select class="rp-f-by" style="max-width:200px">${optionsHtml('Anyone', rows.map((r) => r.removedBy), true)}</select>
+          <span class="rp-f-count" style="font-size:12px;color:var(--mut)"></span>
+          <button type="button" class="ghost rp-export" style="margin-left:auto">⬇ Export removed (CSV)</button>
+        </div>
+        <div class="table-wrap"><table><thead><tr>
           <th>Category</th><th>Store</th><th>Product</th><th class="num">Kapruka</th>
           <th class="num">Partner site</th><th class="num">Overcharge</th><th class="num">%</th>
           <th class="num">Name Sim %</th><th>Removed by</th><th>Reason</th><th>Removed at</th><th></th>
-        </tr></thead><tbody>${rows.map(rowHtml).join('')}</tbody></table></div>`;
-      containerEl.querySelectorAll('.rp-restore').forEach((btn) => {
-        btn.addEventListener('click', async () => {
-          btn.disabled = true;
-          try {
-            await restore(Number(btn.dataset.id));
-            await renderInto(containerEl, onRestore);
-          } catch (err) {
-            alert('Error: ' + err.message);
-            btn.disabled = false;
-          }
-        });
+        </tr></thead><tbody></tbody></table></div>`;
+
+      const $$ = (sel) => containerEl.querySelector(sel);
+      const tbody = $$('tbody');
+      let visible = rows;
+      const apply = () => {
+        const f = {
+          q: $$('.rp-f-q').value.trim().toLowerCase(),
+          category: $$('.rp-f-category').value,
+          store: $$('.rp-f-store').value,
+          by: $$('.rp-f-by').value,
+        };
+        visible = rows.filter((r) => matchesFilters(r, f));
+        tbody.innerHTML = visible.length
+          ? visible.map(rowHtml).join('')
+          : '<tr><td colspan="12" class="empty">No removed products match this filter.</td></tr>';
+        $$('.rp-f-count').textContent = `Showing ${visible.length} of ${rows.length}`;
+      };
+      ['.rp-f-q', '.rp-f-category', '.rp-f-store', '.rp-f-by'].forEach((sel) =>
+        $$(sel).addEventListener(sel === '.rp-f-q' ? 'input' : 'change', apply),
+      );
+      $$('.rp-export').addEventListener('click', () => downloadCsv(visible));
+      apply();
+
+      // Delegated so the buttons keep working after the filter rebuilds the rows.
+      tbody.addEventListener('click', async (e) => {
+        const btn = e.target.closest('.rp-restore');
+        if (!btn) return;
+        btn.disabled = true;
+        try {
+          await restore(Number(btn.dataset.id));
+          await renderInto(containerEl, onRestore);
+        } catch (err) {
+          alert('Error: ' + err.message);
+          btn.disabled = false;
+        }
       });
       if (onRestore) onRestore(rows.length);
     } catch (err) {
