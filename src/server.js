@@ -383,6 +383,11 @@ async function runCheckerSearch(query, onProgress = () => {}) {
     daraz,
     kaprukaRef,
     kaprukaCandidates,
+    // Too thin to name one product ("sunscreen"): `results` stays strictly
+    // comparable matches, and the browse list is kept apart so it can never
+    // reach the table or the price insight above.
+    broadQuery: Boolean(db.broadQuery),
+    categoryResults: db.categoryResults || [],
     dbCount: db.results.length,
     webCount: (web.results || []).length + (web.discovered || []).length,
     webError: web.error || web.discoveryError || null,

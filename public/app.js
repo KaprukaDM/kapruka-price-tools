@@ -155,6 +155,40 @@ function kaprukaCandidatesBlock(candidates, ref) {
   </div>`;
 }
 
+// A query that is only a category or brand word ("sunscreen") doesn't name one
+// product, so it isn't price-compared. Say so, offer Kapruka's own products as
+// one-click exact searches, and list what the shops carry as a plain browse
+// list (no match rate, never in the comparison table or the insight).
+function broadQueryBlock(data) {
+  const q = escapeHtml((data.query && data.query.name) || '');
+  const cands = (data.kaprukaCandidates || []).filter((c) => c && c.name).slice(0, 8);
+  const buttons = cands
+    .map((c) => `<li><a href="#" class="search-exact" data-name="${escapeHtml(c.name)}">${escapeHtml(c.name)}</a>
+      ${c.price != null ? `— <span class="price">Rs. ${Number(c.price).toLocaleString('en-LK')}</span>` : ''}</li>`)
+    .join('');
+  let html = `<div class="card" style="margin-bottom:16px">
+    <div class="ctx">“${q}” is too general to name one product</div>
+    <div style="margin-top:4px">Prices can't be compared fairly across different products. Add a brand, size or model
+      (for example a brand name plus “${q} 100ml”)${buttons ? ' — or pick one of Kapruka\'s products to compare it exactly:' : '.'}</div>
+    ${buttons ? `<ul style="margin:6px 0 0 18px;padding:0">${buttons}</ul>` : ''}
+  </div>`;
+  const rows = data.categoryResults || [];
+  if (rows.length) {
+    const body = rows
+      .map((r) => `<tr>
+        <td><strong>${escapeHtml(r.site)}</strong><div class="ctx">${escapeHtml(r.domain || '')}</div></td>
+        <td><a href="${escapeHtml(r.url)}" target="_blank" rel="noopener">${escapeHtml(r.title)}</a></td>
+        <td><span class="price">${fmtPrice(r)}</span></td>
+      </tr>`)
+      .join('');
+    html += `<h3 style="margin:24px 0 4px">Browse: what shops list for “${q}” (${rows.length})</h3>
+      <p class="note" style="margin-top:0">Cheapest first, at most two per shop. These are different products —
+        not price-matched to each other, so no match rate and no price insight.</p>
+      <table><thead><tr><th>Site</th><th>Listing</th><th>Price</th></tr></thead><tbody>${body}</tbody></table>`;
+  }
+  return html;
+}
+
 function render(data) {
   const out = $('out');
   const results = data.results || [];
@@ -168,13 +202,16 @@ function render(data) {
   // matches (e.g. the same helmet from more than one seller) — filter out
   // the error/no_result placeholder entries, everything else is a real row.
   const darazRows = (data.daraz || []).filter((r) => r.status && r.status !== 'error' && r.status !== 'no_result');
+  const broad = Boolean(data.broadQuery);
   if (results.length === 0 && discovered.length === 0 && darazRows.length === 0) {
-    out.innerHTML = kaprukaRefBlock(ref) + '<p class="empty">No results.</p>';
+    out.innerHTML = broad
+      ? broadQueryBlock(data)
+      : kaprukaRefBlock(ref) + '<p class="empty">No results.</p>';
     return;
   }
-  let html = kaprukaRefBlock(ref)
-    + priceInsightBlock(data.priceInsight)
-    + kaprukaCandidatesBlock(data.kaprukaCandidates, ref);
+  let html = broad ? broadQueryBlock(data) : kaprukaRefBlock(ref);
+  html += priceInsightBlock(data.priceInsight)
+    + (broad ? '' : kaprukaCandidatesBlock(data.kaprukaCandidates, ref));
   // One table, every source: our own catalogue AND a live web search run on
   // the same query, de-duplicated per listing and sorted strongest-match
   // first. Which source a row came from is a column, not a separate section —
@@ -379,5 +416,16 @@ async function run() {
 }
 
 $('go').addEventListener('click', run);
+// "Pick a Kapruka product" links from the broad-query card re-run the search
+// with that exact product name.
+$('out').addEventListener('click', (e) => {
+  const a = e.target.closest && e.target.closest('.search-exact');
+  if (!a) return;
+  e.preventDefault();
+  setSearchMode('search');
+  $('name').value = a.dataset.name;
+  $('description').value = '';
+  run();
+});
 $('modeSearch').addEventListener('click', () => setSearchMode('search'));
 $('modeUrl').addEventListener('click', () => setSearchMode('url'));

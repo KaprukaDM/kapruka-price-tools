@@ -35,7 +35,7 @@ import { index } from '../compare/matcher.js';
 import { scoreCandidate } from '../compare/audit-scoring.js';
 import { searchPrefixes, extractModelCodes } from '../compare/normalize.js';
 import { getPriceAuditItems, searchCompetitorProductsByTokens, latestComparisonRowsPerPartner } from '../db.js';
-import { understandQuery, fanOutQueries, relevanceMatch, relevanceVeto } from './relevance.js';
+import { understandQuery, fanOutQueries, relevanceMatch, relevanceVeto, isBroadQuery, categoryMatch } from './relevance.js';
 
 const AUDIT_ITEMS_SCAN_LIMIT = 6000; // comfortably above the ~2.5k rows currently stored
 const COMPETITOR_SEARCH_LIMIT = 500;
@@ -286,7 +286,7 @@ async function searchPriceAuditProducts(u) {
 // searchQueries() above is kept for the description fallback.
 async function searchCompetitorProductsTable(u, description = '') {
   const queries = fanOutQueries(u);
-  if (!queries.length) return [];
+  if (!queries.length) return { matched: [], category: [] };
   const byUrl = new Map();
   for (const rows of await Promise.all(
     queries.map((q) => searchCompetitorProductsByTokens(q, COMPETITOR_SEARCH_LIMIT)),
@@ -305,7 +305,7 @@ async function searchCompetitorProductsTable(u, description = '') {
     }
   }
   const rows = [...byUrl.values()];
-  if (!rows.length) return [];
+  if (!rows.length) return { matched: [], category: [] };
 
   const indexed = index(
     rows.map((r) => ({
@@ -317,6 +317,12 @@ async function searchCompetitorProductsTable(u, description = '') {
     })),
     false,
   );
+
+  // A lone category/brand word names no single product, so nothing here is
+  // price-compared; list what carries the word instead (see categoryListings).
+  if (isBroadQuery(u)) {
+    return { matched: [], category: categoryListings(u, indexed) };
+  }
 
   // EVERY matching listing, not one "best" per shop. A shop genuinely stocks
   // several variants of what a short query asks for (a disc and a digital
@@ -341,7 +347,43 @@ async function searchCompetitorProductsTable(u, description = '') {
       }),
     );
   }
-  return out;
+  return { matched: out, category: [] };
+}
+
+// Browse view for a broad query: the cheapest few priced listings per shop,
+// so one shop with 200 sunscreens can't crowd the rest out. Unrated rows —
+// they say "this shop sells it", not "this is the product you meant".
+const CATEGORY_PER_SITE = 2;
+const MAX_CATEGORY_RESULTS = 40;
+function categoryListings(u, indexed) {
+  const bySite = new Map();
+  for (const c of indexed) {
+    if (!(c.priceLKR > 0)) continue;
+    const m = categoryMatch(u, c);
+    if (!m) continue;
+    const key = c.siteDomain || c.siteName;
+    if (!bySite.has(key)) bySite.set(key, []);
+    bySite.get(key).push({ c, m });
+  }
+  const out = [];
+  for (const list of bySite.values()) {
+    list.sort((a, b) => a.c.priceLKR - b.c.priceLKR);
+    for (const { c, m } of list.slice(0, CATEGORY_PER_SITE)) {
+      out.push(
+        resultRow({
+          site: c.siteName || c.siteDomain,
+          domain: c.siteDomain,
+          title: c.name,
+          url: c.url,
+          price: c.priceLKR,
+          matchRate: null,
+          sourceTable: 'competitor_products',
+          matchKind: m.kind,
+        }),
+      );
+    }
+  }
+  return out.sort((a, b) => a.price - b.price).slice(0, MAX_CATEGORY_RESULTS);
 }
 
 // Table 3: comparison_runs — the older single-partner tool's stored payloads.
@@ -488,25 +530,34 @@ export async function searchDatabase({ name, description }) {
       console.warn(`! checker ${label} search failed:`, err.message);
       return fallback;
     });
-  const [auditProducts, competitorResults, comparisonResults] = await Promise.all([
+  const broadQuery = isBroadQuery(u);
+  // The caller must be able to trust `results` as comparable products. A query
+  // with no plain word and no SKU ("128gb", "15") would otherwise pull every
+  // 128GB phone and tablet into one table.
+  const [auditProducts, competitor, comparisonResults] = await Promise.all([
     settle('price_audit_items', searchPriceAuditProducts(u), []),
-    settle('competitor_products', searchCompetitorProductsTable(u, cleanDescription), []),
+    settle('competitor_products', searchCompetitorProductsTable(u, cleanDescription), { matched: [], category: [] }),
     settle('comparison_runs', searchComparisonRunsTable(u), []),
   ]);
+  const competitorResults = competitor.matched;
 
   const auditResults = auditProducts.flatMap((p) => p.results);
-  const results = dropPriceOutliers(mergeListings(auditResults, competitorResults, comparisonResults))
-    .sort(byBestValue)
-    .slice(0, MAX_RESULTS);
-  const kaprukaCandidates = auditProducts.map((p) => ({
+  const results = broadQuery
+    ? []
+    : dropPriceOutliers(mergeListings(auditResults, competitorResults, comparisonResults))
+        .sort(byBestValue)
+        .slice(0, MAX_RESULTS);
+  const kaprukaCandidates = (broadQuery ? [] : auditProducts).map((p) => ({
     url: p.url,
     name: p.name,
     price: p.price,
     matchRate: p.matchRate,
   }));
-  const best = auditProducts[0] || null;
+  const best = broadQuery ? null : auditProducts[0] || null;
   return {
     hasMatch: results.length > 0,
+    broadQuery,
+    categoryResults: competitor.category,
     results,
     kaprukaRef: best ? { url: best.url, name: best.name, price: best.price } : null,
     kaprukaCandidates,

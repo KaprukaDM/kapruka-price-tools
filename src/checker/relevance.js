@@ -178,6 +178,15 @@ export function fanOutQueries(u) {
   if (b && c) add([sqlOf(b), sqlOf(c)]);
   if (a && c) add([sqlOf(a), sqlOf(c)]);
   if (anchors.length === 1) add([sqlOf(anchors[0])]);
+  // A word almost no listing spells this way is most likely a typo of one
+  // many listings do ("sunscren"): grep two short fragments of it instead,
+  // one pair from each end, and let hasWord()'s edit-distance check decide.
+  for (const w of anchors.slice(0, 2)) {
+    if (!w.rare || w.fuzzy || w.sql.length < 6) continue;
+    const s = w.sql;
+    add([s.slice(0, 3), s.slice(3, 6)]);
+    add([s.slice(-6, -3), s.slice(-3)]);
+  }
   return queries;
 }
 
@@ -353,6 +362,39 @@ function misspeltAccessory(u, c) {
   return false;
 }
 
+// How many independent identity signals the query carries: plain words the
+// catalogue knows, bare model numbers, SKUs and sizes.
+function identitySignals(u) {
+  return u.words.filter((w) => w.weight > 0).length + u.numbers.size + u.codes.size + Object.keys(u.indexed._specs).length;
+}
+
+/**
+ * A query too thin to name one product: a lone category or brand word
+ * ("sunscreen", "cetaphil", "helmet"), or nothing the catalogue knows at all.
+ * Such a query is never price-compared (that would line up a LKR 1,950 lotion
+ * against a LKR 9,800 gel); db-search.js lists the listings that carry the
+ * word instead, see categoryMatch().
+ */
+export function isBroadQuery(u) {
+  // A SKU ("ps5", "55a61h") names a product on its own.
+  return identitySignals(u) < 2 && u.codes.size === 0;
+}
+
+/**
+ * For a broad query: does this listing simply carry the query's word? Returns
+ * null or { kind: 'category', rate: null, value }. Deliberately NOT a match
+ * claim — there is no rate, and these rows never feed the price insight.
+ */
+export function categoryMatch(u, c) {
+  const scored = u.words.filter((w) => w.weight > 0);
+  if (scored.length !== 1 || u.numbers.size || u.codes.size) return null;
+  const q = u.indexed;
+  if (!hasWord(scored[0], c)) return null;
+  // Same exclusions as a real match: "Sunscreen Pouch", a case "for iPhone".
+  if (accessoryMismatch(q._tokens, c._tokens) || madeForQueryProduct(u, c) || misspeltAccessory(u, c)) return null;
+  return { kind: 'category', rate: null, value: c._tokens.size ? 1 / c._tokens.size : 0 };
+}
+
 /**
  * Null (not the same product) or { kind: 'strict'|'broad', rate, value }.
  */
@@ -361,7 +403,7 @@ export function relevanceMatch(u, c) {
   const scored = u.words.filter((w) => w.weight > 0);
   // One plain word ("helmet") can't identify a product: it needs a second
   // word, a model number, a SKU or a size to go with it.
-  if (scored.length + u.numbers.size + u.codes.size + Object.keys(q._specs).length < 2) return null;
+  if (identitySignals(u) < 2) return null;
   if (specsConflictAny(q._specs, c._specs)) return null;
   if (accessoryMismatch(q._tokens, c._tokens)) return null;
   if (qualifierMismatch(q._tokens, c._tokens)) return null;
@@ -413,7 +455,12 @@ export function relevanceMatch(u, c) {
     return { kind: 'strict', rate: Math.round(100 * Math.max(blended, 0.7)), value: 10 + blended + (sharedCode ? 1 : 0) };
   }
   const leads = leadsWithQuery(tokenSequence(q.name), tokenSequence(c.name), c._tokens);
-  if (qCov >= 0.75 && cCov >= 0.2 && (leads || cCov >= 0.6)) {
+  // A brand-less, descriptive query ("sunscreen kids") is fully contained in
+  // a branded listing ("Caribbean Breeze 30 Kids Sunscreen 120ml"), which says
+  // plenty the query never mentions — every word asked for IS there, so it
+  // doesn't need to lead the title. Needs two words so a lone word can't do it.
+  const fullyContained = qCov >= 0.99 && scored.length >= 2 && cCov >= 0.15;
+  if (qCov >= 0.75 && cCov >= 0.2 && (leads || cCov >= 0.6 || fullyContained)) {
     return { kind: 'broad', rate: Math.round(Math.min(RELEVANCE_BROAD_MAX_RATE, 100 * blended)), value: blended };
   }
   return null;
