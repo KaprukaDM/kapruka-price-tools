@@ -404,7 +404,9 @@ export async function overpricedReport() {
         partnerPrice: m.partnerPrice ?? null,
         partnerRegularPrice: m.partnerRegularPrice ?? null,
         diff: m.diff ?? null,
-        pct: m.pct ?? null,
+        // % overcharge is relative to the Kapruka price (diff / kaprukaPrice),
+        // not the partner price the stored m.pct was computed against.
+        pct: m.diff != null && m.kaprukaPrice ? (m.diff / m.kaprukaPrice) * 100 : null,
         confidence: m.confidence ?? '',
         nameSimilarity: m.nameSimilarity ?? null,
         kaprukaUrl: m.kaprukaUrl ?? '',
