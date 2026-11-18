@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#402970" />
+  <link rel="icon" href="https://www.kapruka.com/static/icons/favicon.ico" />
+  <title>Kapruka · Partner Underpriced Price Dashboard</title>
+  <link rel="stylesheet" href="theme.css" />
+  <style>
+    .wrap { max-width: 1320px; }
+    .cards { display:flex; flex-wrap:wrap; gap:12px; margin: 6px 0 22px; }
+    .stat { background:#fff; border:1px solid var(--line); border-radius:12px; padding:14px 18px;
+            min-width:150px; box-shadow:0 1px 3px rgba(64,41,112,.06); }
+    .stat .n { font-size:26px; font-weight:800; color:var(--purple-dk); line-height:1.1; }
+    .stat .l { font-size:11px; color:var(--mut); text-transform:uppercase; letter-spacing:.04em; margin-top:3px; }
+    .stat.good .n { color:#2e9e5b; }
+    .toolbar { display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin-bottom:14px; }
+    .toolbar input[type=search]{ max-width:260px; }
+    .toolbar select { max-width:220px; }
+    .toolbar .right { margin-left:auto; display:flex; gap:10px; align-items:center; }
+    button { margin-top:0; }
+    tr.under td { background:#eaf6ee; } tr.under td:first-child { box-shadow: inset 3px 0 #2e9e5b; }
+    .meta { font-size:12px; color:var(--mut); margin: 10px 0 0; }
+    .store-pill { display:inline-block; background:var(--tint); border:1px solid var(--line);
+                  color:var(--purple-dk); border-radius:999px; padding:2px 10px; font-size:12px; font-weight:600; }
+    .gap-amt { color:#1f7a45; font-weight:700; }
+    th.sortable { cursor:pointer; user-select:none; white-space:nowrap; }
+    th.sortable:hover { color: var(--purple-dk, #402970); }
+    .offline-banner { background:#fae5e4; border:1px solid var(--bad); color:var(--bad);
+                       border-radius:10px; padding:10px 14px; font-size:13px; margin-bottom:14px; }
+    .badge-offline { background:#fae5e4; color:var(--bad); }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="bar">
+      <img class="logo-mark" src="https://www.kapruka.com/static/icons/apple-touch-icon-180x180.png?v2"
+           alt="Kapruka" onerror="this.style.display='none'" />
+      <span class="logo">kapruka<span class="dot">.</span></span>
+      <span class="pill">Partner Underpriced Price Dashboard</span>
+      <span class="tag"><a href="index.html">← Menu</a></span>
+    </div>
+  </header>
+
+  <div class="wrap">
+    <h1>Underpriced products — configured partner stores</h1>
+    <p class="sub">The reverse of the <a href="partner-overpriced.html">Partner Overpriced Dashboard</a>: every product where
+       the <strong>partner's own website charges more than our Kapruka price</strong>, product by product. These are
+       places where Kapruka is the cheaper side and there may be room to raise our price. Uses the same stored
+       comparison runs, so it refreshes whenever the overpriced dashboard does.</p>
+
+    <div id="status" class="card"><span class="spin"></span>Loading the latest underpriced products…</div>
+
+    <div id="app" style="display:none">
+      <div class="cards" id="cards"></div>
+      <div id="offlineBanner"></div>
+
+      <div class="toolbar">
+        <select id="category"><option value="">All categories</option></select>
+        <select id="store"><option value="">All stores</option></select>
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--mut);cursor:pointer;white-space:nowrap"
+               title="On by default. Offline stores' prices are their last known ones — not something a customer can actually buy today.">
+          <input type="checkbox" id="hideOffline" checked /> Hide offline stores
+        </label>
+        <div class="right">
+          <input type="search" id="search" placeholder="Filter by product name…" />
+          <button class="ghost btn-link" id="exportCsv" type="button">⬇ Export CSV</button>
+        </div>
+      </div>
+
+      <div id="table"></div>
+      <p class="meta" id="footmeta"></p>
+    </div>
+  </div>
+
+  <script src="partner-underpriced.js"></script>
+</body>
+</html>

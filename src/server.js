@@ -43,6 +43,8 @@ import {
   exportProductsCsv,
   exportOverpricedCsv,
   overpricedReport,
+  underpricedReport,
+  exportUnderpricedCsv,
   allProductsOverpricedReport,
   exportAllProductsOverpricedCsv,
   stockMismatchReport,
@@ -831,6 +833,27 @@ app.get('/api/export/overpriced.csv', async (req, res) => {
     const suffix = [partnerId, category].filter(Boolean).join('-');
     const name = suffix ? `overpriced-${suffix}.csv` : 'overpriced.csv';
     sendCsv(res, name, await exportOverpricedCsv(partnerId, category));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---- Partner Underpriced (reverse report): partner's own site is dearer than
+// Kapruka. Same stored runs as /api/overpriced, opposite verdict.
+app.get('/api/underpriced', async (_req, res) => {
+  try {
+    res.json({ ...(await underpricedReport()), refreshing: anyRefreshRunning() });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/export/underpriced.csv', async (req, res) => {
+  try {
+    const partnerId = req.query.partner || null;
+    const category = req.query.category || null;
+    const suffix = [partnerId, category].filter(Boolean).join('-');
+    sendCsv(res, suffix ? `underpriced-${suffix}.csv` : 'underpriced.csv', await exportUnderpricedCsv(partnerId, category));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

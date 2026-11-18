@@ -355,6 +355,20 @@ async function latestRunPerPartner() {
 }
 
 export async function overpricedReport() {
+  return partnerPriceGapReport('kapruka_higher');
+}
+
+// Mirror of overpricedReport(): products where the partner's own site charges
+// MORE than Kapruka (verdict `kapruka_lower`), i.e. we're the cheaper side and
+// may be leaving margin on the table. `diff` is stored as a positive rupee gap
+// (partner price − Kapruka price) and `pct` is relative to the Kapruka price,
+// matching the overpriced report's convention.
+export async function underpricedReport() {
+  return partnerPriceGapReport('kapruka_lower');
+}
+
+async function partnerPriceGapReport(verdict) {
+  const under = verdict === 'kapruka_lower';
   const items = [];
   const partners = [];
   let lastUpdated = null;
@@ -371,7 +385,7 @@ export async function overpricedReport() {
     // kapruka_url) when the removal was made with the broad "also remove
     // other sizes/variants" scope.
     const over = (payload.matched || []).filter(
-      (m) => m.verdict === 'kapruka_higher' && !removed.isRemoved(m.kaprukaUrl, m.name, p.name),
+      (m) => m.verdict === verdict && !removed.isRemoved(m.kaprukaUrl, m.name, p.name),
     );
     // false when the store's own website failed its health check on the last
     // refresh (see checkSiteHealth() in compare/sources.js): unreachable, a
@@ -386,6 +400,7 @@ export async function overpricedReport() {
       name: p.name ?? '',
       partnerLabel: p.partnerLabel || p.partnerSite || '',
       overpriced: over.length,
+      flagged: over.length,
       matched: (payload.matched || []).length,
       generatedAt: at,
       siteActive,
@@ -393,6 +408,8 @@ export async function overpricedReport() {
     });
 
     for (const m of over) {
+      // Positive rupee gap in both directions (stored diff = Kapruka − partner).
+      const gap = m.diff == null ? null : under ? -m.diff : m.diff;
       items.push({
         partnerId: p.id ?? '',
         partner: p.name ?? '',
@@ -403,10 +420,10 @@ export async function overpricedReport() {
         kaprukaPrice: m.kaprukaPrice ?? null,
         partnerPrice: m.partnerPrice ?? null,
         partnerRegularPrice: m.partnerRegularPrice ?? null,
-        diff: m.diff ?? null,
-        // % overcharge is relative to the Kapruka price (diff / kaprukaPrice),
+        diff: gap,
+        // % gap is relative to the Kapruka price (gap / kaprukaPrice),
         // not the partner price the stored m.pct was computed against.
-        pct: m.diff != null && m.kaprukaPrice ? (m.diff / m.kaprukaPrice) * 100 : null,
+        pct: gap != null && m.kaprukaPrice ? (gap / m.kaprukaPrice) * 100 : null,
         confidence: m.confidence ?? '',
         nameSimilarity: m.nameSimilarity ?? null,
         kaprukaUrl: m.kaprukaUrl ?? '',
@@ -420,7 +437,7 @@ export async function overpricedReport() {
 
   // Biggest rupee overcharge first.
   items.sort((a, b) => (b.diff ?? 0) - (a.diff ?? 0));
-  partners.sort((a, b) => b.overpriced - a.overpriced);
+  partners.sort((a, b) => b.flagged - a.flagged);
 
   return {
     lastUpdated,
@@ -463,6 +480,24 @@ export async function exportOverpricedCsv(partnerId = null, category = null) {
     storeStatus_out: i.siteActive === false ? `OFFLINE — ${siteHealthLabel(i.siteStatus)}` : 'online',
   }));
   return buildCsv(OVERPRICED_COLUMNS, rows);
+}
+
+export async function exportUnderpricedCsv(partnerId = null, category = null) {
+  const { items } = await underpricedReport();
+  const filtered = items.filter(
+    (i) => (!partnerId || i.partnerId === partnerId) && (!category || i.category === category),
+  );
+  const columns = OVERPRICED_COLUMNS.map((c) =>
+    c.key === 'diff' ? { ...c, label: 'Partner higher by (Rs.)' }
+      : c.key === 'pct_out' ? { ...c, label: 'Partner higher by %' }
+      : c,
+  );
+  const rows = filtered.map((i) => ({
+    ...i,
+    pct_out: i.pct != null ? Math.round(i.pct * 10) / 10 : '',
+    storeStatus_out: i.siteActive === false ? `OFFLINE — ${siteHealthLabel(i.siteStatus)}` : 'online',
+  }));
+  return buildCsv(columns, rows);
 }
 
 // ---- Stock mismatch dashboard: matched products split by stock status -----
