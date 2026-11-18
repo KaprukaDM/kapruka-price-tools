@@ -7,6 +7,7 @@
 // Matching uses a shared strong model code (high confidence) and/or descriptive
 // token overlap (Jaccard). See normalize.js for how codes/tokens are derived.
 
+import { hasSinhala, transliterateSinhala, fuzzyOverlap } from './sinhala.js';
 import { tokenize, extractModelCodes, extractNativeModelCodes, codesMatch, extractSpecs, specsConflict, normalizeName } from './normalize.js';
 
 // Adult-wellness listings lean so heavily on generic shared vocabulary
@@ -127,6 +128,8 @@ export function index(products, withSku) {
     return {
       ...p,
       _tokens: tokenize(p.name),
+      // Only for Sinhala-script names: tokens of the transliteration.
+      _siTokens: hasSinhala(p.name) ? tokenize(transliterateSinhala(p.name)) : undefined,
       _codes: extractModelCodes(codeText),
       _nativeCodes: extractNativeModelCodes(codeText),
       _specs: extractSpecs(p.name),
@@ -141,6 +144,31 @@ export function index(products, withSku) {
 // matchCatalogs() index of both sides. `brandTokens` (optional) is the
 // tokenized partner store name -- see unmatchedToken() above.
 export function score(k, s, brandTokens) {
+  const exact = scoreExact(k, s, brandTokens);
+  // A name written in Sinhala script has no Latin tokens to match on (see
+  // sinhala.js), so also try comparing its transliteration against the other
+  // side's romanized title, tolerating spelling variants. Never lowers an
+  // exact-token result — only rescues pairs that would otherwise be rejected.
+  if (exact || (!k._siTokens && !s._siTokens)) return exact;
+  return scoreSinhala(k, s);
+}
+
+// Fuzzy bar for transliterated-Sinhala pairs. Higher than NAME_ONLY_JACCARD
+// because each token already matched loosely.
+const SINHALA_NAME_JACCARD = 0.6;
+function scoreSinhala(k, s) {
+  const a = k._siTokens || k._tokens;
+  const b = s._siTokens || s._tokens;
+  const { jaccard: jac, numberMismatch } = fuzzyOverlap(a, b);
+  if (jac < SINHALA_NAME_JACCARD || numberMismatch) return null;
+  if (specsConflict(k._specs, s._specs)) return null;
+  // Loose text matching earns a sanity check on price: the same book is not
+  // 2.5x dearer on one site. (Rejects lookalike titles of different products.)
+  if (k.price > 0 && s.price > 0 && Math.max(k.price, s.price) / Math.min(k.price, s.price) > 2.5) return null;
+  return { value: jac * 0.99, codes: 0, jaccard: jac };
+}
+
+function scoreExact(k, s, brandTokens) {
   const codes = sharedCodeCount(k._codes, s._codes);
   const nativeCodes = sharedCodeCount(k._nativeCodes, s._nativeCodes);
   const jac = jaccard(k._tokens, s._tokens);
