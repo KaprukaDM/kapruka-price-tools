@@ -555,6 +555,13 @@ export function parseKaprukaSource(input) {
   const s = String(input).trim();
   let m = s.match(/\/partner\/([^/?#]+)/i);
   if (m) return { type: 'partner', slug: m[1], label: m[1], link: `https://www.kapruka.com/partner/${m[1]}` };
+  // Brand listing: srilanka_online_shopping.jsp?m=<brand> (e.g. ?m=m%20d%20gunasena).
+  m = s.match(/srilanka_online_shopping\.jsp\?(?:[^#]*&)?m=([^&#]+)/i);
+  if (m) {
+    let brand = m[1];
+    try { brand = decodeURIComponent(brand.replace(/\+/g, ' ')); } catch { /* keep raw */ }
+    return { type: 'brand', brand, label: brand, link: `https://www.kapruka.com/srilanka_online_shopping.jsp?m=${encodeURIComponent(brand)}` };
+  }
   m = s.match(/\/online\/([^/?#]+)(?:\/price\/([^/?#]+))?/i);
   if (m) {
     const link = `https://www.kapruka.com/online/${m[1]}${m[2] ? `/price/${m[2]}` : ''}`;
@@ -670,6 +677,9 @@ export async function fetchKaprukaProduct(url) {
 export function kaprukaBaseUrl(src) {
   if (src.type === 'partner') {
     return `https://www.kapruka.com/srilanka_online_shopping.jsp?partner=${encodeURIComponent(src.slug)}`;
+  }
+  if (src.type === 'brand') {
+    return `https://www.kapruka.com/srilanka_online_shopping.jsp?m=${encodeURIComponent(src.brand)}`;
   }
   let u = `https://www.kapruka.com/srilanka_online_catalogue.jsp?buy=${encodeURIComponent(src.buy)}`;
   if (src.subcat) u += `&subcat=${encodeURIComponent(src.subcat)}`;
