@@ -96,6 +96,8 @@ function link(url, text) {
   return url ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener">${escapeHtml(text)}</a>` : escapeHtml(text);
 }
 
+const oosBadge = (inStock, who) => (inStock === false ? ` <span class="badge badge-oos" title="Out of stock on ${who}">OOS</span>` : '');
+
 // A badge when the partner's own site shows this as discounted from its
 // regular price (regular_price on WooCommerce, compare_at_price on Shopify —
 // see partnerRegularPrice in matcher.js). Not related to our overcharge —
@@ -271,8 +273,8 @@ function render() {
           <div class="prod-name prod-partner">${link(m.partnerUrl, m.partnerProductName || m.partnerLabel || '—')}</div>
         </td>
         <td class="num">${m.nameSimilarity != null ? m.nameSimilarity + '%' : '—'}</td>
-        <td class="num price">${lkr(m.kaprukaPrice)}</td>
-        <td class="num">${lkr(m.partnerPrice)}${discountBadge(m.partnerRegularPrice, m.partnerPrice)}</td>
+        <td class="num price">${lkr(m.kaprukaPrice)}${oosBadge(m.kaprukaInStock, 'Kapruka')}</td>
+        <td class="num">${lkr(m.partnerPrice)}${discountBadge(m.partnerRegularPrice, m.partnerPrice)}${oosBadge(m.partnerInStock, 'the partner site')}</td>
         <td class="num over-amt">+${lkr(m.diff)}</td>
         <td class="num over-amt">${pct}</td>
         <td><button type="button" class="row-remove" data-idx="${(PAGE - 1) * PAGE_SIZE + i}" title="Remove from dashboard">🗑 Remove</button></td>

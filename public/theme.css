@@ -81,6 +81,7 @@ tbody tr:hover { background: #faf9fc; }
 td.num { text-align:right; white-space:nowrap; font-variant-numeric: tabular-nums; }
 
 .badge { display:inline-block; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight:700; }
+.badge-oos { background:#fff1d6; color:#9a5b00; font-size:11px; padding:2px 8px; }
 .b-hi { background:#e3f5ea; color: var(--ok); }
 .b-md { background:#fbf0db; color: var(--warn); }
 .b-lo { background:#fae5e4; color: var(--bad); }

@@ -30,6 +30,7 @@ function escapeHtml(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, (c) =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
+const oosBadge = (inStock, who) => (inStock === false ? ` <span class="badge badge-oos" title="Out of stock on ${who}">OOS</span>` : '');
 function link(url, text) {
   return url ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener">${escapeHtml(text)}</a>` : escapeHtml(text);
 }
@@ -195,8 +196,8 @@ function render() {
         <div class="prod-name prod-partner">${link(m.partnerUrl, m.partnerProductName || m.partnerLabel || '—')}</div>
       </td>
       <td class="num">${m.nameSimilarity != null ? m.nameSimilarity + '%' : '—'}</td>
-      <td class="num price">${lkr(m.kaprukaPrice)}</td>
-      <td class="num">${lkr(m.partnerPrice)}</td>
+      <td class="num price">${lkr(m.kaprukaPrice)}${oosBadge(m.kaprukaInStock, 'Kapruka')}</td>
+      <td class="num">${lkr(m.partnerPrice)}${oosBadge(m.partnerInStock, 'the partner site')}</td>
       <td class="num gap-amt">+${lkr(m.diff)}</td>
       <td class="num gap-amt">${pct}</td>
     </tr>`;

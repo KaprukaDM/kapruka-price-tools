@@ -428,6 +428,9 @@ async function partnerPriceGapReport(verdict) {
         nameSimilarity: m.nameSimilarity ?? null,
         kaprukaUrl: m.kaprukaUrl ?? '',
         partnerUrl: m.partnerUrl ?? '',
+        // false = out of stock; anything else (true / unknown) counts as in stock.
+        kaprukaInStock: m.kaprukaInStock !== false,
+        partnerInStock: m.partnerInStock !== false,
         generatedAt: at,
         siteActive,
         siteStatus,
@@ -460,6 +463,8 @@ const OVERPRICED_COLUMNS = [
   { key: 'kaprukaPrice', label: 'Kapruka price' },
   { key: 'partnerPrice', label: 'Partner price' },
   { key: 'partnerRegularPrice', label: 'Partner regular price' },
+  { key: 'kaprukaStock_out', label: 'Kapruka stock' },
+  { key: 'partnerStock_out', label: 'Partner stock' },
   { key: 'diff', label: 'Overcharge (Rs.)' },
   { key: 'pct_out', label: 'Overcharge %' },
   { key: 'confidence', label: 'Match confidence' },
@@ -478,6 +483,8 @@ export async function exportOverpricedCsv(partnerId = null, category = null) {
     ...i,
     pct_out: i.pct != null ? Math.round(i.pct * 10) / 10 : '',
     storeStatus_out: i.siteActive === false ? `OFFLINE — ${siteHealthLabel(i.siteStatus)}` : 'online',
+    kaprukaStock_out: i.kaprukaInStock === false ? 'Out of stock' : 'In stock',
+    partnerStock_out: i.partnerInStock === false ? 'Out of stock' : 'In stock',
   }));
   return buildCsv(OVERPRICED_COLUMNS, rows);
 }
@@ -496,6 +503,8 @@ export async function exportUnderpricedCsv(partnerId = null, category = null) {
     ...i,
     pct_out: i.pct != null ? Math.round(i.pct * 10) / 10 : '',
     storeStatus_out: i.siteActive === false ? `OFFLINE — ${siteHealthLabel(i.siteStatus)}` : 'online',
+    kaprukaStock_out: i.kaprukaInStock === false ? 'Out of stock' : 'In stock',
+    partnerStock_out: i.partnerInStock === false ? 'Out of stock' : 'In stock',
   }));
   return buildCsv(columns, rows);
 }
